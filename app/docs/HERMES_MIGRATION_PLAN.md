@@ -4,73 +4,90 @@
 
 Replace the OpenClaw runtime dependency with Hermes while preserving the PDF/UA remediation workflow, contracts, tools, and orchestrator-first operating model.
 
-## Non-goals
+## Current baseline
 
-- Do not rewrite the repair tools.
-- Do not manually run individual scripts as the main workflow.
-- Do not reintroduce multi-reasoning-model switching.
-- Do not change the workspace/job contract unless required by the residual contract.
+Status: Phase 0 complete.
 
-## Carry forward unchanged
+Validated:
 
-- `tools/`
-- `workspace/`
-- `tools/audit/rule_repair_map.json`
-- `AGENTS.md`
-- `SOUL.md`
-- existing skill/rule/checklist docs as migration source material
+- Hermes dashboard works at `http://127.0.0.1:9119`.
+- Hermes gateway TCP port is open at `127.0.0.1:8642`.
+- NVIDIA text model works: `stepfun-ai/step-3.7-flash`.
+- NVIDIA vision model works: `meta/llama-4-maverick-17b-128e-instruct`.
+- Clean baseline commit is tagged `phase-0-hermes-nim-baseline`.
 
-## Remove
+## Completed migration work
 
-- OpenClaw Docker installation
-- `openclaw.json` runtime dependency
-- `.openclaw/` local state
-- OpenClaw-specific entrypoint behavior
-- `OPENCLAW_REQUIRED` as the external agent-facing signal name
+### Phase 1A — Runtime signal rename
 
-## Replace with
+Status: complete.
 
-- Hermes Docker service
-- Hermes web dashboard
-- NVIDIA NIM provider
-- `PRIMARY_MODEL=stepfun-ai/Step-3.7-Flash`
-- `VISION_MODEL=meta/llama-4-maverick-17b-128e-instruct`
-- `HERMES_REQUIRED` or `AI_REQUIRED` as the new operator-facing signal
+Active runtime files now use:
 
-## Approved filesystem model
+- `HERMES_REQUIRED`
+- `hermes_signals.json`
+- `hermes_required`
+- `hermes_signals`
 
-- `/opt/data` = Hermes state/config/API keys/sessions/memory/skills
-- `/app` = remediation app/code/contracts/tools
-- `/app/workspace` = remediation job filesystem
+instead of the OpenClaw-specific names.
 
-## Phase 0: Baseline Hermes Docker
+Commit/tag:
 
-Bring up Hermes with dashboard/API, persistent data, mounted app/workspace, and NVIDIA credentials.
+- Commit: `115a525 Rename OpenClaw runtime signals to Hermes`
+- Tag: `phase-1-hermes-signal-rename`
 
-## Phase 1: New clean repo
+Historical docs may still mention OpenClaw because they are source-context documents from the old system.
 
-Create the new clean project under `~/projects/pdf_remediation`, copy forward only intentional source assets, and exclude runtime state.
+## Next implementation target
 
-## Phase 2: Contract preservation
+### Milestone 1A — Canonical gate-name registry
 
-Preserve AGENTS/SOUL orchestrator-first workflow and JSON-line phase behavior.
+Purpose:
 
-## Phase 3: Residual contract implementation
+Stop outcome/verdict drift by making scaffold, orchestrator, status writer, and packaging agree on the same gate names.
 
-Implement `residual_analysis.json` and ensure post-repair residuals, not baseline failures, trigger Hermes/AI review.
+Why this is next:
 
-## Phase 4: OpenClaw prompt conversion
+`ORCHESTRATOR_REVIEW.md` identifies outcome-integrity bugs as the highest-risk issue. The system can produce misleading PASS/FAIL/REVIEW results if gate names differ between the files that produce audits and the files that compute final status.
 
-Convert `OPENCLAW_PROMPT_TEMPLATES.md` into Hermes skills/tasks.
+Expected work:
 
-## Phase 5: Gate and verdict repair
+- Add a single canonical gate registry.
+- Update orchestrator references to use canonical names.
+- Update status JSON writer to use canonical names.
+- Update package routing to use canonical final outcome.
+- Ensure post-repair veraPDF PDF/UA result is never excluded from the final verdict.
+- Add a small test or smoke check proving canonical names are present.
 
-Implement milestone fixes from `ORCHESTRATOR_REVIEW.md` and `OPENCLAW_PROMPT_TEMPLATES.md` in order.
+Acceptance criteria:
 
-## Phase 6: Model validation
+- No duplicated ad hoc gate-name lists in active runtime files.
+- `orchestrator_outcome.json` remains the authoritative final outcome.
+- `STATUS.json` does not re-derive a contradictory result.
+- Failed PDF/UA post-repair validation cannot be packaged as a passing remediated deliverable.
 
-Test text and vision NIM models directly and through Hermes before trusting them in remediation.
+## Later milestones
 
-## Phase 7: End-to-end job validation
+### Milestone 1B — Verdict and package routing repair
+
+Fix final result calculation, status writer behavior, and output package routing.
+
+### Milestone 2 — Repair/audit taxonomy cleanup
+
+Separate audit-only scripts from true repair scripts and fix misclassified strategies.
+
+### Milestone 3 — Residual analysis contract
+
+Implement `JOB/audit/residual_analysis.json` per `RESIDUAL_AND_CAPTURE_CONTRACT.md`.
+
+### Milestone 4 — Hermes skill conversion
+
+Convert `OPENCLAW_PROMPT_TEMPLATES.md` into Hermes-facing skills/tasks.
+
+### Milestone 5 — Resume and learning loop
+
+Implement durable job state, resume behavior, learned strategies, and safe retry caps.
+
+### Milestone 6 — End-to-end job validation
 
 Run a representative PDF job through orchestrator, residual analysis, repair, QA, packaging, and final `STATUS.json`.
