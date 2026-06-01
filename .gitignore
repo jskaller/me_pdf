@@ -31,3 +31,5 @@ __pycache__/
 # Hermes runtime directory: keep only placeholder
 hermes/data/*
 !hermes/.gitkeep
+
+hermes/open-webui/
