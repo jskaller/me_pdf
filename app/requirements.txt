@@ -1,0 +1,19 @@
+# Core PDF processing
+pymupdf==1.27.1
+fonttools==4.62.0
+Pillow==12.2.0
+
+# OCR
+ocrmypdf==17.4.2
+
+# Low-level PDF repair
+pikepdf==10.7.1
+
+# Geometric table detection
+pdfplumber==0.11.9
+
+# WCAG contrast math
+color-contrast==0.1.1
+
+# Pure-Python PDF fallback parser
+pypdf==6.12.1

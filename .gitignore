@@ -1,0 +1,33 @@
+.env
+.DS_Store
+
+# Hermes local runtime state / secrets
+hermes/data/.env
+hermes/data/sessions/
+hermes/data/memories/
+hermes/data/logs/
+hermes/data/cache/
+hermes/data/tmp/
+
+# OpenClaw runtime state must not return
+.openclaw/
+openclaw.json
+
+# Workspace runtime data
+workspace/input/*
+!workspace/input/.gitkeep
+workspace/jobs/*
+!workspace/jobs/.gitkeep
+workspace/output/*
+!workspace/output/.gitkeep
+workspace/archive/*
+!workspace/archive/.gitkeep
+
+# Common generated artifacts
+*.pyc
+__pycache__/
+.pytest_cache/
+
+# Hermes runtime directory: keep only placeholder
+hermes/data/*
+!hermes/.gitkeep

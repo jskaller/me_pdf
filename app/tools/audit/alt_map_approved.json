@@ -1,0 +1,13 @@
+{
+  "reviewer": "Josh",
+  "reviewed_at": "2026-05-25T22:49:57.721Z",
+  "action": "accepted",
+  "figures": {
+    "0": {
+      "flagged": false,
+      "alt_text": "This image depicts a table from a clinical healthcare PDF document, outlining instructions for completing Montefiore's Authorization for Release of Health Information form. The table, titled \"Recommendation,\" is divided into three columns and two rows, with the first column labeled \"Option,\" the second \"What It Includes,\" and the third \"Recommendation.\" The first row lists \"Option 1: Entire Medical Record\" and recommends selecting this option if the user needs the absolute maximum amount of information, while the second row lists \"Option 2: Abstract of Medical Records\" and recommends selecting this option if the user only needs certain documents. \n\nThe table is set against a white background with black text, and the Montefiore logo is prominently displayed at the top left. Overall, the image provides a clear and concise guide for healthcare professionals to follow when completing the authorization form.",
+      "decorative": false,
+      "instruction": null
+    }
+  }
+}
