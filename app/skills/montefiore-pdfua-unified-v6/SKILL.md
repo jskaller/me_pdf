@@ -6,7 +6,7 @@ description: PDF/UA remediation workflow. Use when asked to remediate,
   contrast audit, table semantics, native text preservation, visual QA,
   and produces a signed deliverable package.
 user-invocable: true
-metadata: {"openclaw":{"requires":{"bins":["qpdf","java"],"env":["LLM_API_KEY"]},"emoji":"♿"}}
+metadata: {"hermes":{"requires":{"bins":["qpdf","java"],"env":["NVIDIA_API_KEY"]},"emoji":"♿"}}
 ---
 
 # PDF/UA Remediation — V6

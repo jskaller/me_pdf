@@ -75,7 +75,7 @@ it wastes model calls and adds no information.
 ## Model invocation
 
 Visual QA uses the Nemotron 3 Nano Omni model, not the primary reasoning
-model. In OpenClaw, switch model before invoking visual_qa.py:
+model. In Hermes, use the configured vision model before invoking visual_qa.py:
 
 Primary model handles all audit, repair, and packaging decisions.
 Switch to vision model only for the visual QA gate, then switch back.

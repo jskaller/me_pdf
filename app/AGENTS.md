@@ -33,7 +33,7 @@ Omit `note` entirely if the result is the expected outcome.
 **Reserve prose for:**
 - Hard stops that halt the orchestrator mid-job (orchestrator never reached COMPLETE) — explain what failed and what the operator needs to do
 - The final job summary after `"phase": "COMPLETE"` appears
-- `OPENCLAW_REQUIRED` signals requiring you to write a new repair script
+- `HERMES_REQUIRED` signals requiring you to write a new repair script
 - Errors requiring operator decision that cannot be expressed in JSON
 
 **Do not write prose for:**
@@ -61,7 +61,7 @@ blocking versus informational.
 - Saying "no further action needed" — the operator still has standard post-delivery steps (see Final Summary Format)
 - Narrating which gates ran vs which did not — irrelevant once `overall_result` is set
 
-Report the `overall_result` and any active `OPENCLAW_REQUIRED` signals.
+Report the `overall_result` and any active `HERMES_REQUIRED` signals.
 Do not override, qualify, or re-narrate.
 
 ---
@@ -100,11 +100,11 @@ python3 tools/orchestrate/remediate.py \
   --title "..." --subject "..." --keywords "..."
 ```
 
-4. Watch for `DEVIATION` and `OPENCLAW_REQUIRED` signals — these are the only steps needing your reasoning.
+4. Watch for `DEVIATION` and `HERMES_REQUIRED` signals — these are the only steps needing your reasoning.
 
-5. When `"phase": "OPENCLAW_REQUIRED"` appears **during the run**, act on it immediately — do not wait for `COMPLETE`. Write the required repair script, register it in the rule map, then re-run the orchestrator so it can retry. Only proceed to step 6 when all OPENCLAW_REQUIRED signals have been resolved or determined to be unsolvable.
+5. When `"phase": "HERMES_REQUIRED"` appears **during the run**, act on it immediately — do not wait for `COMPLETE`. Write the required repair script, register it in the rule map, then re-run the orchestrator so it can retry. Only proceed to step 6 when all HERMES_REQUIRED signals have been resolved or determined to be unsolvable.
 
-6. Report the final summary when `"phase": "COMPLETE"` appears, following the format above. If any OPENCLAW_REQUIRED signals were emitted and not resolved, the summary must list them explicitly as unresolved escalations.
+6. Report the final summary when `"phase": "COMPLETE"` appears, following the format above. If any HERMES_REQUIRED signals were emitted and not resolved, the summary must list them explicitly as unresolved escalations.
 
 **Do not run individual audit or repair scripts manually.**
 If `tools/orchestrate/remediate.py` is missing, stop and report it.
@@ -188,7 +188,7 @@ your reasoning:
 | Phase value | Meaning | Your action |
 |-------------|---------|-------------|
 | `DEVIATION` | Layer 1 or 2 execution/outcome signal | Diagnose and fix the execution error or document why |
-| `OPENCLAW_REQUIRED` | The orchestrator hit a rule with no working strategy | Write a new repair script, register it, let orchestrator retry |
+| `HERMES_REQUIRED` | The orchestrator hit a rule with no working strategy | Write a new repair script, register it, let orchestrator retry |
 | `COMPLETE` | Job finished | Report final summary using the included `overall_result` |
 
 **Do not intervene mid-job.** If the orchestrator is still running (no `COMPLETE` phase yet), wait for it to finish. Do not try to "fix" partial state by running individual scripts.
@@ -216,13 +216,13 @@ single deviation — address it and continue.
 
 ---
 
-## OPENCLAW_REQUIRED — when the orchestrator can't fix something on its own
+## HERMES_REQUIRED — when the orchestrator can't fix something on its own
 
 When the orchestrator encounters a failing rule that has no working repair
-strategy, it emits an `OPENCLAW_REQUIRED` signal:
+strategy, it emits an `HERMES_REQUIRED` signal:
 
 ```json
-{"phase": "OPENCLAW_REQUIRED", "rule_id": "PDF/UA-1/7.18.4", "reason": "manual_no_strategies",
+{"phase": "HERMES_REQUIRED", "rule_id": "PDF/UA-1/7.18.4", "reason": "manual_no_strategies",
  "data": {"rule_id": "...", "description": "...", "failures": 470,
           "strategies_attempted": [...], "timestamp": "..."}}
 ```
@@ -234,7 +234,7 @@ strategy, it emits an `OPENCLAW_REQUIRED` signal:
 - `per_rule_cap_reached` — 15 strategy attempts for this rule; force escalation
 - `job_hard_cap_reached` — 50 total iterations across the job; force escalation
 
-### What to do when you see OPENCLAW_REQUIRED
+### What to do when you see HERMES_REQUIRED
 
 1. **Look at existing repair scripts first.** Don't write something that already exists.
 2. **Write a new, focused repair script** in `/app/tools/repair/` following the standard pattern:
@@ -293,7 +293,7 @@ Include the assigned tags in your final summary.
 
 The repair loop has caps to prevent runaway:
 
-- **Per-rule cap: 15** — if a single rule hasn't resolved after 15 strategy attempts, the orchestrator emits `OPENCLAW_REQUIRED` with `reason=per_rule_cap_reached` and continues with other rules
+- **Per-rule cap: 15** — if a single rule hasn't resolved after 15 strategy attempts, the orchestrator emits `HERMES_REQUIRED` with `reason=per_rule_cap_reached` and continues with other rules
 - **Per-job hard cap: 50** — if total iterations across all rules reach 50, the orchestrator forces termination
 - **Soft warning at 20** — logged but does not halt the job
 
@@ -341,7 +341,7 @@ consumers (status_json_writer, post_job_indexer, operators):
 | File | Contents |
 |------|----------|
 | `orchestrator_outcome.json` | The orchestrator's authoritative overall_result |
-| `openclaw_signals.json` | All OPENCLAW_REQUIRED signals emitted during the job |
+| `hermes_signals.json` | All HERMES_REQUIRED signals emitted during the job |
 | `strategy_attempts.json` | Per-rule attempt history with strategy names, scripts, results |
 | `proposed_taxonomy_additions.json` | Doc taxonomy tags proposed by the content classifier |
 | `doc_tags.json` | Doc tags assigned to this document |
@@ -380,7 +380,7 @@ PDF/UA-1 failure as a "tooling limitation."
 ### File modification rules
 - Never modify files in `workspace/input/` — source PDFs are read-only
 - **Never modify or overwrite existing scripts in `/app/tools/`** — they are read-only executables. Run them, never edit them.
-- **You MAY write new repair scripts to `/app/tools/repair/`** when you receive an `OPENCLAW_REQUIRED` signal that warrants it
+- **You MAY write new repair scripts to `/app/tools/repair/`** when you receive an `HERMES_REQUIRED` signal that warrants it
 - Never write to `workspace/output/` during remediation — the orchestrator owns packaging
 - Never process a PDF not explicitly named as the active source
 - **Never hand off a document where veraPDF PDF/UA still fails.** The orchestrator enforces this — FAIL outcomes do not produce a remediated PDF in the output package

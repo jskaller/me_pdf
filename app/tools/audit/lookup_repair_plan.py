@@ -7,7 +7,7 @@ repair plan by looking up each failing rule ID in rule_repair_map.json.
 Schema v2.0.0: rule entries use a strategies array with pass_rate, pass_count,
 fail_count, doc_type_stats, and known_failure_modes. Strategies are sorted by
 pass_rate desc / pass_count desc / doc_tag_overlap desc before selection.
-Rules with manual:true and empty strategies emit OPENCLAW_REQUIRED signals.
+Rules with manual:true and empty strategies emit HERMES_REQUIRED signals.
 
 Usage:
   lookup_repair_plan.py <parse_verapdf_summary_output.json>
@@ -38,7 +38,7 @@ Output JSON:
       },
       ...
     ],
-    "openclaw_required": [     <- rules needing agent script generation
+    "hermes_required": [     <- rules needing agent script generation
       {
         "rule_id": "PDF/UA-1/7.18.4",
         "description": "...",
@@ -57,7 +57,7 @@ Output JSON:
   }
 
 Exit codes:
-  0  plan produced successfully (may include openclaw_required or unknown rules)
+  0  plan produced successfully (may include hermes_required or unknown rules)
   2  usage error (missing input, unreadable map)
 """
 import sys, json, argparse
@@ -113,7 +113,7 @@ if not failures:
     print(json.dumps({
         'result': 'NO_FAILURES',
         'repair_steps': [],
-        'openclaw_required': [],
+        'hermes_required': [],
         'unknown_rules': [],
         'note': 'veraPDF reported no failures — no repairs needed.'
     }, indent=2))
@@ -150,7 +150,7 @@ def sort_strategies(strategies: list) -> list:
 
 # Group by repair_script to avoid duplicate steps for the same script
 script_to_rules  = defaultdict(list)
-openclaw_required = []
+hermes_required = []
 unknown_rules    = []
 
 for failure in failures:
@@ -167,8 +167,8 @@ for failure in failures:
     if entry is None:
         # Unknown rules appear in TWO output fields:
         #   - unknown_rules: documentation for the plan summary
-        #   - openclaw_required: action list the orchestrator emits signals from
-        # This is intentional. The orchestrator iterates openclaw_required only;
+        #   - hermes_required: action list the orchestrator emits signals from
+        # This is intentional. The orchestrator iterates hermes_required only;
         # unknown_rules exists so consumers can distinguish "rule not in map" from
         # "rule in map but manual" without parsing the reason field.
         unknown_rules.append({
@@ -177,7 +177,7 @@ for failure in failures:
             'failures':    count,
             'reason':      'unknown_rule'
         })
-        openclaw_required.append({
+        hermes_required.append({
             'rule_id':              rule_id,
             'description':          desc,
             'failures':             count,
@@ -186,9 +186,9 @@ for failure in failures:
         })
         continue
 
-    # Manual rule with no strategies — emit OPENCLAW_REQUIRED
+    # Manual rule with no strategies — emit HERMES_REQUIRED
     if entry.get('manual', False) and not entry.get('strategies'):
-        openclaw_required.append({
+        hermes_required.append({
             'rule_id':              rule_id,
             'description':          entry.get('description', desc),
             'failures':             count,
@@ -201,8 +201,8 @@ for failure in failures:
     strategies = sort_strategies(entry.get('strategies', []))
 
     if not strategies:
-        # strategies array exists but is empty and manual:false — treat as openclaw
-        openclaw_required.append({
+        # strategies array exists but is empty and manual:false — treat as hermes
+        hermes_required.append({
             'rule_id':              rule_id,
             'description':          entry.get('description', desc),
             'failures':             count,
@@ -217,7 +217,7 @@ for failure in failures:
     script = best.get('repair_script')
 
     if not script:
-        openclaw_required.append({
+        hermes_required.append({
             'rule_id':              rule_id,
             'description':          entry.get('description', desc),
             'failures':             count,
@@ -286,7 +286,7 @@ for i, step in enumerate(repair_steps_raw, start=1):
 # ── Result ────────────────────────────────────────────────────────────────────
 
 result = 'PLAN_READY'
-if not repair_steps and openclaw_required:
+if not repair_steps and hermes_required:
     result = 'ALL_MANUAL'
 
 output = {
@@ -295,18 +295,18 @@ output = {
     'rules_failing':      len(failures),
     'doc_tags_applied':   sorted(doc_tags),
     'repair_steps':       repair_steps,
-    'openclaw_required':  openclaw_required,
+    'hermes_required':  hermes_required,
     'unknown_rules':      unknown_rules,
     'agent_instruction': (
         'Execute repair_steps in the order listed (step 1 first). '
         'Any step with run_last=true must execute after all others — '
         'no PDF save operations may occur after it. '
-        'For openclaw_required entries: emit OPENCLAW_REQUIRED signal with '
+        'For hermes_required entries: emit HERMES_REQUIRED signal with '
         'full rule context so the agent can write or locate a repair script. '
-        'For unknown_rules: the rule is not in the map — emit OPENCLAW_REQUIRED '
+        'For unknown_rules: the rule is not in the map — emit HERMES_REQUIRED '
         'with reason=unknown_rule so the agent researches the rule before writing. '
         'After each repair step, if the rule still fails, fall through to the '
-        'next strategy in all_strategies before emitting OPENCLAW_REQUIRED.'
+        'next strategy in all_strategies before emitting HERMES_REQUIRED.'
     )
 }
 

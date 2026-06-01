@@ -2,17 +2,17 @@
   "_meta": {
     "version": "2.0.0",
     "standard": "PDF/UA-1 (ISO 14289-1)",
-    "purpose": "Maps veraPDF rule IDs to ordered repair strategies. The orchestrator looks up each failing rule ID here, sorts strategies by pass_rate desc / pass_count desc / doc_tag_overlap desc, and tries them in order. If all strategies fail or strategies array is empty, OpenClaw is invoked to write a new script.",
+    "purpose": "Maps veraPDF rule IDs to ordered repair strategies. The orchestrator looks up each failing rule ID here, sorts strategies by pass_rate desc / pass_count desc / doc_tag_overlap desc, and tries them in order. If all strategies fail or strategies array is empty, Hermes is invoked to write a new script.",
     "key_format": "{normalised_spec}/{clause}  e.g. PDF/UA-1/7.18.6.3",
     "normalisation": "veraPDF Greenfield profiles output rule IDs normalised to PDF/UA-1 prefix by parse_verapdf_summary.py.",
-    "schema_version_notes": "v2.0.0 — flat repair_script replaced by strategies array. Each rule has manual:true/false flag. manual:true routes directly to OpenClaw. Strategies sorted by pass_rate desc, pass_count desc, doc_tag_overlap desc before execution.",
+    "schema_version_notes": "v2.0.0 — flat repair_script replaced by strategies array. Each rule has manual:true/false flag. manual:true routes directly to Hermes. Strategies sorted by pass_rate desc, pass_count desc, doc_tag_overlap desc before execution.",
     "confidence_levels": {
       "CONFIRMED": "Verified on at least one real Montefiore job — outcome was PASS",
       "EXPECTED": "Correct per ISO 14289-1 spec + veraPDF rule definitions — not yet confirmed on a Montefiore job",
-      "NEW": "Written by OpenClaw — pass_count < 2, treat with extra scrutiny"
+      "NEW": "Written by Hermes — pass_count < 2, treat with extra scrutiny"
     },
     "strategy_ordering": "Sort strategies by: (1) pass_rate descending, (2) pass_count descending as tiebreaker, (3) doc_tag_overlap_score descending as final tiebreaker. Never exclude a strategy based on doc type — doc type affects ordering only, not eligibility. Skip strategies whose known_failure_modes match the current document's observed failure reason.",
-    "openclaw_triggers": "The orchestrator emits an OPENCLAW_REQUIRED signal when: (a) manual:true and strategies is empty, (b) all strategies exhausted with no PASS, (c) rule_id not found in map at all (unknown_rule). The signal includes rule_id, description, all strategy attempt history with failure reasons, and document tags. The agent reads the signal and either writes a new script or escalates to the operator if automation is not possible. For unknown rules, the agent researches the rule before writing.",
+    "hermes_triggers": "The orchestrator emits an HERMES_REQUIRED signal when: (a) manual:true and strategies is empty, (b) all strategies exhausted with no PASS, (c) rule_id not found in map at all (unknown_rule). The signal includes rule_id, description, all strategy attempt history with failure reasons, and document tags. The agent reads the signal and either writes a new script or escalates to the operator if automation is not possible. For unknown rules, the agent researches the rule before writing.",
     "repair_order_note": "repair_order within each strategy matches the mandatory sequence. fix_table_headers.py (order 10) MUST be last — no saves may occur after it. fix_table_tagging.py (order 9) MUST run before fix_table_headers.py.",
     "confirmed_jobs": 7,
     "last_updated": "2026-05-28"
@@ -507,7 +507,7 @@
       "repair_order": null,
       "run_last": false,
       "args_pattern": null,
-      "confidence": "OPENCLAW_REQUIRED",
+      "confidence": "HERMES_REQUIRED",
       "confirmed_jobs": 0,
       "notes": "First seen on MM-TEST3. Heading hierarchy incorrect for non-strongly-structured document. Requires new fix_heading_hierarchy.py script.",
       "resolvability": "repairable_unbuilt",
@@ -734,7 +734,7 @@
       "repair_order": null,
       "run_last": false,
       "args_pattern": null,
-      "confidence": "OPENCLAW_REQUIRED",
+      "confidence": "HERMES_REQUIRED",
       "confirmed_jobs": 0,
       "notes": "First seen on MM-TEST3 (470 failures). Form widget annotations must be wrapped in /Form struct elements. Requires new fix_form_widget_tagging.py script. Related but distinct from 7.18.3-1.",
       "resolvability": "repairable_unbuilt",
@@ -809,7 +809,7 @@
       "repair_order": null,
       "run_last": false,
       "args_pattern": null,
-      "confidence": "OPENCLAW_REQUIRED",
+      "confidence": "HERMES_REQUIRED",
       "confirmed_jobs": 0,
       "notes": "First seen on MM-TEST3 (20 failures). fix_cidset.py removes CIDSet but does not add CIDToGIDMap. Requires new script to add /CIDToGIDMap /Identity to affected CIDFont dictionaries.",
       "resolvability": "repairable_unbuilt",
@@ -910,7 +910,7 @@
       "repair_order": null,
       "run_last": false,
       "args_pattern": null,
-      "confidence": "OPENCLAW_REQUIRED",
+      "confidence": "HERMES_REQUIRED",
       "confirmed_jobs": 0,
       "notes": "First seen on MM-TEST3 (30 failures). fix_notdef_glyphs.py is audit-only and cannot repair. Requires new script to add ToUnicode CMap streams to affected fonts.",
       "resolvability": "repairable_unbuilt",
@@ -1012,5 +1012,5 @@
     "Corrupt xref table — qpdf repair failed",
     "Widget annotations require form remediation"
   ],
-  "agent_usage_instructions": "At the start of each job, after running parse_verapdf_summary.py, look up each failing rule_id in this map. For each match: (a) if manual:true and strategies is empty, emit OPENCLAW_REQUIRED with full rule context; (b) if manual:false, sort strategies by pass_rate desc / pass_count desc / doc_tag_overlap desc and try in order; (c) if all strategies fail, emit OPENCLAW_REQUIRED with full attempt history; (d) if rule_id not found at all, emit OPENCLAW_REQUIRED with unknown_rule flag so the agent researches the rule before writing. Never package a FAIL result — audit report only goes to output/{TICKET}_remediated/failed/."
+  "agent_usage_instructions": "At the start of each job, after running parse_verapdf_summary.py, look up each failing rule_id in this map. For each match: (a) if manual:true and strategies is empty, emit HERMES_REQUIRED with full rule context; (b) if manual:false, sort strategies by pass_rate desc / pass_count desc / doc_tag_overlap desc and try in order; (c) if all strategies fail, emit HERMES_REQUIRED with full attempt history; (d) if rule_id not found at all, emit HERMES_REQUIRED with unknown_rule flag so the agent researches the rule before writing. Never package a FAIL result — audit report only goes to output/{TICKET}_remediated/failed/."
 }

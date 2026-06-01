@@ -9,7 +9,7 @@ Replaces the agent's need to interpret AGENTS.md step-by-step. Handles:
   - All pre-flight and audit gates
   - Repair plan generation (veraPDF + table semantics)
   - Iterative repair loop with per-rule and per-job caps
-  - Strategy fallback and OPENCLAW_REQUIRED signalling
+  - Strategy fallback and HERMES_REQUIRED signalling
   - Post-repair validation after each iteration
   - QA gates
   - Outcome-aware packaging (PASS/REVIEW_REQUIRED/FAIL/ESCALATION)
@@ -22,14 +22,14 @@ Iteration caps:
 
 The agent's role is reduced to:
   1. Call this script
-  2. Handle OPENCLAW_REQUIRED signals (write new scripts, register in rule map)
+  2. Handle HERMES_REQUIRED signals (write new scripts, register in rule map)
   3. Provide metadata args (--title, --subject, --keywords)
 
 Signal layers:
   Layer 1 — execution signals (exit code, missing output, JSON parse failure)
   Layer 2 — outcome signals (rule still fails after mapped script ran)
   Layer 3 — semantic signals (plan wrong for this document, novel failures)
-  OPENCLAW_REQUIRED — agent must write or locate a repair script
+  HERMES_REQUIRED — agent must write or locate a repair script
 
 Usage:
   remediate.py <workspace> <ticket> <source-pdf-basename>
@@ -89,7 +89,7 @@ JOB_HARD_CAP = 50
 
 deviations        = []
 gate_results      = {}
-openclaw_signals  = []
+hermes_signals  = []
 strategy_attempts = defaultdict(list)  # rule_id -> list of attempt records
 start_time        = datetime.now(timezone.utc)
 total_iterations  = 0
@@ -119,7 +119,7 @@ def emit_deviation(step, expected, actual, context, layer):
         'context':  context
     }), flush=True)
 
-def emit_openclaw_required(rule_id, description, failures, reason, attempts=None):
+def emit_hermes_required(rule_id, description, failures, reason, attempts=None):
     signal = {
         'rule_id':              rule_id,
         'description':          description,
@@ -128,9 +128,9 @@ def emit_openclaw_required(rule_id, description, failures, reason, attempts=None
         'strategies_attempted': attempts or [],
         'timestamp':            datetime.now(timezone.utc).isoformat()
     }
-    openclaw_signals.append(signal)
+    hermes_signals.append(signal)
     print(json.dumps({
-        'phase':   'OPENCLAW_REQUIRED',
+        'phase':   'HERMES_REQUIRED',
         'rule_id': rule_id,
         'reason':  reason,
         'data':    signal
@@ -618,11 +618,11 @@ try:
     plan_data = json.loads(out)
     plan_path.write_text(json.dumps(plan_data, indent=2))
 except Exception:
-    plan_data = {'result': 'NO_FAILURES', 'repair_steps': [], 'openclaw_required': [], 'unknown_rules': []}
+    plan_data = {'result': 'NO_FAILURES', 'repair_steps': [], 'hermes_required': [], 'unknown_rules': []}
     plan_path.write_text(json.dumps(plan_data, indent=2))
 
 repair_steps       = plan_data.get('repair_steps', [])
-openclaw_required  = plan_data.get('openclaw_required', [])
+hermes_required  = plan_data.get('hermes_required', [])
 unknown_rules      = plan_data.get('unknown_rules', [])
 
 # Inject table headers fix if TH scope issues found and not already in plan
@@ -652,14 +652,14 @@ if th_missing > 0 and not has_table_fix:
 emit('PLAN', 'lookup_repair_plan', plan_data.get('result', 'UNKNOWN'),
      data={
          'repair_steps':      len(repair_steps),
-         'openclaw_required': len(openclaw_required),
+         'hermes_required': len(hermes_required),
          'unknown_rules':     len(unknown_rules),
          'th_fix_injected':   th_missing > 0 and not has_table_fix
      })
 
-# Emit OPENCLAW_REQUIRED signals for all rules needing agent intervention
-for oc in openclaw_required:
-    emit_openclaw_required(
+# Emit HERMES_REQUIRED signals for all rules needing agent intervention
+for oc in hermes_required:
+    emit_hermes_required(
         oc['rule_id'], oc.get('description', ''),
         oc.get('failures', 0), oc['reason'],
         oc.get('strategies_attempted', [])
@@ -692,7 +692,7 @@ emit('PLAN', 'alt_text_branch', alt_branch)
 #   2. Run repair script
 #   3. Run full validate cycle (veraPDF + preservation + metadata)
 #   4. Mark rule resolved or log attempt and try next strategy next iteration
-#   5. If per-rule cap hit (15): emit OPENCLAW_REQUIRED, continue with other rules
+#   5. If per-rule cap hit (15): emit HERMES_REQUIRED, continue with other rules
 #   6. If per-job cap hit (50): force termination
 #   7. Log all attempts to strategy_attempts.json
 #
@@ -787,7 +787,7 @@ while unresolved_scripts and total_iterations < JOB_HARD_CAP:
         uncapped_rules  = [r for r in rule_ids if per_rule_counts[r] <  PER_RULE_CAP]
         if not uncapped_rules:
             for r in capped_rules:
-                emit_openclaw_required(
+                emit_hermes_required(
                     r, '', 0, 'per_rule_cap_reached',
                     strategy_attempts.get(r, [])
                 )
@@ -1031,7 +1031,7 @@ while unresolved_scripts and total_iterations < JOB_HARD_CAP:
                 'reason':    fail_reason
             })
             if per_rule_counts[r] >= PER_RULE_CAP:
-                emit_openclaw_required(
+                emit_hermes_required(
                     r, '', 0, 'per_rule_cap_reached',
                     strategy_attempts.get(r, [])
                 )
@@ -1064,7 +1064,7 @@ while unresolved_scripts and total_iterations < JOB_HARD_CAP:
         else:
             for r in still_failing:
                 if per_rule_counts[r] < PER_RULE_CAP:
-                    emit_openclaw_required(
+                    emit_hermes_required(
                         r, '', 0, 'all_strategies_exhausted',
                         strategy_attempts.get(r, [])
                     )
@@ -1083,7 +1083,7 @@ if total_iterations >= JOB_HARD_CAP:
          note=f'Job reached {JOB_HARD_CAP} iteration hard cap. Forcing termination.')
     for step in unresolved_scripts:
         for r in step['rules_addressed']:
-            emit_openclaw_required(r, '', 0, 'job_hard_cap_reached',
+            emit_hermes_required(r, '', 0, 'job_hard_cap_reached',
                                    strategy_attempts.get(r, []))
 
 FINAL_PDF = current_pdf
@@ -1189,13 +1189,13 @@ critical_fails = [k for k, v in gate_results.items()
                   if not is_pass(v)
                   and k in ('verapdf_post', 'metadata_post', 'preservation_post')]
 
-has_unresolved_openclaw = len(openclaw_signals) > 0
+has_unresolved_hermes = len(hermes_signals) > 0
 
 if critical_fails:
     overall = 'FAIL'
-elif has_unresolved_openclaw and total_iterations >= JOB_HARD_CAP:
+elif has_unresolved_hermes and total_iterations >= JOB_HARD_CAP:
     overall = 'ESCALATION'
-elif has_unresolved_openclaw:
+elif has_unresolved_hermes:
     overall = 'REVIEW_REQUIRED'
 elif deviations:
     overall = 'REVIEW_REQUIRED'
@@ -1205,17 +1205,17 @@ else:
 emit('PACKAGE', 'overall_result', overall,
      data={'critical_fails':           critical_fails,
            'deviations':               len(deviations),
-           'openclaw_signals':         len(openclaw_signals),
+           'hermes_signals':         len(hermes_signals),
            'total_iterations':         total_iterations,
            'iteration_warning_issued': total_iterations >= JOB_WARN_AT})
 
 # Write STATUS.json
 emit('PACKAGE', 'status_json', 'RUNNING')
 
-# Persist OPENCLAW_REQUIRED signals to a sidecar that status_json_writer can read
+# Persist HERMES_REQUIRED signals to a sidecar that status_json_writer can read
 try:
-    (AUDIT_DIR / 'openclaw_signals.json').write_text(
-        json.dumps(openclaw_signals, indent=2)
+    (AUDIT_DIR / 'hermes_signals.json').write_text(
+        json.dumps(hermes_signals, indent=2)
     )
 except Exception:
     pass
@@ -1228,7 +1228,7 @@ try:
             'overall_result':   overall,
             'critical_fails':   critical_fails,
             'total_iterations': total_iterations,
-            'has_openclaw':     len(openclaw_signals) > 0,
+            'has_hermes':     len(hermes_signals) > 0,
         }, indent=2)
     )
 except Exception:
@@ -1312,7 +1312,7 @@ elif overall in ('FAIL', 'ESCALATION'):
         for k in critical_fails:
             f.write(f'- `{k}`: {gate_results.get(k, "UNKNOWN")}\n')
         f.write('\n## Rules requiring agent intervention\n\n')
-        for sig in openclaw_signals:
+        for sig in hermes_signals:
             f.write(f'### {sig["rule_id"]}\n')
             f.write(f'**Reason:** {sig["reason"]}  \n')
             f.write(f'**Description:** {sig.get("description", "")}  \n')
@@ -1352,7 +1352,7 @@ summary = {
     'final_pdf':             str(FINAL_PDF),
     'gates':                 gate_results,
     'deviations':            deviations,
-    'openclaw_signals':      openclaw_signals,
+    'hermes_signals':      hermes_signals,
     'resolved_rules':        sorted(resolved_rules),
     'total_iterations':      total_iterations,
     'iteration_warning':     total_iterations >= JOB_WARN_AT,
