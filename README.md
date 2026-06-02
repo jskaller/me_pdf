@@ -12,10 +12,10 @@ Clean Hermes-based baseline for the Montefiore PDF/UA remediation environment.
 
 ## First-time setup
 
-Copy the example environment file:
+Create a local `.env` file if one does not already exist:
 
 ```bash
-cp .env.example .env
+test -f .env || cp .env.example .env
 ```
 
 Edit `.env` and set your local values, especially:
@@ -100,6 +100,32 @@ docker compose restart hermes
 
 This prevents Hermes from continuing to use a stale provider key from `hermes/data/.env`.
 
+## Provider-side NIM verification
+
+Before debugging Hermes or Open WebUI, verify the configured NVIDIA NIM models directly:
+
+```bash
+./scripts/verify-nim-config.sh
+```
+
+This validates:
+
+```text
+PRIMARY_MODEL=stepfun-ai/step-3.7-flash
+VISION_MODEL=meta/llama-4-maverick-17b-128e-instruct
+```
+
+The script reads `.env` without sourcing it, so `.env` is not executed as shell code.
+
+Expected result:
+
+```text
+HTTP/2 200 for stepfun-ai/step-3.7-flash
+HTTP/2 200 for meta/llama-4-maverick-17b-128e-instruct
+```
+
+If this script fails, fix the NVIDIA key/model configuration before debugging Docker, Hermes, or Open WebUI.
+
 ## Quick verification
 
 Check that the dashboard and Open WebUI are serving:
@@ -109,12 +135,25 @@ curl -fsS http://127.0.0.1:9119 >/dev/null && echo "Hermes dashboard ok"
 curl -fsS http://127.0.0.1:8080/_app/version.json
 ```
 
-Check that the Hermes API exposes the configured model:
+Check that the Hermes API exposes the configured model.
+
+This command reads `API_SERVER_KEY` from `.env` without sourcing the file:
 
 ```bash
-set -a
-source .env
-set +a
+API_SERVER_KEY="$(
+  python3 - <<'PY'
+from pathlib import Path
+
+for raw in Path(".env").read_text().splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    if key.strip() == "API_SERVER_KEY":
+        print(value.strip().strip('"').strip("'"))
+        break
+PY
+)"
 
 curl -sS \
   -H "Authorization: Bearer ${API_SERVER_KEY}" \
@@ -152,4 +191,3 @@ These files contain local secrets or runtime state and should remain uncommitted
 .env
 hermes/data/
 hermes/open-webui/
-```
