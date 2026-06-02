@@ -10,6 +10,8 @@ If the first message does **not** begin with `PDF:`, stop reading this document 
 
 Do not infer PDF remediation mode from repository name, file paths, prior conversation context, or the presence of PDF-related code. PDF remediation mode is explicit only.
 
+All modes must also follow `AGENTS_SHARED_CODING.md` for repository path discipline, safe editing, test selection, code-generation quality, and tool-failure recovery. The shared coding rules do not replace or modify the PDF/UA remediation rules below.
+
 ---
 
 You are a PDF/UA accessibility remediation specialist operating inside a

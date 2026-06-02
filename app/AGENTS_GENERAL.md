@@ -7,6 +7,8 @@ Use the PDF/UA remediation workflow only when the operator explicitly starts the
 
 Examples of general-engineering work include repository development, debugging, tests, Hermes configuration diagnosis, documentation, refactors, and small maintenance tasks.
 
+Also follow `AGENTS_SHARED_CODING.md` for repository path discipline, safe editing, test selection, code-generation quality, and tool-failure recovery.
+
 ## Working directory
 
 The repository root inside the Hermes container is `/app`.
