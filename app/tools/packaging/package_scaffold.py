@@ -32,51 +32,55 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 if len(sys.argv) < 4:
-    print('usage: package_scaffold.py <workspace-root> <ticket-id> <source-pdf-basename>',
-          file=sys.stderr)
-    sys.exit(2)
+ print('usage: package_scaffold.py <workspace-root> <ticket-id> <source-pdf-basename>',
+ file=sys.stderr)
+ sys.exit(2)
 
-workspace    = Path(sys.argv[1])
-ticket       = sys.argv[2]
-basename     = Path(sys.argv[3]).stem  # strip .pdf if present
+workspace = Path(sys.argv[1])
+ticket = sys.argv[2]
+basename = Path(sys.argv[3]).stem # strip .pdf if present
 
 # Sanitise basename for directory name
 safe_basename = basename.replace(' ', '_').replace('/', '_')
 
-job_name     = f'{ticket}_{safe_basename}'
-job_dir      = workspace / 'jobs'    / job_name
-output_dir   = workspace / 'output'  / f'{ticket}_remediated'
+job_name = f'{ticket}_{safe_basename}'
+job_dir = workspace / 'jobs' / job_name
+output_dir = workspace / 'output' / f'{ticket}_remediated'
 
 # Create jobs/ subdirectories
 job_subdirs = ['audit', 'repair', 'qa', 'reports']
 for sub in job_subdirs:
-    (job_dir / sub).mkdir(parents=True, exist_ok=True)
+ (job_dir / sub).mkdir(parents=True, exist_ok=True)
 
 # Create output/ directory (no subdirs yet — only created when needed)
 output_dir.mkdir(parents=True, exist_ok=True)
 
-# Write STATUS.json stub to jobs/ dir
+# Write STATUS.json stub to jobs/ dir.
+# Preserve an existing STATUS.json on re-entry (supports --resume / idempotent
+# scaffold). Only write IN_PROGRESS when STATUS.json is absent.
+status_path = job_dir / 'STATUS.json'
 status = {
-    'job_name':      job_name,
-    'ticket':        ticket,
-    'source_basename': basename,
-    'created_at':    datetime.now(timezone.utc).isoformat(),
-    'result':        'IN_PROGRESS',
-    'gates': {
-        'qpdf':              None,
-        'ocr_detection':     None,
-        'verapdf_pdfua1':    None,
-        'verapdf_wcag':      None,
-        'metadata_parity':   None,
-        'preservation':      None,
-        'table_semantics':   None,
-        'contrast':          None,
-        'alt_text':          None,
-        'render_compare':    None,
-        'visual_qa':         None,
-    }
+ 'job_name': job_name,
+ 'ticket': ticket,
+ 'source_basename': basename,
+ 'created_at': datetime.now(timezone.utc).isoformat(),
+ 'result': 'IN_PROGRESS',
+ 'gates': {
+ 'qpdf': None,
+ 'ocr_detection': None,
+ 'verapdf_pdfua1': None,
+ 'verapdf_wcag': None,
+ 'metadata_parity': None,
+ 'preservation': None,
+ 'table_semantics': None,
+ 'contrast': None,
+ 'alt_text': None,
+ 'render_compare': None,
+ 'visual_qa': None,
+ }
 }
-(job_dir / 'STATUS.json').write_text(json.dumps(status, indent=2))
+if not status_path.exists():
+ status_path.write_text(json.dumps(status, indent=2))
 
 print(json.dumps({
     'result':        'OK',
