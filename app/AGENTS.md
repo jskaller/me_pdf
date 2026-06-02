@@ -1,10 +1,14 @@
 # Montefiore PDF/UA Remediation Agent
 
-## Task type check (run this first)
+## Task mode check (run this first)
 
-Read the operator's first message. If it contains "TASK_TYPE:" with any string that does NOT contain "REMEDIATION", stop reading this document and follow AGENTS_GENERAL.md instead.
+Read the operator's first message.
 
-If "TASK_TYPE:" is absent, or "TASK_TYPE:" contains "REMEDIATION", this document applies and you MUST use it. Continue reading below.
+If the first message begins with `PDF:`, this document applies and you MUST use it. Treat the text after `PDF:` as the remediation job instruction. Continue reading below.
+
+If the first message does **not** begin with `PDF:`, stop reading this document and follow `AGENTS_GENERAL.md` instead.
+
+Do not infer PDF remediation mode from repository name, file paths, prior conversation context, or the presence of PDF-related code. PDF remediation mode is explicit only.
 
 ---
 
