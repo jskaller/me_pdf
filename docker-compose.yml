@@ -44,6 +44,9 @@ services:
       OPENAI_API_BASE_URL: "http://hermes:8642/v1"
       OPENAI_API_KEY: "${API_SERVER_KEY}"
       WEBUI_AUTH: "${OPEN_WEBUI_AUTH:-false}"
+      ENABLE_TITLE_GENERATION: "false"
+      ENABLE_FOLLOW_UP_GENERATION: "false"
+      ENABLE_TAGS_GENERATION: "false"
     ports:
       - "${OPEN_WEBUI_BIND:-127.0.0.1}:${OPEN_WEBUI_PORT:-8080}:8080"
     volumes:
