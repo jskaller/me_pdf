@@ -173,6 +173,19 @@ def verdict(inputs: VerdictInput) -> VerdictResult:
             blocking_qa.append(gate)
             reasons.append(f"{gate} is {norm}")
 
+    # Translate experimental_profile_failures into informational_flags so
+    # callers never have to reason about them separately. Must run before
+    # the critical_fails early-return so informational flags are preserved
+    # even when a compliance gate has also failed.
+    for raw_exp in inputs.experimental_profile_failures:
+        try:
+            exp_gate = canonicalize_gate_key(str(raw_exp))
+        except KeyError:
+            continue
+        if exp_gate not in informational_flags:
+            informational_flags.append(exp_gate)
+            reasons.append(f"informational profile {exp_gate} reported failures")
+
     if critical_fails:
         return VerdictResult(
             overall=FAIL,
@@ -214,17 +227,6 @@ def verdict(inputs: VerdictInput) -> VerdictResult:
             reasons=reasons + ["layer-1 deviations present"],
             input_gates=inputs.gates,
         )
-
-    # Translate experimental_profile_failures into informational_flags so
-    # callers never have to reason about them separately.
-    for raw_exp in inputs.experimental_profile_failures:
-        try:
-            exp_gate = canonicalize_gate_key(str(raw_exp))
-        except KeyError:
-            continue
-        if exp_gate not in informational_flags:
-            informational_flags.append(exp_gate)
-            reasons.append(f"informational profile {exp_gate} reported failures")
 
     if blocking_qa or informational_flags or inputs.pending_review_rules:
         return VerdictResult(
