@@ -184,7 +184,99 @@ if all_legacy_ok:
 else:
     failed.append("legacy_name_canonicalisation")
 
-# T8: final compile check on all four touched files
+print("\n=== T9: verdict_input.json P2 fallback wins over stale STATUS.json ===")
+d = Path(tempfile.mkdtemp(prefix="m1_t9_"))
+(d / "audit").mkdir()
+# Orchestrator outcome absent → P1 falls through
+# verdict_input.json with hard FAIL (verapdf_pdfua1)
+(d / "audit/verdict_input.json").write_text(json.dumps({
+    "gates": {
+        "verapdf_pdfua1": {"result": "FAIL", "source": "orchestrator"},
+        "verapdf_wcag":   {"result": "PASS", "source": "orchestrator"},
+        "metadata_parity": {"result": "PASS", "source": "orchestrator"},
+        "preservation":   {"result": "PASS", "source": "orchestrator"},
+    },
+    "hermes_signals_count": 0, "deviations_count": 0,
+    "total_iterations": 2, "job_hard_cap": 50,
+    "experimental_profile_failures": [],
+}))
+# Stale STATUS.json claims PASS — verdict_input should override
+(d / "STATUS.json").write_text(json.dumps({
+    "overall_result": "PASS",
+    "gates": {"verapdf_pdfua1": {"result": "PASS"}},
+    "verdict_mismatch": True,
+}))
+rc, status_out, stderr = run_writer(d)
+# rc=1 is correct for FAIL (writer exits 1 on hard FAIL); overall=FAIL proves P2 ran
+check("rc=1 for hard FAIL (correct per writer contract)",
+      rc == 1, f"rc={rc} (FAIL should exit 1)")
+check("overall_result is FAIL from verdict_input.json",
+      status_out.get("overall_result") == "FAIL",
+      f"got {status_out.get('overall_result')}")
+# critical_fails lives at status["verdict"]["critical_fails"]
+verdict_block = status_out.get("verdict", {})
+check("verapdf_pdfua1 in verdict.critical_fails",
+      "verapdf_pdfua1" in verdict_block.get("critical_fails", []),
+      f"verdict.critical_fails={verdict_block.get('critical_fails')}")
+shutil.rmtree(d)
+
+print("\n=== T10: verdict_input.json informational-only FAIL → REVIEW_REQUIRED ===")
+d = Path(tempfile.mkdtemp(prefix="m1_t10_"))
+(d / "audit").mkdir()
+# Orchestrator outcome absent; verdict_input has ONLY informational FAIL
+(d / "audit/verdict_input.json").write_text(json.dumps({
+    "gates": {
+        "verapdf_pdfua1": {"result": "PASS", "source": "orchestrator"},
+        "verapdf_wcag":   {"result": "PASS", "source": "orchestrator"},
+        "metadata_parity": {"result": "PASS", "source": "orchestrator"},
+        "preservation":   {"result": "PASS", "source": "orchestrator"},
+    },
+    "hermes_signals_count": 0, "deviations_count": 0,
+    "total_iterations": 1, "job_hard_cap": 50,
+    "experimental_profile_failures": ["verapdf_iso"],  # informational only
+}))
+rc, status_out, stderr = run_writer(d)
+check("writer exits 0", rc == 0, f"rc={rc} stderr={stderr[:200]}")
+check("overall_result is REVIEW_REQUIRED (informational FAIL is not hard FAIL)",
+      status_out.get("overall_result") == "REVIEW_REQUIRED",
+      f"got {status_out.get('overall_result')}")
+# informational_flags lives at status["verdict"]["informational_flags"]
+verdict_block = status_out.get("verdict", {})
+check("verapdf_iso is verdict.informational_flags not critical_fails",
+      "verapdf_iso" in verdict_block.get("informational_flags", []),
+      f"verdict.informational_flags={verdict_block.get('informational_flags')}")
+shutil.rmtree(d)
+
+print("\n=== T11: P2 path also covers informational + hard mixed FAIL ===")
+d = Path(tempfile.mkdtemp(prefix="m1_t11_"))
+(d / "audit").mkdir()
+# verdict_input has both informational (iso) and hard (pdfua1) failures
+(d / "audit/verdict_input.json").write_text(json.dumps({
+    "gates": {
+        "verapdf_pdfua1": {"result": "FAIL", "source": "orchestrator"},
+        "verapdf_wcag":   {"result": "PASS", "source": "orchestrator"},
+        "metadata_parity": {"result": "PASS", "source": "orchestrator"},
+        "preservation":   {"result": "PASS", "source": "orchestrator"},
+    },
+    "hermes_signals_count": 0, "deviations_count": 0,
+    "total_iterations": 2, "job_hard_cap": 50,
+    "experimental_profile_failures": ["verapdf_iso"],
+}))
+rc, status_out, stderr = run_writer(d)
+check("rc=1 for hard FAIL", rc == 1, f"rc={rc}")
+check("overall_result is FAIL (hard gate beats informational)",
+      status_out.get("overall_result") == "FAIL",
+      f"got {status_out.get('overall_result')}")
+verdict_block = status_out.get("verdict", {})
+check("verapdf_pdfua1 in verdict.critical_fails",
+      "verapdf_pdfua1" in verdict_block.get("critical_fails", []),
+      f"verdict.critical_fails={verdict_block.get('critical_fails')}")
+check("verapdf_iso in verdict.informational_flags",
+      "verapdf_iso" in verdict_block.get("informational_flags", []),
+      f"verdict.informational_flags={verdict_block.get('informational_flags')}")
+shutil.rmtree(d)
+
+# T12: final compile check on all four touched files
 print("\n=== T8: all touched files compile cleanly ===")
 import py_compile
 files = [
