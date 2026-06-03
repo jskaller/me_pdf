@@ -1098,15 +1098,47 @@ run(['bash', TOOLS/'audit'/'run_verapdf_profiles.sh',
     'verapdf_final')
 
 for src, dst in [
-    (AUDIT_DIR/'verapdf_pdfua_ua1.xml',       AUDIT_DIR/'verapdf_post_pdfua1.xml'),
-    (AUDIT_DIR/'verapdf_wcag_2_2_machine.xml', AUDIT_DIR/'verapdf_post_wcag.xml'),
+    (AUDIT_DIR/'verapdf_pdfua_ua1.xml',           AUDIT_DIR/'verapdf_post_pdfua1.xml'),
+    (AUDIT_DIR/'verapdf_wcag_2_2_machine.xml',    AUDIT_DIR/'verapdf_post_wcag.xml'),
+    (AUDIT_DIR/'verapdf_iso_32000_1_tagged.xml',  AUDIT_DIR/'verapdf_post_iso.xml'),
+    (AUDIT_DIR/'verapdf_pdfua2.xml',              AUDIT_DIR/'verapdf_post_pdfua2.xml'),
 ]:
     if Path(src).exists():
         shutil.copy2(src, dst)
 
-verapdf_post        = load_json(AUDIT_DIR/'verapdf_summary.json')
-verapdf_post_result = get_result(verapdf_post)
-gate_results['verapdf_post'] = verapdf_post_result
+# Keep verapdf_summary.json as a diagnostic artifact only — do NOT assign
+# to gate_results['verapdf_post']; only canonical per-profile gates drive the
+# compliance outcome (see verapdf_pdfua1 / verapdf_wcag below).
+verapdf_summary = load_json(AUDIT_DIR/'verapdf_summary.json')
+emit('AUDIT', 'verapdf_summary', get_result(verapdf_summary),
+     note='diagnostic artifact — does not drive compliance outcome')
+
+def _verapdf_xml_result(path):
+    """Return PASS / FAIL / UNKNOWN from a veraPDF profile XML file."""
+    try:
+        import xml.etree.ElementTree as ET
+        for _, elem in ET.iterparse(str(path), events=('end',)):
+            tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+            if tag in ('validationReport', 'arlingtonReport'):
+                if elem.get('isCompliant', 'true').lower() == 'true':
+                    return 'PASS'
+                for rule in elem.iter():
+                    rtag = rule.tag.split('}')[-1] if '}' in rule.tag else rule.tag
+                    if rtag == 'rule':
+                        failed = int(rule.get('failedChecks', rule.get('deviations', 0)))
+                        if failed > 0:
+                            return 'FAIL'
+                return 'PASS'
+    except Exception:
+        pass
+    return 'UNKNOWN'
+
+gate_results['verapdf_pdfua1'] = _verapdf_xml_result(AUDIT_DIR/'verapdf_post_pdfua1.xml')
+gate_results['verapdf_wcag']   = _verapdf_xml_result(AUDIT_DIR/'verapdf_post_wcag.xml')
+if (AUDIT_DIR/'verapdf_post_iso.xml').exists():
+    gate_results['verapdf_iso'] = _verapdf_xml_result(AUDIT_DIR/'verapdf_post_iso.xml')
+if (AUDIT_DIR/'verapdf_post_pdfua2.xml').exists():
+    gate_results['verapdf_pdfua2'] = _verapdf_xml_result(AUDIT_DIR/'verapdf_post_pdfua2.xml')
 
 rc2, out2, _ = run(
     ['python3', TOOLS/'audit'/'parse_verapdf_summary.py',
@@ -1122,7 +1154,9 @@ except Exception:
     post_failures = {'failures_by_rule': []}
 
 remaining_failures = post_failures.get('failures_by_rule', [])
-emit('VALIDATE', 'final_verapdf', verapdf_post_result,
+
+hard_pass = is_pass(gate_results['verapdf_pdfua1']) and is_pass(gate_results['verapdf_wcag'])
+emit('VALIDATE', 'final_verapdf', 'PASS' if hard_pass else 'FAIL',
      data={'remaining_failures': len(remaining_failures)})
 
 # Metadata post
@@ -1187,7 +1221,7 @@ emit('QA', 'visual_qa', vqa_result)
 
 critical_fails = [k for k, v in gate_results.items()
                   if not is_pass(v)
-                  and k in ('verapdf_post', 'metadata_post', 'preservation_post')]
+                  and k in ('verapdf_pdfua1', 'verapdf_wcag', 'metadata_post', 'preservation_post')]
 
 has_unresolved_hermes = len(hermes_signals) > 0
 
