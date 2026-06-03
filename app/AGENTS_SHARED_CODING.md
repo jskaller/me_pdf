@@ -94,6 +94,10 @@ Do not silently downgrade, skip, or fabricate results.
 If a tool, file, model, or dependency is missing, report the blocker clearly.
 Fallbacks must be explicit and visible in output or status.
 
+## Response discipline
+
+Do not send shell commands as chat responses when the operator asks for commands to run locally.
+
 ## Testing ladder
 
 Use the smallest useful verification before broader tests:
