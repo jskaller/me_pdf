@@ -1106,9 +1106,10 @@ for src, dst in [
     if Path(src).exists():
         shutil.copy2(src, dst)
 
-# Keep verapdf_summary.json as a diagnostic artifact only — do NOT assign
-# to gate_results['verapdf_post']; only canonical per-profile gates drive the
-# compliance outcome (see verapdf_pdfua1 / verapdf_wcag below).
+# Keep verapdf_summary.json as a diagnostic artifact only — it aggregates
+# all profiles (informational included) and does NOT drive compliance.
+# Only canonical per-profile gates (verapdf_pdfua1, verapdf_wcag,
+# metadata_post, preservation_post) determine the compliance outcome.
 verapdf_summary = load_json(AUDIT_DIR/'verapdf_summary.json')
 emit('AUDIT', 'verapdf_summary', get_result(verapdf_summary),
      note='diagnostic artifact — does not drive compliance outcome')

@@ -274,7 +274,7 @@ The orchestrator's `overall_result` is one of:
 |---------|---------|-----------------|-------------|
 | `PASS` | Everything resolved, document compliant | `output/{TICKET}_remediated/{name}_remediated.pdf` + `_AUDIT_REPORT.md` | Upload both to Jira after axesCheck + PAC 2024 sign-off |
 | `REVIEW_REQUIRED` | Document compliant but some issues need human inspection | `output/{TICKET}_remediated/review/` | Operator inspects before uploading |
-| `FAIL` | Critical gate failed (verapdf_post, metadata_post, or preservation_post) | `output/{TICKET}_remediated/failed/` — audit report only, no remediated PDF | Do not upload remediated PDF; escalate |
+| `FAIL` | Critical gate failed (verapdf_pdfua1, verapdf_wcag, metadata_post, or preservation_post) | `output/{TICKET}_remediated/failed/` — audit report only, no remediated PDF | Do not upload remediated PDF; escalate |
 | `ESCALATION` | Per-rule or per-job cap hit; rule could not be automated | `output/{TICKET}_remediated/failed/` + `ESCALATION_REPORT.md` | Engineering review required |
 
 ---
