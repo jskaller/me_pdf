@@ -191,3 +191,22 @@ These files contain local secrets or runtime state and should remain uncommitted
 .env
 hermes/data/
 hermes/open-webui/
+
+## Hermes model configuration
+
+Hermes model selection is controlled from the repo-level `.env` file. This keeps handoff simple: each operator should copy `.env.example` to `.env`, set their gateway/API key and model values, then sync Hermes runtime config.
+
+Relevant values:
+
+    NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
+    PRIMARY_PROVIDER=nvidia
+    PRIMARY_MODEL=moonshotai/kimi-k2.6
+    VISION_PROVIDER=nvidia
+    VISION_MODEL=meta/llama-4-maverick-17b-128e-instruct
+
+Apply the `.env` values to Hermes with:
+
+    ./scripts/sync-hermes-env.sh
+    docker compose restart hermes
+
+Do not commit `.env`, `hermes/data/.env`, or Hermes runtime `config.yaml` files. Those are local/runtime state.
