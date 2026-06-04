@@ -1,6 +1,9 @@
 services:
   hermes:
-    image: nousresearch/hermes-agent:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: me-pdf-hermes:local
     container_name: pdf-remediation-hermes
     restart: unless-stopped
     command: gateway run
