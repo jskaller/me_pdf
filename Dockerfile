@@ -159,10 +159,18 @@ rm -rf \
 SCRIPT
 
 # Install the current repo's Python remediation requirements.
-# The requirements file remains the source of truth for Python packages.
+# The requirements file remains the source of truth for system Python packages.
+#
+# The Hermes base image runs its gateway/tooling under /opt/hermes/.venv/bin/python3,
+# but that venv does not include pip. Use system pip to install only the verified
+# missing runtime dependency, PyMuPDF, into the Hermes venv site-packages so
+# Hermes-invoked remediation tools can import fitz without disturbing Hermes'
+# own pinned dependencies.
 WORKDIR /app
 COPY app/requirements.txt /tmp/requirements.txt
 RUN /usr/bin/python3 -m pip install --no-cache-dir --break-system-packages -r /tmp/requirements.txt \
+    && hermes_site="$('/opt/hermes/.venv/bin/python3' -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" \
+    && /usr/bin/python3 -m pip install --no-cache-dir --break-system-packages --target "$hermes_site" pymupdf==1.27.1 \
     && rm -f /tmp/requirements.txt
 
 # Keep validation profiles in the image, then seed them into the bind-mounted
