@@ -490,8 +490,25 @@ if ocr_data and ocr_data.get('ocr_required'):
                'char_count_before': ocr_data.get('char_count', 0),
                'char_count_after':  ocr_data2.get('char_count', 0)})
     emit('PREFLIGHT', 'ocr_remediation_validate', ocr_result2)
-    PASS0 = ocr_out   # continue pipeline against OCR artifact
+    ocr_input = PASS0   # preserve pre-OCR path for strategy record
+    PASS0 = ocr_out     # continue pipeline against OCR artifact
     gate_results['ocr_detection'] = 'PASS'   # ocr was the barrier; now cleared
+
+    # Record in the same strategy_attempts ledger used by the repair loop
+    strategy_attempts['local/OCR_REQUIRED'].append({
+        'iteration': 0,
+        'strategy':  'ocrmypdf_working_copy',
+        'script':     'ocrmypdf',
+        'result':     'PASS',
+        'input_pdf':  str(ocr_input),
+        'output_pdf': str(ocr_out),
+        'exit_code':  rc_ocr,
+        'validation_artifact': str(AUDIT_DIR / 'detect_image_only_pages_ocr.json'),
+        'char_count_before': ocr_data.get('char_count', 0),
+        'char_count_after':  ocr_data2.get('char_count', 0),
+        'source_pdf_modified': False,
+        'promotable': True
+    })
 else:
     emit('PREFLIGHT', 'ocr_detection', ocr_result)
 
