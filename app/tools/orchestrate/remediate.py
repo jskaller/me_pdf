@@ -859,6 +859,25 @@ while unresolved_scripts and total_iterations < JOB_HARD_CAP:
                     script_results[script] = {'step': step, 'result': 'DRAFTS_FAILED', 'executed': False}
                     continue
 
+                drafts_data = load_json(drafts_json)
+                if not drafts_data:
+                    emit_deviation(f'{script_label}_drafts', 'valid drafts JSON', 'invalid or unreadable JSON', 'Branch B draft generation produced an unreadable JSON file', layer=1)
+                    script_results[script] = {'step': step, 'result': 'DRAFTS_INVALID', 'executed': False}
+                    continue
+                figures_total = int(drafts_data.get('figures_total') or 0)
+                figures_drafted = int(drafts_data.get('figures_drafted') or 0)
+                draft_result = drafts_data.get('result', 'UNKNOWN')
+                if figures_total > 0 and figures_drafted == 0:
+                    emit_deviation(
+                        f'{script_label}_drafts',
+                        'figures_drafted > 0 when figures_total > 0',
+                        f'figures_total={figures_total}, figures_drafted={figures_drafted}, result={draft_result}',
+                        json.dumps(drafts_data.get('errors', []))[:500],
+                        layer=1
+                    )
+                    script_results[script] = {'step': step, 'result': 'DRAFTS_EMPTY', 'executed': False}
+                    continue
+
                 # Step B3: generate review report
                 # generate_alt_text_review_report.py writes the pre-approved map
                 # directly via --map-out, and produces the HTML review report.

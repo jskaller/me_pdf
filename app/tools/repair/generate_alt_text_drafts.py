@@ -1,285 +1,386 @@
 #!/usr/bin/env python3
 """
 generate_alt_text_drafts.py
-Uses the configured vision model to generate draft alt text for Figure
-elements that received placeholder text during fix_figure_alt_text.py
-auto-mode repair.
 
-Reads the needs_review list from fix_figure_alt_text.py output, renders
-each figure as a thumbnail, sends it to the vision model with a structured
-prompt, and writes alt_map_draft.json to the job's audit directory.
+Generate draft alt text for Figure elements that received placeholder text
+during fix_figure_alt_text.py auto-mode repair.
 
-Output is explicitly a DRAFT requiring human review via
-generate_alt_text_review_report.py before fix_figure_alt_text.py applies it.
+Default runtime:
+  VISION_TOOLS_MODE=hermes
 
-Usage:
-  generate_alt_text_drafts.py <pdf> --fix-output <fix_figure_output.json>
-                               --out <alt_map_draft.json>
-                               [--instructions <alt_map_instructions.json>]
-                               [--dpi 150]
+In default mode this script calls the local Hermes OpenAI-compatible gateway,
+so the PDF pipeline follows the live Hermes runtime configured by the admin
+console.
 
-Exit codes:
-  0  success — alt_map_draft.json written
-  1  partial — some figures failed, others succeeded
-  2  error — could not proceed
+Debug runtime:
+  VISION_TOOLS_MODE=provider
+
+Provider mode preserves the older direct-provider behavior for explicit tests.
 """
-import sys, json, argparse, os, base64
+
+import argparse
+import base64
+import json
+import os
+import socket
+import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
 try:
     import fitz
 except Exception as e:
-    print(json.dumps({'result': 'ERROR', 'error': f'PyMuPDF unavailable: {e}'}))
+    print(json.dumps({"result": "ERROR", "error": f"PyMuPDF unavailable: {e}"}))
     sys.exit(2)
 
-try:
-    import urllib.request
-    import urllib.error
-except Exception as e:
-    print(json.dumps({'result': 'ERROR', 'error': f'urllib unavailable: {e}'}))
-    sys.exit(2)
 
-parser = argparse.ArgumentParser()
-parser.add_argument('pdf')
-parser.add_argument('--fix-output', required=True,
-                    help='JSON output from fix_figure_alt_text.py (contains needs_review list)')
-parser.add_argument('--out', required=True,
-                    help='Write alt_map_draft.json here')
-parser.add_argument('--instructions', default=None,
-                    help='alt_map_instructions.json from a previous review cycle — '
-                         'overrides vision model prompt for flagged figures')
-parser.add_argument('--dpi', type=int, default=150,
-                    help='DPI for thumbnail rendering (default: 150)')
-args = parser.parse_args()
-
-# ── Environment ───────────────────────────────────────────────────────────────
-
-VISION_BASE_URL  = os.environ.get('VISION_PROVIDER_BASE_URL') or \
-                   os.environ.get('PRIMARY_PROVIDER_BASE_URL', '')
-VISION_API_KEY   = os.environ.get('VISION_PROVIDER_API_KEY') or \
-                   os.environ.get('PRIMARY_PROVIDER_API_KEY', '')
-VISION_MODEL     = os.environ.get('VISION_MODEL', '')
-
-if not VISION_BASE_URL or not VISION_API_KEY or not VISION_MODEL:
-    print(json.dumps({
-        'result': 'ERROR',
-        'error': (
-            'Vision model not configured. Set VISION_PROVIDER_BASE_URL (or '
-            'PRIMARY_PROVIDER_BASE_URL), VISION_PROVIDER_API_KEY (or '
-            'PRIMARY_PROVIDER_API_KEY), and VISION_MODEL environment variables.'
-        )
-    }, indent=2))
-    sys.exit(2)
-
-# ── Load inputs ───────────────────────────────────────────────────────────────
-
-try:
-    fix_output = json.loads(Path(args.fix_output).read_text())
-except Exception as e:
-    print(json.dumps({'result': 'ERROR', 'error': f'Could not read fix output: {e}'}))
-    sys.exit(2)
-
-needs_review = fix_output.get('needs_review', [])
-if not needs_review:
-    output = json.dumps({
-        'result': 'SKIPPED',
-        'note':   'No figures in needs_review list — nothing to generate drafts for.',
-        'figures': {}
-    }, indent=2)
-    print(output)
-    Path(args.out).write_text(output)
-    sys.exit(0)
-
-# Load previous instructions if provided (resubmit cycle)
-instructions = {}
-if args.instructions:
+def env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
     try:
-        inst_data = json.loads(Path(args.instructions).read_text())
-        instructions = {
-            str(k): v.get('instruction', '')
-            for k, v in inst_data.get('figures', {}).items()
-            if v.get('instruction')
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def safe_body_snippet(raw: bytes, limit: int = 600) -> str:
+    try:
+        text = raw.decode("utf-8", errors="replace")
+    except Exception:
+        text = repr(raw)
+    return text[:limit]
+
+
+def resolve_runtime() -> Dict[str, Any]:
+    mode = os.environ.get("VISION_TOOLS_MODE", "hermes").strip().lower() or "hermes"
+    timeout = env_int("VISION_PROVIDER_TIMEOUT", 120)
+    retries = max(1, env_int("VISION_PROVIDER_RETRIES", 1))
+
+    if mode == "provider":
+        base_url = (
+            os.environ.get("VISION_PROVIDER_BASE_URL")
+            or os.environ.get("PRIMARY_PROVIDER_BASE_URL")
+            or ""
+        ).rstrip("/")
+        api_key = (
+            os.environ.get("VISION_PROVIDER_API_KEY")
+            or os.environ.get("PRIMARY_PROVIDER_API_KEY")
+            or ""
+        )
+        model = os.environ.get("VISION_MODEL", "")
+        if not base_url or not api_key or not model:
+            raise RuntimeError(
+                "Provider vision model not configured. Set VISION_PROVIDER_BASE_URL "
+                "(or PRIMARY_PROVIDER_BASE_URL), VISION_PROVIDER_API_KEY "
+                "(or PRIMARY_PROVIDER_API_KEY), and VISION_MODEL; or use "
+                "VISION_TOOLS_MODE=hermes."
+            )
+        return {
+            "runtime": "provider",
+            "mode": mode,
+            "base_url": base_url,
+            "api_key": api_key,
+            "model": model,
+            "timeout": timeout,
+            "retries": retries,
         }
-    except Exception as e:
-        print(json.dumps({'result': 'ERROR', 'error': f'Could not read instructions: {e}'}))
-        sys.exit(2)
 
-try:
-    doc = fitz.open(args.pdf)
-except Exception as e:
-    print(json.dumps({'result': 'ERROR', 'error': f'Could not open PDF: {e}'}))
-    sys.exit(2)
-
-# ── Vision model call ─────────────────────────────────────────────────────────
-
-def call_vision_model(image_b64: str, figure_index: int, instruction: str = '') -> str:
-    """Send a rendered figure thumbnail to the vision model, return alt text string."""
-
-    if instruction:
-        user_content = (
-            f'This is Figure {figure_index + 1} from a clinical healthcare PDF document. '
-            f'Generate alt text following this instruction: {instruction}. '
-            f'Return only the alt text string, nothing else.'
-        )
-    else:
-        user_content = (
-            f'This is Figure {figure_index + 1} from a clinical healthcare PDF document. '
-            f'Write a concise, accurate alt text description for this image. '
-            f'Requirements: describe what the image shows (chart type, subject, key values if '
-            f'readable); do not describe style or decorative elements; do not identify any '
-            f'people; keep under 150 characters where possible; if the image is decorative '
-            f'(divider, background, purely ornamental) respond with exactly: DECORATIVE. '
-            f'Return only the alt text string, nothing else.'
+    if mode != "hermes":
+        raise RuntimeError(
+            f"Unsupported VISION_TOOLS_MODE={mode!r}. Use 'hermes' or 'provider'."
         )
 
-    payload = json.dumps({
-        'model': VISION_MODEL,
-        'max_tokens': 300,
-        'temperature': 0.0,
-        'messages': [{
-            'role': 'user',
-            'content': [
-                {
-                    'type':       'image_url',
-                    'image_url':  {'url': f'data:image/png;base64,{image_b64}'}
-                },
-                {
-                    'type': 'text',
-                    'text': user_content
-                }
-            ]
-        }]
-    }).encode('utf-8')
+    port = os.environ.get("API_SERVER_PORT", "8642")
+    base_url = os.environ.get("HERMES_GATEWAY_BASE_URL", f"http://127.0.0.1:{port}/v1").rstrip("/")
+    api_key = os.environ.get("API_SERVER_KEY", "")
+    model = os.environ.get("API_SERVER_MODEL_NAME", "Hermes Agent")
 
-    endpoint = VISION_BASE_URL.rstrip('/') + '/chat/completions'
-    req = urllib.request.Request(
-        endpoint,
-        data    = payload,
-        headers = {
-            'Content-Type':  'application/json',
-            'Authorization': f'Bearer {VISION_API_KEY}',
-        },
-        method = 'POST'
-    )
+    if not api_key:
+        raise RuntimeError(
+            "Hermes gateway is not configured. Set API_SERVER_KEY in root .env."
+        )
 
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        data = json.loads(resp.read())
-
-    return data['choices'][0]['message']['content'].strip()
+    return {
+        "runtime": "hermes_gateway",
+        "mode": mode,
+        "base_url": base_url,
+        "api_key": api_key,
+        "model": model,
+        "timeout": timeout,
+        "retries": retries,
+    }
 
 
-def render_figure_thumbnail(doc, page_num: int, dpi: int) -> str | None:
-    """
-    Render the given page and return a base64 PNG thumbnail.
+def post_chat_completion(runtime: Dict[str, Any], messages: list) -> str:
+    endpoint = runtime["base_url"].rstrip("/") + "/chat/completions"
+    payload = json.dumps(
+        {
+            "model": runtime["model"],
+            "max_tokens": 300,
+            "temperature": 0.0,
+            "stream": False,
+            "messages": messages,
+        }
+    ).encode("utf-8")
 
-    We render the full page rather than trying to crop to an image bounding
-    box by xref, because page_num is resolved from the struct tree and we
-    don't have a reliable image xref to crop against.  A full-page render
-    at the configured DPI gives the vision model enough context to describe
-    the figure accurately, and avoids the previous bug where every figure
-    was rendered from page 0.
-    """
+    last_error: Optional[Exception] = None
+    for attempt in range(1, runtime["retries"] + 1):
+        req = urllib.request.Request(
+            endpoint,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {runtime['api_key']}",
+            },
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=runtime["timeout"]) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            message = data["choices"][0]["message"]
+            return (message.get("content") or "").strip()
+        except urllib.error.HTTPError as e:
+            body = safe_body_snippet(e.read())
+            raise RuntimeError(
+                f"HTTP {e.code} from {endpoint}: {body}"
+            ) from e
+        except (urllib.error.URLError, socket.timeout, TimeoutError) as e:
+            last_error = e
+            if attempt < runtime["retries"]:
+                time.sleep(min(2 * attempt, 5))
+                continue
+            raise RuntimeError(
+                f"Request to {endpoint} failed after {attempt} attempt(s): "
+                f"{type(e).__name__}: {e}"
+            ) from e
+        except Exception as e:
+            last_error = e
+            raise RuntimeError(f"Vision request failed: {type(e).__name__}: {e}") from e
+
+    raise RuntimeError(f"Vision request failed: {last_error}")
+
+
+def render_figure_thumbnail(doc: Any, page_num: int, dpi: int) -> Optional[str]:
     try:
         page = doc[page_num]
-        mat  = fitz.Matrix(dpi / 72, dpi / 72)
-        pix  = page.get_pixmap(matrix=mat, alpha=False)
-        return base64.b64encode(pix.tobytes('png')).decode('utf-8')
+        mat = fitz.Matrix(dpi / 72, dpi / 72)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        return base64.b64encode(pix.tobytes("png")).decode("utf-8")
     except Exception:
         return None
 
 
-# ── Process each figure ───────────────────────────────────────────────────────
+def build_user_text(figure_index: int, instruction: str = "") -> str:
+    if instruction:
+        return (
+            f"This is Figure {figure_index + 1} from a clinical healthcare PDF document. "
+            f"Generate alt text following this instruction: {instruction}. "
+            "Return only the alt text string, nothing else."
+        )
 
-results   = {}
-warnings  = []   # non-fatal notices (e.g. legacy entry fallback)
-errors    = []   # hard failures where a figure could not be drafted
-generated = 0
-skipped   = 0
+    return (
+        f"This is Figure {figure_index + 1} from a clinical healthcare PDF document. "
+        "Write a concise, accurate alt text description for this image. "
+        "Requirements: describe what the image shows (chart type, subject, key values if "
+        "readable); do not describe style or decorative elements; do not identify any "
+        "people; keep under 150 characters where possible; if the image is decorative "
+        "respond with exactly: DECORATIVE. Return only the alt text string, nothing else."
+    )
 
-for item in needs_review:
-    fig_idx = item.get('figure_index', 0)
-    inst    = instructions.get(str(fig_idx), '')
 
-    # Prefer page_num recorded by fix_figure_alt_text.py (struct-tree resolved).
-    # Fall back to the old xref_to_page approach only for entries written by an
-    # older version of the script that stored 'xref' instead of 'page_num'.
-    if 'page_num' in item:
-        page_num        = item['page_num']
-        page_resolution = item.get('page_resolution', 'stored')
-    else:
-        # Legacy entries: 'xref' here is the struct element xref, NOT an image
-        # xref — the xref_to_page lookup will almost certainly miss, defaulting
-        # to page 0.  Record a warning (not a hard error) so the run still
-        # counts as PASS if drafts are generated successfully.
-        legacy_xref = item.get('xref', 0)
-        xref_to_page = {}
-        for pn in range(len(doc)):
-            for img_info in doc[pn].get_images(full=True):
-                ix = img_info[0]
-                if ix not in xref_to_page:
-                    xref_to_page[ix] = pn
-        page_num        = xref_to_page.get(legacy_xref, 0)
-        page_resolution = 'legacy_xref_fallback'
-        warnings.append({
-            'figure_index': fig_idx,
-            'warning': (
-                f'needs_review entry for figure {fig_idx} has no page_num — '
-                f'falling back to legacy xref lookup (struct xref {legacy_xref}). '
-                f'Re-run fix_figure_alt_text.py to regenerate with correct page numbers.'
-            )
-        })
-
-    # Render the page this figure lives on
-    thumb_b64 = render_figure_thumbnail(doc, page_num, args.dpi)
-    if thumb_b64 is None:
-        errors.append({
-            'figure_index': fig_idx,
-            'error':        f'Could not render page {page_num} — figure skipped'
-        })
-        skipped += 1
-        continue
-
-    # Call vision model
-    try:
-        draft = call_vision_model(thumb_b64, fig_idx, inst)
-        results[str(fig_idx)] = {
-            'figure_index':    fig_idx,
-            'page':            page_num + 1,
-            'page_resolution': page_resolution,
-            'alt_text_draft':  draft,
-            'source':          'vision_model',
-            'model':           VISION_MODEL,
-            'instruction':     inst or None,
-            'decorative':      draft.strip().upper() == 'DECORATIVE',
+def call_vision_model(runtime: Dict[str, Any], image_b64: str, figure_index: int, instruction: str = "") -> str:
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+                },
+                {"type": "text", "text": build_user_text(figure_index, instruction)},
+            ],
         }
-        generated += 1
+    ]
+    return post_chat_completion(runtime, messages)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("pdf")
+    parser.add_argument("--fix-output", required=True)
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--instructions", default=None)
+    parser.add_argument("--dpi", type=int, default=150)
+    args = parser.parse_args()
+
+    try:
+        runtime = resolve_runtime()
     except Exception as e:
-        errors.append({'figure_index': fig_idx, 'error': str(e)})
-        skipped += 1
+        output = {
+            "result": "ERROR",
+            "error": str(e),
+            "runtime": os.environ.get("VISION_TOOLS_MODE", "hermes"),
+        }
+        print(json.dumps(output, indent=2))
+        Path(args.out).write_text(json.dumps(output, indent=2))
+        return 2
 
-doc.close()
+    runtime_public = {
+        "runtime": runtime["runtime"],
+        "base_url": runtime["base_url"],
+        "model": runtime["model"],
+        "timeout": runtime["timeout"],
+        "retries": runtime["retries"],
+    }
 
-# overall is based on hard errors only; warnings (legacy entries that still
-# produced a draft) do not degrade the result to PARTIAL.
-overall = 'PASS' if not errors else ('PARTIAL' if generated > 0 else 'FAIL')
+    try:
+        fix_output = json.loads(Path(args.fix_output).read_text())
+    except Exception as e:
+        output = {"result": "ERROR", "error": f"Could not read fix output: {e}", **runtime_public}
+        print(json.dumps(output, indent=2))
+        Path(args.out).write_text(json.dumps(output, indent=2))
+        return 2
 
-output = json.dumps({
-    'result':          overall,
-    'pdf':             args.pdf,
-    'model':           VISION_MODEL,
-    'figures_total':   len(needs_review),
-    'figures_drafted': generated,
-    'figures_skipped': skipped,
-    'draft_note':      (
-        'All alt text in this file is DRAFT output from a vision model. '
-        'Human review and approval is required via generate_alt_text_review_report.py '
-        'before these descriptions are applied to the document.'
-    ),
-    'figures':         results,
-    'warnings':        warnings,
-    'errors':          errors,
-}, indent=2)
+    needs_review = fix_output.get("needs_review", [])
+    if not needs_review:
+        output = {
+            "result": "SKIPPED",
+            "note": "No figures in needs_review list — nothing to generate drafts for.",
+            "figures": {},
+            **runtime_public,
+        }
+        print(json.dumps(output, indent=2))
+        Path(args.out).write_text(json.dumps(output, indent=2))
+        return 0
 
-print(output)
-Path(args.out).write_text(output)
-sys.exit(0 if overall == 'PASS' else (1 if overall == 'PARTIAL' else 2))
+    instructions: Dict[str, str] = {}
+    if args.instructions:
+        try:
+            inst_data = json.loads(Path(args.instructions).read_text())
+            instructions = {
+                str(k): v.get("instruction", "")
+                for k, v in inst_data.get("figures", {}).items()
+                if isinstance(v, dict) and v.get("instruction")
+            }
+        except Exception as e:
+            output = {"result": "ERROR", "error": f"Could not read instructions: {e}", **runtime_public}
+            print(json.dumps(output, indent=2))
+            Path(args.out).write_text(json.dumps(output, indent=2))
+            return 2
+
+    try:
+        doc = fitz.open(args.pdf)
+    except Exception as e:
+        output = {"result": "ERROR", "error": f"Could not open PDF: {e}", **runtime_public}
+        print(json.dumps(output, indent=2))
+        Path(args.out).write_text(json.dumps(output, indent=2))
+        return 2
+
+    results: Dict[str, Any] = {}
+    warnings = []
+    errors = []
+    generated = 0
+    skipped = 0
+
+    for item in needs_review:
+        fig_idx = item.get("figure_index", 0)
+        inst = instructions.get(str(fig_idx), "")
+
+        if "page_num" in item:
+            page_num = item["page_num"]
+            page_resolution = item.get("page_resolution", "stored")
+        else:
+            legacy_xref = item.get("xref", 0)
+            xref_to_page = {}
+            for pn in range(len(doc)):
+                for img_info in doc[pn].get_images(full=True):
+                    ix = img_info[0]
+                    if ix not in xref_to_page:
+                        xref_to_page[ix] = pn
+            page_num = xref_to_page.get(legacy_xref, 0)
+            page_resolution = "legacy_xref_fallback"
+            warnings.append(
+                {
+                    "figure_index": fig_idx,
+                    "warning": (
+                        f"needs_review entry for figure {fig_idx} has no page_num — "
+                        f"falling back to legacy xref lookup (struct xref {legacy_xref}). "
+                        "Re-run fix_figure_alt_text.py to regenerate with correct page numbers."
+                    ),
+                }
+            )
+
+        thumb_b64 = render_figure_thumbnail(doc, page_num, args.dpi)
+        if thumb_b64 is None:
+            errors.append(
+                {
+                    "figure_index": fig_idx,
+                    "page_num": page_num,
+                    "error": f"Could not render page {page_num} — figure skipped",
+                }
+            )
+            skipped += 1
+            continue
+
+        try:
+            draft = call_vision_model(runtime, thumb_b64, fig_idx, inst)
+            if not draft:
+                raise RuntimeError("Vision model returned empty content")
+            results[str(fig_idx)] = {
+                "figure_index": fig_idx,
+                "page": page_num + 1,
+                "page_resolution": page_resolution,
+                "alt_text_draft": draft,
+                "source": runtime["runtime"],
+                "model": runtime["model"],
+                "base_url": runtime["base_url"],
+                "instruction": inst or None,
+                "decorative": draft.strip().upper() == "DECORATIVE",
+            }
+            generated += 1
+        except Exception as e:
+            errors.append(
+                {
+                    "figure_index": fig_idx,
+                    "page": page_num + 1,
+                    "runtime": runtime["runtime"],
+                    "model": runtime["model"],
+                    "base_url": runtime["base_url"],
+                    "timeout": runtime["timeout"],
+                    "error": f"{type(e).__name__}: {e}",
+                }
+            )
+            skipped += 1
+
+    doc.close()
+
+    overall = "PASS" if not errors else ("PARTIAL" if generated > 0 else "FAIL")
+    output = {
+        "result": overall,
+        "pdf": args.pdf,
+        **runtime_public,
+        "figures_total": len(needs_review),
+        "figures_drafted": generated,
+        "figures_skipped": skipped,
+        "draft_note": (
+            "All alt text in this file is DRAFT output from a vision model. "
+            "Human review and approval is required via generate_alt_text_review_report.py "
+            "before these descriptions are applied to the document."
+        ),
+        "figures": results,
+        "warnings": warnings,
+        "errors": errors,
+    }
+
+    print(json.dumps(output, indent=2))
+    Path(args.out).write_text(json.dumps(output, indent=2))
+    return 0 if overall == "PASS" else (1 if overall == "PARTIAL" else 2)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
