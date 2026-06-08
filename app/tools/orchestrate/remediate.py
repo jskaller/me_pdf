@@ -451,11 +451,49 @@ ocr_result = get_result(ocr_data)
 gate_results['ocr_detection'] = ocr_result
 
 if ocr_data and ocr_data.get('ocr_required'):
-    emit_deviation('ocr_detection', 'ocr_required=false', 'ocr_required=true',
-                   'Document requires OCR. Run ocrmypdf then restart remediate.py on OCR output.',
-                   layer=1)
-    sys.exit(1)
-emit('PREFLIGHT', 'ocr_detection', ocr_result)
+    # ocrmypdf availability check
+    cp = subprocess.run(['which', 'ocrmypdf'], capture_output=True)
+    if cp.returncode != 0:
+        emit_deviation('ocr_remediation', 'ocr_available', 'ocrmypdf_missing',
+                       'ocrmypdf not in PATH. Install tesseract-ocr and ocrmypdf to enable automatic OCR.', layer=1)
+        sys.exit(1)
+
+    emit('PREFLIGHT', 'ocr_remediation', 'RUNNING')
+    ocr_out = REPAIR_DIR / 'pass0_ocr.pdf'
+    rc_ocr, out_ocr, err_ocr = run(
+        ['ocrmypdf', '--quiet', '--skip-text', str(PASS0), str(ocr_out)],
+        'ocr_remediation'
+    )
+    if rc_ocr != 0:
+        emit_deviation('ocr_remediation', 'exit_code=0', f'exit_code={rc_ocr}',
+                       (out_ocr + err_ocr)[:500], layer=1)
+        sys.exit(1)
+
+    # Validate OCR output no longer requires OCR
+    emit('PREFLIGHT', 'ocr_remediation_validate', 'RUNNING')
+    rc2, _, _ = run(
+        ['python3', TOOLS/'audit'/'detect_image_only_pages.py', ocr_out,
+         '--out', AUDIT_DIR/'detect_image_only_pages_ocr.json'],
+        'ocr_remediation_validate'
+    )
+    ocr_data2  = load_json(AUDIT_DIR/'detect_image_only_pages_ocr.json')
+    ocr_result2 = get_result(ocr_data2)
+    gate_results['ocr_remediation_validate'] = ocr_result2
+
+    if ocr_data2 and ocr_data2.get('ocr_required'):
+        emit_deviation('ocr_remediation_validate', 'ocr_required=false', 'ocr_required=true',
+                       f'OCR output still requires OCR. chars={ocr_data2.get("char_count")}', layer=1)
+        sys.exit(1)
+
+    emit('PREFLIGHT', 'ocr_remediation', 'PASS',
+         data={'source': str(PASS0), 'artifact': str(ocr_out),
+               'char_count_before': ocr_data.get('char_count', 0),
+               'char_count_after':  ocr_data2.get('char_count', 0)})
+    emit('PREFLIGHT', 'ocr_remediation_validate', ocr_result2)
+    PASS0 = ocr_out   # continue pipeline against OCR artifact
+    gate_results['ocr_detection'] = 'PASS'   # ocr was the barrier; now cleared
+else:
+    emit('PREFLIGHT', 'ocr_detection', ocr_result)
 
 # 1b. qpdf structural check
 emit('PREFLIGHT', 'qpdf_check', 'RUNNING')
