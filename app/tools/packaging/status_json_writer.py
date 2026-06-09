@@ -67,8 +67,12 @@ def _run(args):
         except Exception:
             pass
 
-    # P2: shared verdict on verdict_input.json
-    if verdict_result is None and verdict_input_path.exists():
+    # P2: shared verdict on verdict_input.json.
+    # If orchestrator_outcome.json exists, it is authoritative; do not compute
+    # a second overall verdict that can conflict with the orchestrator's final
+    # compliance decision. STATUS.json may still include collected gates, but
+    # the overall result comes from orchestrator_outcome.json.
+    if authoritative_overall is None and verdict_result is None and verdict_input_path.exists():
         try:
             raw = _load_json(verdict_input_path) or {}
             vi = VerdictInput.from_gate_dict(
@@ -86,8 +90,10 @@ def _run(args):
         except Exception:
             pass
 
-    # P3: legacy scan using canonical gate registry
-    if verdict_result is None:
+    # P3: legacy scan using canonical gate registry.
+    # Only derive a legacy verdict when no authoritative orchestrator outcome
+    # exists. This avoids stale pre-repair sidecars causing a verdict_mismatch.
+    if authoritative_overall is None and verdict_result is None:
         for gate_name, gate_def in GATE_REGISTRY.items():
             found = False
             for candidate in gate_def.sidecar_paths(job_dir):

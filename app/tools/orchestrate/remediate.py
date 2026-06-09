@@ -55,9 +55,9 @@ parser = argparse.ArgumentParser()
 parser.add_argument('workspace')
 parser.add_argument('ticket')
 parser.add_argument('basename')
-parser.add_argument('--title',    required=True)
-parser.add_argument('--subject',  required=True)
-parser.add_argument('--keywords', required=True)
+parser.add_argument('--title',    default='')
+parser.add_argument('--subject',  default='')
+parser.add_argument('--keywords', default='')
 parser.add_argument('--language', default='en-US')
 parser.add_argument('--dry-run',  action='store_true')
 args = parser.parse_args()
@@ -155,6 +155,168 @@ def load_json(path):
         return json.loads(Path(path).read_text())
     except Exception:
         return None
+
+def clean_metadata_text(value):
+    return ' '.join(str(value or '').split()).strip()
+
+
+def strip_json_fence(content):
+    content = (content or '').strip()
+    if content.startswith('```'):
+        parts = content.split('```')
+        if len(parts) >= 2:
+            content = parts[1].strip()
+            if content.startswith('json'):
+                content = content[4:].strip()
+    return content
+
+
+def extract_pdf_text_sample(pdf_path, limit=6000):
+    try:
+        import fitz
+        doc = fitz.open(str(pdf_path))
+        chunks = []
+        total = 0
+        for page in doc:
+            page_text = page.get_text() or ''
+            if page_text:
+                chunks.append(page_text)
+                total += len(page_text)
+            if total >= limit:
+                break
+        doc.close()
+        return clean_metadata_text('\n'.join(chunks))[:limit]
+    except Exception:
+        return ''
+
+
+def call_hermes_metadata_generator(pdf_path):
+    """Generate title/subject/keywords using the current Hermes gateway runtime."""
+    import os
+    import urllib.request
+
+    text_sample = extract_pdf_text_sample(pdf_path)
+    api_key = os.environ.get('API_SERVER_KEY', '')
+    port = os.environ.get('API_SERVER_PORT', '8642')
+    base_url = os.environ.get(
+        'HERMES_GATEWAY_BASE_URL',
+        f'http://127.0.0.1:{port}/v1'
+    ).rstrip('/')
+    model = os.environ.get('API_SERVER_MODEL_NAME', 'Hermes Agent')
+
+    if not api_key:
+        raise RuntimeError('API_SERVER_KEY is not configured for Hermes metadata generation')
+
+    prompt = (
+        'Generate PDF metadata for PDF/UA remediation. Return strict JSON only.\n\n'
+        'Required JSON keys:\n'
+        '- title: concise human-readable document title\n'
+        '- subject: one clear sentence describing the document purpose\n'
+        '- keywords: 4 to 8 comma-separated descriptive terms\n\n'
+        'Rules:\n'
+        '- Use the document text sample when available.\n'
+        '- Use the filename/ticket only as supporting context, not as the sole basis unless no text is available.\n'
+        '- Do not include unsupported claims.\n'
+        '- Do not include author, creator, or producer. Those are enforced separately.\n'
+        '- Return JSON only, no markdown and no prose.\n\n'
+        f'Ticket: {TICKET}\n'
+        f'Filename stem: {BASENAME}\n'
+        f'Document text sample:\n{text_sample or "[no extractable text available]"}\n'
+    )
+
+    body = json.dumps({
+        'model': model,
+        'messages': [{'role': 'user', 'content': prompt}],
+        'temperature': 0.0,
+        'max_tokens': 800,
+        'stream': False,
+    }).encode('utf-8')
+
+    req = urllib.request.Request(
+        base_url + '/chat/completions',
+        data=body,
+        headers={
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json',
+        },
+    )
+
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        response = json.loads(resp.read().decode('utf-8'))
+
+    message = response['choices'][0]['message']
+    raw_content = message.get('content') or message.get('reasoning_content') or ''
+    parsed = json.loads(strip_json_fence(raw_content))
+
+    title = clean_metadata_text(parsed.get('title', ''))
+    subject = clean_metadata_text(parsed.get('subject', ''))
+    keywords_raw = parsed.get('keywords', '')
+
+    if isinstance(keywords_raw, list):
+        keywords = ', '.join(
+            clean_metadata_text(k) for k in keywords_raw if clean_metadata_text(k)
+        )
+    else:
+        keywords = clean_metadata_text(keywords_raw)
+
+    if not title:
+        raise RuntimeError(f'Hermes metadata JSON missing title: {parsed}')
+    if not subject:
+        raise RuntimeError(f'Hermes metadata JSON missing subject: {parsed}')
+    if not keywords:
+        raise RuntimeError(f'Hermes metadata JSON missing keywords: {parsed}')
+
+    return {
+        'title': title,
+        'subject': subject,
+        'keywords': keywords,
+        'source': 'hermes_gateway',
+        'model': response.get('model', model),
+        'base_url': base_url,
+        'text_sample_chars': len(text_sample),
+        'ticket': TICKET,
+        'basename': BASENAME,
+    }
+
+
+def ensure_metadata_inputs_for_repair(pdf_path):
+    """Return metadata inputs for fix_metadata_xmp_parity.py or raise.
+
+    Explicit CLI args win. Otherwise Hermes generates metadata from the current
+    working artifact. Failure is handled by the repair branch, not by setup exit.
+    """
+    explicit = {
+        'title': clean_metadata_text(args.title),
+        'subject': clean_metadata_text(args.subject),
+        'keywords': clean_metadata_text(args.keywords),
+    }
+
+    if explicit['title'] and explicit['subject'] and explicit['keywords']:
+        data = {
+            **explicit,
+            'source': 'cli_args',
+            'ticket': TICKET,
+            'basename': BASENAME,
+        }
+    else:
+        data = call_hermes_metadata_generator(pdf_path)
+
+    args.title = data['title']
+    args.subject = data['subject']
+    args.keywords = data['keywords']
+
+    (AUDIT_DIR / 'metadata_inputs.json').write_text(json.dumps(data, indent=2))
+    return data
+
+
+def approved_alt_map_has_figures(path):
+    """Return True only for a usable approved alt map with at least one figure."""
+    data = load_json(path)
+    if not isinstance(data, dict):
+        return False
+    figures = data.get('figures')
+    return isinstance(figures, dict) and bool(figures)
+
 
 def get_result(data):
     if data is None: return 'ERROR'
@@ -728,9 +890,9 @@ ALT_MAP_JOB   = REPORTS_DIR / 'alt_map_approved.json'
 ALT_MAP_ASSET = WORKSPACE / 'assets' / 'alt_maps' / f'{SAFE_BASE}_alt_map_approved.json'
 
 alt_branch = 'NONE'
-if ALT_MAP_JOB.exists():
+if ALT_MAP_JOB.exists() and approved_alt_map_has_figures(ALT_MAP_JOB):
     alt_branch = 'A_LOCAL'
-elif ALT_MAP_ASSET.exists():
+elif ALT_MAP_ASSET.exists() and approved_alt_map_has_figures(ALT_MAP_ASSET):
     alt_branch = 'A_ASSET'
     shutil.copy2(ALT_MAP_ASSET, ALT_MAP_JOB)
 else:
@@ -901,8 +1063,14 @@ while unresolved_scripts and total_iterations < JOB_HARD_CAP:
                 except Exception:
                     pass
 
-                # Step B2: generate drafts via vision model
-                run(['python3', TOOLS/'repair'/'generate_alt_text_drafts.py',
+                # Step B2: generate drafts via Hermes auxiliary vision.
+                # This script imports Hermes' auxiliary_client in Hermes mode,
+                # so run it under the Hermes runtime venv instead of system
+                # python3. Model/provider selection remains dynamic through
+                # Hermes call_llm(task='vision') and the admin/config runtime.
+                hermes_python = Path('/opt/hermes/.venv/bin/python3')
+                draft_python = hermes_python if hermes_python.exists() else Path('python3')
+                run([draft_python, TOOLS/'repair'/'generate_alt_text_drafts.py',
                      auto_pdf, '--fix-output', auto_json, '--out', drafts_json],
                     f'{script_label}_drafts')
 
@@ -971,14 +1139,40 @@ while unresolved_scripts and total_iterations < JOB_HARD_CAP:
 
         # ── Special handling: fix_metadata_xmp_parity ────────────────────────
         elif 'fix_metadata_xmp_parity' in script:
-            rc, out, err = run(
-                ['python3', script_path, iteration_pdf, output_pdf,
-                 '--title',    args.title,
-                 '--subject',  args.subject,
-                 '--keywords', args.keywords,
-                 '--language', LANGUAGE],
-                script_label
-            )
+            try:
+                metadata_inputs = ensure_metadata_inputs_for_repair(iteration_pdf)
+                emit('REPAIR', 'metadata_inputs', 'PASS', data={
+                    'source': metadata_inputs.get('source'),
+                    'title': metadata_inputs.get('title'),
+                    'subject': metadata_inputs.get('subject'),
+                    'keywords': metadata_inputs.get('keywords'),
+                })
+            except Exception as e:
+                out = json.dumps({
+                    'result': 'MISSING_REQUIRED_ARGS',
+                    'error': f'Could not generate metadata inputs: {type(e).__name__}: {e}',
+                })
+                err = ''
+                rc = 1
+                try:
+                    (AUDIT_DIR / 'metadata_inputs.json').write_text(json.dumps({
+                        'result': 'ERROR',
+                        'error': f'{type(e).__name__}: {e}',
+                        'ticket': TICKET,
+                        'basename': BASENAME,
+                        'source': 'hermes_gateway',
+                    }, indent=2))
+                except Exception:
+                    pass
+            else:
+                rc, out, err = run(
+                    ['python3', script_path, iteration_pdf, output_pdf,
+                     '--title',    args.title,
+                     '--subject',  args.subject,
+                     '--keywords', args.keywords,
+                     '--language', LANGUAGE],
+                    script_label
+                )
 
         # ── All other scripts ─────────────────────────────────────────────────
         else:

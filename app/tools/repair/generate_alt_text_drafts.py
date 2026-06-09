@@ -8,9 +8,9 @@ during fix_figure_alt_text.py auto-mode repair.
 Default runtime:
   VISION_TOOLS_MODE=hermes
 
-In default mode this script calls the local Hermes OpenAI-compatible gateway,
-so the PDF pipeline follows the live Hermes runtime configured by the admin
-console.
+In default mode this script calls Hermes auxiliary_client.call_llm(task="vision"),
+so the PDF pipeline follows the live Hermes auxiliary vision runtime configured
+by the admin/config layer.
 
 Debug runtime:
   VISION_TOOLS_MODE=provider
@@ -29,6 +29,42 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+
+# Attempt to load the Hermes auxiliary vision path. If the agent package
+# is not importable (wrong venv / missing install), fall back to None so
+# resolve_runtime() can emit a clear error rather than an obscure NameError.
+#
+# HERMES_HOME is the Hermes data/config root in this container (/opt/data),
+# not necessarily the Hermes code root. Only add a candidate root if it
+# actually contains agent/auxiliary_client.py.
+def _candidate_hermes_code_roots() -> list[Path]:
+    roots: list[Path] = []
+    for value in (
+        os.environ.get("HERMES_CODE_ROOT"),
+        "/opt/hermes",
+        *sys.path,
+    ):
+        if not value:
+            continue
+        root = Path(value)
+        if root not in roots:
+            roots.append(root)
+    return roots
+
+
+try:
+    for _hermes_root in _candidate_hermes_code_roots():
+        if (_hermes_root / "agent" / "auxiliary_client.py").exists():
+            if str(_hermes_root) not in sys.path:
+                sys.path.insert(0, str(_hermes_root))
+            break
+
+    from agent.auxiliary_client import call_llm as _hermes_call_llm
+    _hermes_vision_available: bool = True
+except Exception as _exc:
+    _hermes_call_llm = None
+    _hermes_vision_available = False
+    _hermes_import_error: str = f"{type(_exc).__name__}: {_exc}"
 
 try:
     import fitz
@@ -94,21 +130,24 @@ def resolve_runtime() -> Dict[str, Any]:
             f"Unsupported VISION_TOOLS_MODE={mode!r}. Use 'hermes' or 'provider'."
         )
 
-    port = os.environ.get("API_SERVER_PORT", "8642")
-    base_url = os.environ.get("HERMES_GATEWAY_BASE_URL", f"http://127.0.0.1:{port}/v1").rstrip("/")
-    api_key = os.environ.get("API_SERVER_KEY", "")
-    model = os.environ.get("API_SERVER_MODEL_NAME", "Hermes Agent")
-
-    if not api_key:
+    if not _hermes_vision_available:
         raise RuntimeError(
-            "Hermes gateway is not configured. Set API_SERVER_KEY in root .env."
+            f"Hermes auxiliary vision is not available (auxiliary_client import failed: "
+            f"{_hermes_import_error}). Run the script in the Hermes venv, or use "
+            f"VISION_TOOLS_MODE=provider with explicit VISION_PROVIDER_BASE_URL / "
+            f"VISION_PROVIDER_API_KEY / VISION_MODEL."
         )
 
+    # Hermes auxiliary mode does not use the OpenAI-compatible gateway or
+    # API_SERVER_KEY. The auxiliary_client resolves provider/model credentials
+    # from the live Hermes config for task="vision".
+    model = os.environ.get("VISION_MODEL", "hermes_auxiliary_vision")
+
     return {
-        "runtime": "hermes_gateway",
+        "runtime": "hermes_auxiliary",
         "mode": mode,
-        "base_url": base_url,
-        "api_key": api_key,
+        "base_url": "hermes_auxiliary_client",
+        "api_key": "",
         "model": model,
         "timeout": timeout,
         "retries": retries,
@@ -193,7 +232,8 @@ def build_user_text(figure_index: int, instruction: str = "") -> str:
     )
 
 
-def call_vision_model(runtime: Dict[str, Any], image_b64: str, figure_index: int, instruction: str = "") -> str:
+def call_vision_model(runtime: Dict[str, Any], image_b64: str, figure_index: int, instruction: str = "") -> Tuple[str, str]:
+    """Return (draft_alt_text, resolved_model_name)."""
     messages = [
         {
             "role": "user",
@@ -206,7 +246,21 @@ def call_vision_model(runtime: Dict[str, Any], image_b64: str, figure_index: int
             ],
         }
     ]
-    return post_chat_completion(runtime, messages)
+
+    if runtime.get("runtime") == "hermes_auxiliary":
+        # Use Hermes' centralized auxiliary vision path so the configured
+        # auxiliary.vision provider/model (from config.yaml) is resolved and
+        # used automatically — NOT the primary text model.
+        response = _hermes_call_llm(
+            task="vision",
+            messages=messages,
+            max_tokens=300,
+            temperature=0.0,
+        )
+        resolved_model = getattr(response, "model", runtime["model"])
+        return (response.choices[0].message.content or "").strip(), resolved_model
+
+    return post_chat_completion(runtime, messages), runtime["model"]
 
 
 def main() -> int:
@@ -328,7 +382,7 @@ def main() -> int:
             continue
 
         try:
-            draft = call_vision_model(runtime, thumb_b64, fig_idx, inst)
+            draft, resolved_model = call_vision_model(runtime, thumb_b64, fig_idx, inst)
             if not draft:
                 raise RuntimeError("Vision model returned empty content")
             results[str(fig_idx)] = {
@@ -337,7 +391,7 @@ def main() -> int:
                 "page_resolution": page_resolution,
                 "alt_text_draft": draft,
                 "source": runtime["runtime"],
-                "model": runtime["model"],
+                "model": resolved_model,
                 "base_url": runtime["base_url"],
                 "instruction": inst or None,
                 "decorative": draft.strip().upper() == "DECORATIVE",
