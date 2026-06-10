@@ -186,6 +186,63 @@ def summarize_ocr_detector(data):
     }
 
 
+
+def load_hermes_gateway_env():
+    """Resolve Hermes gateway-facing config without selecting providers/models.
+
+    The orchestrator calls Hermes/Open WebUI as a gateway. It must not choose
+    provider API keys or concrete provider model names. Those belong to Hermes.
+
+    Resolution order:
+      1. Current process environment.
+      2. /opt/data/.env, where Hermes gateway runtime config lives in-container.
+
+    Only gateway-facing values are read here:
+      - API_SERVER_KEY
+      - API_SERVER_PORT
+      - HERMES_GATEWAY_BASE_URL
+      - API_SERVER_MODEL_NAME
+    """
+    allowed = {
+        "API_SERVER_KEY",
+        "API_SERVER_PORT",
+        "HERMES_GATEWAY_BASE_URL",
+        "API_SERVER_MODEL_NAME",
+    }
+
+    values = {key: os.environ.get(key, "") for key in allowed}
+
+    env_path = Path("/opt/data/.env")
+    if not env_path.exists():
+        return values
+
+    try:
+        for raw_line in env_path.read_text().splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            key = key.strip()
+
+            if key not in allowed:
+                continue
+
+            if values.get(key):
+                continue
+
+            values[key] = value.strip().strip('"').strip("'")
+    except Exception as exc:
+        emit(
+            "SETUP",
+            "hermes_gateway_env",
+            "WARN",
+            note=f"Unable to read /opt/data/.env: {type(exc).__name__}: {exc}",
+        )
+
+    return values
+
+
 def strip_json_fence(content):
     content = (content or '').strip()
     if content.startswith('```'):
@@ -222,16 +279,21 @@ def call_hermes_metadata_generator(pdf_path):
     import urllib.request
 
     text_sample = extract_pdf_text_sample(pdf_path)
-    api_key = os.environ.get('API_SERVER_KEY', '')
-    port = os.environ.get('API_SERVER_PORT', '8642')
-    base_url = os.environ.get(
-        'HERMES_GATEWAY_BASE_URL',
-        f'http://127.0.0.1:{port}/v1'
-    ).rstrip('/')
-    model = os.environ.get('API_SERVER_MODEL_NAME', 'Hermes Agent')
+    gateway_env = load_hermes_gateway_env()
+
+    api_key = gateway_env.get("API_SERVER_KEY", "")
+    port = gateway_env.get("API_SERVER_PORT") or "8642"
+    base_url = (
+        gateway_env.get("HERMES_GATEWAY_BASE_URL")
+        or f"http://127.0.0.1:{port}/v1"
+    ).rstrip("/")
+    model = gateway_env.get("API_SERVER_MODEL_NAME") or "Hermes Agent"
 
     if not api_key:
-        raise RuntimeError('API_SERVER_KEY is not configured for Hermes metadata generation')
+        raise RuntimeError(
+            "API_SERVER_KEY is not available from process env or /opt/data/.env "
+            "for Hermes gateway metadata generation"
+        )
 
     prompt = (
         'Generate PDF metadata for PDF/UA remediation. Return strict JSON only.\n\n'
