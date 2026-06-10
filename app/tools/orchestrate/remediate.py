@@ -136,15 +136,20 @@ def emit_hermes_required(rule_id, description, failures, reason, attempts=None):
         'data':    signal
     }), flush=True)
 
-def run(cmd, label, capture=True):
+def run(cmd, label, capture=True, env=None):
     if args.dry_run:
         emit('DRY_RUN', label, 'SKIPPED', note=' '.join(str(c) for c in cmd))
         return 0, '{"result":"PASS"}', ''
     try:
+        run_env = None
+        if env:
+            run_env = os.environ.copy()
+            run_env.update({str(k): str(v) for k, v in env.items()})
         r = subprocess.run(
             [str(c) for c in cmd],
             capture_output=capture,
-            text=True
+            text=True,
+            env=run_env,
         )
         return r.returncode, r.stdout, r.stderr
     except Exception as e:
@@ -158,6 +163,27 @@ def load_json(path):
 
 def clean_metadata_text(value):
     return ' '.join(str(value or '').split()).strip()
+
+
+def summarize_ocr_detector(data):
+    """Return a flat summary of per-page char counts plus top-level gate fields."""
+    pages = data.get("pages", []) if isinstance(data, dict) else []
+    counts = [
+        int(p.get("char_count", 0))
+        for p in pages
+        if isinstance(p, dict)
+    ]
+    return {
+        "char_count_total": sum(counts),
+        "char_count_min": min(counts) if counts else None,
+        "char_count_max": max(counts) if counts else None,
+        "image_only_pages": data.get("image_only_pages", [])
+            if isinstance(data, dict) else [],
+        "ocr_required": data.get("ocr_required")
+            if isinstance(data, dict) else None,
+        "result": data.get("result", "ERROR")
+            if isinstance(data, dict) else "ERROR",
+    }
 
 
 def strip_json_fence(content):
@@ -537,7 +563,8 @@ emit('SETUP', 'scaffold', 'RUNNING')
 rc, out, err = run(
     ['python3', TOOLS/'packaging'/'package_scaffold.py',
      WORKSPACE, TICKET, BASENAME],
-    'scaffold'
+    'scaffold',
+    env={'PYTHONPATH': str(APP)},
 )
 try:
     scaffold = json.loads(out)
@@ -616,61 +643,165 @@ if ocr_data and ocr_data.get('ocr_required'):
     # ocrmypdf availability check
     cp = subprocess.run(['which', 'ocrmypdf'], capture_output=True)
     if cp.returncode != 0:
-        emit_deviation('ocr_remediation', 'ocr_available', 'ocrmypdf_missing',
-                       'ocrmypdf not in PATH. Install tesseract-ocr and ocrmypdf to enable automatic OCR.', layer=1)
+        emit_deviation(
+            'ocr_remediation', 'ocr_available', 'ocrmypdf_missing',
+            'ocrmypdf not in PATH. Install tesseract-ocr and ocrmypdf to '
+            'enable automatic OCR.',
+            layer=1,
+        )
         sys.exit(1)
 
-    emit('PREFLIGHT', 'ocr_remediation', 'RUNNING')
-    ocr_out = REPAIR_DIR / 'pass0_ocr.pdf'
-    rc_ocr, out_ocr, err_ocr = run(
-        ['ocrmypdf', '--quiet', '--skip-text', str(PASS0), str(ocr_out)],
-        'ocr_remediation'
+    emit('PREFLIGHT', 'ocr_remediation_strategies', 'RUNNING')
+
+    ocr_strategies = [
+        {
+            'strategy': 'ocrmypdf_skip_text',
+            'flags': ['--quiet', '--skip-text'],
+        },
+        {
+            'strategy': 'ocrmypdf_force_ocr',
+            'flags': ['--quiet', '--force-ocr', '--deskew', '--rotate-pages'],
+        },
+    ]
+    # Default output path names — updated per iteration when a strategy wins
+    strategy_output_map = {
+        'ocrmypdf_skip_text':  REPAIR_DIR / 'pass0_ocr_skip_text.pdf',
+        'ocrmypdf_force_ocr': REPAIR_DIR / 'pass0_ocr_force_ocr.pdf',
+    }
+
+    ocr_attempt_records = []
+    preflight_summary = summarize_ocr_detector(ocr_data)
+    prev_ocr_out = None
+    ocr_input = PASS0  # snapshot pre-OCR input before any strategy runs
+
+    for strategy in ocr_strategies:
+        strategy_name = strategy['strategy']
+        output_pdf = strategy_output_map[strategy_name]
+        validation_json = AUDIT_DIR / f'detect_image_only_pages_{strategy_name}.json'
+
+        emit('PREFLIGHT', f'ocr_remediation_run:{strategy_name}', 'RUNNING')
+        rc_ocr, out_ocr, err_ocr = run(
+            ['ocrmypdf', *strategy['flags'], str(PASS0), str(output_pdf)],
+            f'ocr_remediation:{strategy_name}',
+        )
+
+        record = {
+            'iteration': len(ocr_attempt_records),
+            'strategy': strategy_name,
+            'script': 'ocrmypdf',
+            'flags': strategy['flags'],
+            'input_pdf': str(PASS0),
+            'output_pdf': str(output_pdf),
+            'exit_code': rc_ocr,
+            'source_pdf_modified': False,
+        }
+        if rc_ocr != 0:
+            record['result'] = 'FAIL'
+            record['error'] = (out_ocr + err_ocr)[:2000]
+            record['promotable'] = False
+            ocr_attempt_records.append(record)
+            strategy_attempts['local/OCR_REQUIRED'].append(record)
+            continue
+
+        # Validate the OCR output — no more ocrmypdf flags, just detector
+        rc_v, _, _ = run(
+            [
+                'python3', TOOLS / 'audit' / 'detect_image_only_pages.py',
+                str(output_pdf),
+                '--out', str(validation_json),
+            ],
+            f'ocr_remediation_validate:{strategy_name}',
+        )
+        val_data = load_json(validation_json)
+        val_summary = summarize_ocr_detector(val_data)
+
+        record.update({
+            'validation_artifact': str(validation_json),
+            'validation_exit_code': rc_v,
+            'validation_result': val_summary['result'],
+            'ocr_required': val_summary['ocr_required'],
+            'char_count_total': val_summary['char_count_total'],
+            'char_count_min': val_summary['char_count_min'],
+            'char_count_max': val_summary['char_count_max'],
+            'image_only_pages': val_summary['image_only_pages'],
+        })
+
+        if val_data and not val_data.get('ocr_required'):
+            record['result'] = 'PASS'
+            record['promotable'] = True
+            ocr_attempt_records.append(record)
+            strategy_attempts['local/OCR_REQUIRED'].append(record)
+            # Determine which artifact actually drove the pass for the emit
+            if prev_ocr_out is not None:
+                emit(
+                    'PREFLIGHT', 'ocr_remediation_validate',
+                    val_summary['result'],
+                    data={
+                        'artifact': str(output_pdf),
+                        'strategy': strategy_name,
+                        'skip_text_failed': True,
+                        'validation_artifact': str(validation_json),
+                    },
+                )
+            else:
+                emit(
+                    'PREFLIGHT', 'ocr_remediation_validate',
+                    val_summary['result'],
+                    data={
+                        'artifact': str(output_pdf),
+                        'strategy': strategy_name,
+                        'validation_artifact': str(validation_json),
+                    },
+                )
+            PASS0 = output_pdf
+            break
+
+        # Validation failed on this strategy
+        record['result'] = 'FAIL'
+        record['promotable'] = False
+        record['error'] = (
+            'OCR output still requires OCR after validation '
+            f'(char_count_total={val_summary["char_count_total"]}, '
+            f'image_only_pages={val_summary["image_only_pages"]})'
+        )
+        ocr_attempt_records.append(record)
+        strategy_attempts['local/OCR_REQUIRED'].append(record)
+        prev_ocr_out = output_pdf
+
+    else:
+        # All strategies exhausted without a successful validation
+        emit_deviation(
+            step='ocr_remediation_exhausted',
+            expected='one OCR strategy validates with ocr_required=false',
+            actual='all OCR strategies failed validation',
+            context=json.dumps(ocr_attempt_records, indent=2),
+            layer=1,
+        )
+        emit(
+            'PREFLIGHT', 'ocr_remediation_strategies', 'FAIL',
+            data={
+                'attempts': ocr_attempt_records,
+                'preflight_ocr_detection': preflight_summary,
+            },
+        )
+        sys.exit(1)
+
+    # At least one strategy validated — record only the winning attempt in the
+    # passing emit (failed attempts already recorded above).
+    emit(
+        'PREFLIGHT', 'ocr_remediation', 'PASS',
+        data={
+            'source': str(ocr_input),
+            'artifact': str(PASS0),
+            'strategy': strategy_name,
+            'char_count_before': preflight_summary['char_count_total'],
+            'char_count_after': val_summary['char_count_total'],
+            'image_only_pages_before': preflight_summary['image_only_pages'],
+            'image_only_pages_after': val_summary['image_only_pages'],
+        },
     )
-    if rc_ocr != 0:
-        emit_deviation('ocr_remediation', 'exit_code=0', f'exit_code={rc_ocr}',
-                       (out_ocr + err_ocr)[:500], layer=1)
-        sys.exit(1)
+    gate_results['ocr_detection'] = 'PASS'
 
-    # Validate OCR output no longer requires OCR
-    emit('PREFLIGHT', 'ocr_remediation_validate', 'RUNNING')
-    rc2, _, _ = run(
-        ['python3', TOOLS/'audit'/'detect_image_only_pages.py', ocr_out,
-         '--out', AUDIT_DIR/'detect_image_only_pages_ocr.json'],
-        'ocr_remediation_validate'
-    )
-    ocr_data2  = load_json(AUDIT_DIR/'detect_image_only_pages_ocr.json')
-    ocr_result2 = get_result(ocr_data2)
-    gate_results['ocr_remediation_validate'] = ocr_result2
-
-    if ocr_data2 and ocr_data2.get('ocr_required'):
-        emit_deviation('ocr_remediation_validate', 'ocr_required=false', 'ocr_required=true',
-                       f'OCR output still requires OCR. chars={ocr_data2.get("char_count")}', layer=1)
-        sys.exit(1)
-
-    emit('PREFLIGHT', 'ocr_remediation', 'PASS',
-         data={'source': str(PASS0), 'artifact': str(ocr_out),
-               'char_count_before': ocr_data.get('char_count', 0),
-               'char_count_after':  ocr_data2.get('char_count', 0)})
-    emit('PREFLIGHT', 'ocr_remediation_validate', ocr_result2)
-    ocr_input = PASS0   # preserve pre-OCR path for strategy record
-    PASS0 = ocr_out     # continue pipeline against OCR artifact
-    gate_results['ocr_detection'] = 'PASS'   # ocr was the barrier; now cleared
-
-    # Record in the same strategy_attempts ledger used by the repair loop
-    strategy_attempts['local/OCR_REQUIRED'].append({
-        'iteration': 0,
-        'strategy':  'ocrmypdf_working_copy',
-        'script':     'ocrmypdf',
-        'result':     'PASS',
-        'input_pdf':  str(ocr_input),
-        'output_pdf': str(ocr_out),
-        'exit_code':  rc_ocr,
-        'validation_artifact': str(AUDIT_DIR / 'detect_image_only_pages_ocr.json'),
-        'char_count_before': ocr_data.get('char_count', 0),
-        'char_count_after':  ocr_data2.get('char_count', 0),
-        'source_pdf_modified': False,
-        'promotable': True
-    })
 else:
     emit('PREFLIGHT', 'ocr_detection', ocr_result)
 
@@ -1537,8 +1668,18 @@ try:
 except Exception:
     pass
 
-run(['python3', TOOLS/'packaging'/'status_json_writer.py', JOB,
-     '--pdf', str(SOURCE_PDF)], 'status_json')
+rc_status, out_status, err_status = run(
+    ['python3', TOOLS/'packaging'/'status_json_writer.py', JOB,
+     '--pdf', str(SOURCE_PDF)],
+    'status_json',
+    env={'PYTHONPATH': str(APP)},
+)
+if rc_status != 0:
+    emit_deviation(
+        'status_json', 'exit_code=0', f'exit_code={rc_status}',
+        (out_status + err_status)[:2000], layer=1,
+    )
+    sys.exit(1)
 emit('PACKAGE', 'status_json', 'PASS')
 
 # Write strategy attempts log
@@ -1574,7 +1715,8 @@ elif overall == 'REVIEW_REQUIRED':
          JOB, FINAL_PDF,
          '--output-dir', str(review_dir),
          '--source-pdf', str(SOURCE_PDF)],
-        'package_deliverables_review'
+        'package_deliverables_review',
+        env={'PYTHONPATH': str(APP)},
     )
     emit('PACKAGE', 'package_deliverables', 'PASS' if rc == 0 else 'FAIL',
          note=f'Review package at {review_dir}')
