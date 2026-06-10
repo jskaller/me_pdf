@@ -44,7 +44,7 @@ Exit codes:
   1  FAIL, ESCALATION, or unresolved DEVIATION
   2  usage/setup error
 """
-import sys, json, subprocess, shutil, argparse
+import sys, json, subprocess, shutil, argparse, os
 from pathlib import Path
 from datetime import datetime, timezone
 from collections import defaultdict
@@ -1695,7 +1695,8 @@ if overall == 'PASS':
          JOB, FINAL_PDF,
          '--output-dir', OUT,
          '--source-pdf', str(SOURCE_PDF)],
-        'package_deliverables'
+        'package_deliverables',
+        env={'PYTHONPATH': str(APP)},
     )
     pkg_data = {}
     try:
@@ -1734,7 +1735,8 @@ elif overall in ('FAIL', 'ESCALATION'):
          '--output-dir', str(failed_dir),
          '--source-pdf', str(SOURCE_PDF),
          '--skip-pdf'],
-        'package_deliverables_fail'
+        'package_deliverables_fail',
+        env={'PYTHONPATH': str(APP)},
     )
     pkg_fail_data = {}
     try:
