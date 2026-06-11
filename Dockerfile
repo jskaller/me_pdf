@@ -190,22 +190,6 @@ RUN cat > /etc/cont-init.d/03-seed-verapdf-profiles <<'EOF'
 #!/command/with-contenv sh
 set -eu
 
-source_dir="${VERAPDF_PROFILE_SOURCE:-/opt/veraPDF-validation-profiles-integration}"
-target_dir="/app/workspace/assets/validation_profiles/veraPDF-validation-profiles-integration"
-
-if [ ! -d "$source_dir/PDF_UA" ]; then
-  echo "ERROR: validation profile source is missing: $source_dir" >&2
-  exit 1
-fi
-
-if [ ! -d "$target_dir/PDF_UA" ]; then
-  echo "Seeding veraPDF validation profiles into $target_dir"
-  mkdir -p "$(dirname "$target_dir")"
-  rm -rf "$target_dir"
-  cp -a "$source_dir" "$target_dir"
-else
-  echo "veraPDF validation profiles already present at $target_dir"
-fi
 EOF
 
 RUN chmod +x /etc/cont-init.d/03-seed-verapdf-profiles
