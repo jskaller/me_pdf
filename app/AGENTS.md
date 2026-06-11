@@ -110,9 +110,14 @@ python3 tools/orchestrate/remediate.py \
 
 5. When `"phase": "HERMES_REQUIRED"` appears **during the run**, act on it immediately — do not wait for `COMPLETE`. Write the required repair script, register it in the rule map, then re-run the orchestrator so it can retry. Only proceed to step 6 when all HERMES_REQUIRED signals have been resolved or determined to be unsolvable.
 
+**Important:** If the orchestrator exits nonzero after emitting `HERMES_REQUIRED`, especially exit code `3`, do **not** summarize it as a terminal failure and do **not** ask the operator what to do. Treat it as a controlled strategy-action pause. Read the artifact paths included in the `HERMES_REQUIRED` payload, especially `strategy_request`, `strategy_proposal`, `ocr_strategy_request.json`, or `hermes_strategy_request.json`. Then either reuse an existing repair script, write a new focused deterministic repair script, register it in `tools/audit/rule_repair_map.json` when applicable, and rerun the orchestrator. If the artifact states `operator_question_allowed: false`, never ask the operator to choose among strategies.
+
 6. Report the final summary when `"phase": "COMPLETE"` appears, following the format above. If any HERMES_REQUIRED signals were emitted and not resolved, the summary must list them explicitly as unresolved escalations.
 
 **Do not run individual audit or repair scripts manually.**
+
+**Workspace immutability rule:** Never write helper scripts, scratch files, extracted text, temporary PDFs, logs, JSON, or any other generated artifact under `workspace/input/`. `workspace/input/` is source-only and immutable. If a helper script or scratch artifact is needed, write it under the active job directory, for example `workspace/jobs/<job>/scratch/`, `workspace/jobs/<job>/audit/`, or another orchestrator-owned job subdirectory. If a generated file has already been written under `workspace/input/`, stop and move/remove it before continuing. Do not ask the operator to approve execution of scripts placed in `workspace/input/`.
+
 If `tools/orchestrate/remediate.py` is missing, stop and report it.
 
 ---
@@ -194,7 +199,7 @@ your reasoning:
 | Phase value | Meaning | Your action |
 |-------------|---------|-------------|
 | `DEVIATION` | Layer 1 or 2 execution/outcome signal | Diagnose and fix the execution error or document why |
-| `HERMES_REQUIRED` | The orchestrator hit a rule with no working strategy | Write a new repair script, register it, let orchestrator retry |
+| `HERMES_REQUIRED` | The orchestrator hit a rule/stage with no working strategy | Read the emitted artifacts, write/register a deterministic strategy if possible, rerun the orchestrator; do not ask the operator unless the artifact explicitly allows it |
 | `COMPLETE` | Job finished | Report final summary using the included `overall_result` |
 
 **Do not intervene mid-job.** If the orchestrator is still running (no `COMPLETE` phase yet), wait for it to finish. Do not try to "fix" partial state by running individual scripts.

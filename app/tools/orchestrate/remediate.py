@@ -119,21 +119,23 @@ def emit_deviation(step, expected, actual, context, layer):
         'context':  context
     }), flush=True)
 
-def emit_hermes_required(rule_id, description, failures, reason, attempts=None):
+def emit_hermes_required(rule_id, description, failures, reason, attempts=None, artifacts=None):
     signal = {
-        'rule_id':              rule_id,
-        'description':          description,
-        'failures':             failures,
-        'reason':               reason,
+        'rule_id': rule_id,
+        'description': description,
+        'failures': failures,
+        'reason': reason,
         'strategies_attempted': attempts or [],
-        'timestamp':            datetime.now(timezone.utc).isoformat()
+        'timestamp': datetime.now(timezone.utc).isoformat()
     }
+    if artifacts:
+        signal['artifacts'] = artifacts
     hermes_signals.append(signal)
     print(json.dumps({
-        'phase':   'HERMES_REQUIRED',
+        'phase': 'HERMES_REQUIRED',
         'rule_id': rule_id,
-        'reason':  reason,
-        'data':    signal
+        'reason': reason,
+        'data': signal
     }), flush=True)
 
 def run(cmd, label, capture=True, env=None):
@@ -421,6 +423,508 @@ def write_strategy_log(job):
         pass
 
 # ── Doc tagging ───────────────────────────────────────────────────────────────
+
+
+
+def extract_relevant_verapdf_rule_xml(rule_ids, xml_paths, char_limit=24000):
+    """Return compact veraPDF rule XML snippets for residual rules."""
+    import xml.etree.ElementTree as ET
+
+    clauses = {str(rule_id).split("/")[-1] for rule_id in rule_ids if rule_id}
+    snippets = []
+    used = 0
+
+    def local_name(tag):
+        return tag.split("}")[-1] if "}" in tag else tag
+
+    for xml_path in xml_paths:
+        path = Path(xml_path)
+        if not path.exists():
+            snippets.append({"source": str(path), "error": "file not found"})
+            continue
+
+        try:
+            root = ET.parse(str(path)).getroot()
+            for elem in root.iter():
+                if local_name(elem.tag) != "rule":
+                    continue
+
+                clause = elem.get("clause", "")
+                if clause not in clauses:
+                    continue
+
+                try:
+                    failed = int(elem.get("failedChecks") or elem.get("deviations") or 0)
+                except Exception:
+                    failed = 0
+
+                if failed <= 0:
+                    continue
+
+                xml_text = ET.tostring(elem, encoding="unicode")
+                if len(xml_text) > 4000:
+                    xml_text = xml_text[:4000] + "\n... [truncated]"
+
+                item = {
+                    "source": str(path),
+                    "specification": elem.get("specification", ""),
+                    "clause": clause,
+                    "description": elem.get("description", ""),
+                    "failed_checks": failed,
+                    "xml": xml_text,
+                }
+
+                item_size = len(json.dumps(item))
+                if used + item_size > char_limit:
+                    snippets.append({
+                        "source": str(path),
+                        "note": "snippet limit reached; inspect full XML artifact",
+                    })
+                    return snippets
+
+                snippets.append(item)
+                used += item_size
+        except Exception as exc:
+            snippets.append({
+                "source": str(path),
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+
+    return snippets
+
+
+def list_existing_repair_scripts():
+    """List deterministic repair scripts already present in tools/repair."""
+    repair_dir = TOOLS / "repair"
+    if not repair_dir.exists():
+        return []
+
+    scripts = []
+    for script in sorted(repair_dir.glob("*.py")):
+        try:
+            rel = script.relative_to(APP)
+        except Exception:
+            rel = script
+        scripts.append({
+            "path": str(rel),
+            "name": script.name,
+        })
+    return scripts
+
+
+def build_strategy_gap_request(current_pdf, remaining_failures, post_failures_path, residual_plan):
+    """Build a structured Hermes strategy-design request for residual failures."""
+    rule_ids = [
+        failure.get("rule_id", "")
+        for failure in remaining_failures
+        if failure.get("rule_id")
+    ]
+
+    rule_map_data = load_json(RULE_MAP) or {}
+    rule_map_rules = rule_map_data.get("rules", {}) if isinstance(rule_map_data, dict) else {}
+    rule_map_context = {
+        rule_id: rule_map_rules.get(rule_id)
+        for rule_id in rule_ids
+        if rule_id in rule_map_rules
+    }
+
+    xml_paths = [
+        AUDIT_DIR / "verapdf_post_pdfua1.xml",
+        AUDIT_DIR / "verapdf_post_wcag.xml",
+    ]
+
+    return {
+        "request_type": "pdfua_residual_strategy_design",
+        "ticket": TICKET,
+        "job_name": JOB_NAME,
+        "job_dir": str(JOB),
+        "workspace": str(WORKSPACE),
+        "source_pdf": str(SOURCE_PDF),
+        "current_pdf": str(current_pdf),
+        "safe_to_package_success": False,
+        "reason": "final_verapdf_residual_without_ready_remediation_path",
+        "doc_tags": doc_tags,
+        "residual_failures": remaining_failures,
+        "residual_repair_plan": residual_plan,
+        "validator_artifacts": {
+            "failures_post": str(post_failures_path),
+            "pdfua1_xml": str(AUDIT_DIR / "verapdf_post_pdfua1.xml"),
+            "wcag_xml": str(AUDIT_DIR / "verapdf_post_wcag.xml"),
+        },
+        "validator_rule_xml_snippets": extract_relevant_verapdf_rule_xml(
+            rule_ids,
+            xml_paths,
+        ),
+        "rule_map_context": rule_map_context,
+        "existing_repair_scripts": list_existing_repair_scripts(),
+        "strategy_attempts": {
+            rule_id: strategy_attempts.get(rule_id, [])
+            for rule_id in rule_ids
+        },
+        "required_response_schema": {
+            "result": (
+                "USE_EXISTING_SCRIPT | PROPOSE_NEW_SCRIPT | "
+                "NEEDS_MORE_EVIDENCE | NOT_AUTOMATABLE"
+            ),
+            "rule_id": "PDF/UA-1/...",
+            "strategy": "stable_snake_case_strategy_name",
+            "repair_script": "tools/repair/example.py or null",
+            "preconditions": [],
+            "pdf_edits": [],
+            "validation_plan": [],
+            "rule_map_update": {},
+            "risks": [],
+            "notes": "",
+        },
+    }
+
+
+def call_hermes_strategy_designer(request_packet):
+    """Ask Hermes gateway for a reusable deterministic strategy proposal.
+
+    Disabled by default in orchestrator mainline. The orchestrator is normally
+    run by Hermes/Open WebUI, so nested synchronous calls back into the same
+    gateway can hang the active remediation chat. Strategy gaps should be
+    written as artifacts and emitted as HERMES_REQUIRED for the outer agent.
+    """
+    import os
+    if os.environ.get("HERMES_ALLOW_IN_PROCESS_STRATEGY_CALL", "") != "1":
+        raise RuntimeError(
+            "In-process Hermes strategy calls are disabled. Emit "
+            "HERMES_REQUIRED with strategy request artifacts instead."
+        )
+    import urllib.request
+
+    gateway_env = load_hermes_gateway_env()
+    api_key = gateway_env.get("API_SERVER_KEY", "")
+    port = gateway_env.get("API_SERVER_PORT") or "8642"
+    base_url = (
+        gateway_env.get("HERMES_GATEWAY_BASE_URL")
+        or f"http://127.0.0.1:{port}/v1"
+    ).rstrip("/")
+    model = gateway_env.get("API_SERVER_MODEL_NAME") or "Hermes Agent"
+
+    if not api_key:
+        raise RuntimeError(
+            "API_SERVER_KEY is not available from process env or /opt/data/.env "
+            "for Hermes gateway strategy design"
+        )
+
+    prompt = (
+        "You are the Hermes PDF/UA remediation strategy designer.\\n"
+        "The orchestrator has a remediation strategy gap. It may be a preflight "
+        "failure, residual validator failure, or exhausted mapped strategy. "
+        "The request packet defines the stage, evidence, artifacts, and required "
+        "response schema.\\n\\n"
+        "Do not manually remediate this one document. Do not claim success. "
+        "Design a reusable deterministic remediation strategy, or say why more "
+        "evidence is required. Prefer existing repair scripts if one can be "
+        "safely reused or parameterized. Do not choose provider models or "
+        "provider API keys.\\n\\n"
+        "Return strict JSON only matching required_response_schema.\\n\\n"
+        f"REQUEST_PACKET:\\n{json.dumps(request_packet, indent=2)}\\n"
+    )
+
+    body = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.0,
+        "max_tokens": 2500,
+        "stream": False,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        base_url + "/chat/completions",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        response = json.loads(resp.read().decode("utf-8"))
+
+    message = response["choices"][0]["message"]
+    raw_content = message.get("content") or message.get("reasoning_content") or ""
+
+    try:
+        proposal = json.loads(strip_json_fence(raw_content))
+    except Exception as exc:
+        proposal = {
+            "result": "NEEDS_MORE_EVIDENCE",
+            "error": f"Could not parse Hermes strategy JSON: {type(exc).__name__}: {exc}",
+            "raw_content": raw_content[:4000],
+        }
+
+    if isinstance(proposal, dict):
+        proposal.setdefault("_hermes_response_model", response.get("model", model))
+        proposal.setdefault("_hermes_gateway_base_url", base_url)
+    return proposal
+
+
+def write_residual_strategy_gap_artifacts(current_pdf, remaining_failures, post_failures_path):
+    """Invoke Hermes strategy design for residual final validator failures."""
+    if not remaining_failures:
+        return None
+
+    emit(
+        "PLAN",
+        "residual_strategy_gap",
+        "RUNNING",
+        data={"remaining_failures": len(remaining_failures)},
+    )
+
+    lookup_cmd = [
+        "python3",
+        TOOLS / "audit" / "lookup_repair_plan.py",
+        post_failures_path,
+        "--map",
+        RULE_MAP,
+        "--taxonomy",
+        TAXONOMY,
+    ]
+    if doc_tags:
+        lookup_cmd.extend(["--doc-tags", ",".join(doc_tags)])
+
+    rc, out, err = run(lookup_cmd, "lookup_repair_plan_post")
+    residual_plan_path = AUDIT_DIR / "repair_plan_post.json"
+    try:
+        residual_plan = json.loads(out)
+    except Exception:
+        residual_plan = {
+            "result": "ERROR",
+            "repair_steps": [],
+            "hermes_required": [],
+            "unknown_rules": [],
+            "error": (out + err)[:2000],
+        }
+    residual_plan_path.write_text(json.dumps(residual_plan, indent=2))
+
+    hermes_items = list(residual_plan.get("hermes_required", []))
+    if not hermes_items:
+        for failure in remaining_failures:
+            rule_id = failure.get("rule_id", "")
+            if not rule_id:
+                continue
+            attempts = strategy_attempts.get(rule_id, [])
+            reason = (
+                "residual_after_mapped_repairs"
+                if attempts else
+                "residual_without_repair_step"
+            )
+            hermes_items.append({
+                "rule_id": rule_id,
+                "description": failure.get("description", ""),
+                "failures": failure.get("failures", 0),
+                "reason": reason,
+                "strategies_attempted": attempts,
+            })
+
+    residual_plan["hermes_required_effective"] = hermes_items
+    residual_plan_path.write_text(json.dumps(residual_plan, indent=2))
+
+    request_packet = build_strategy_gap_request(
+        current_pdf,
+        remaining_failures,
+        post_failures_path,
+        residual_plan,
+    )
+
+    request_path = AUDIT_DIR / "hermes_strategy_request.json"
+    proposal_path = AUDIT_DIR / "hermes_strategy_proposal.json"
+    gap_path = AUDIT_DIR / "strategy_gap.json"
+
+    request_path.write_text(json.dumps(request_packet, indent=2))
+
+    proposal = {
+        "result": "PENDING_AGENT_ACTION",
+        "reason": "strategy_request_written_for_outer_hermes_agent",
+        "request": str(request_path),
+        "required_action": (
+            "Outer Hermes agent must read the strategy request artifact, "
+            "decide whether to reuse an existing script, propose a new "
+            "deterministic repair, request more evidence, or mark the issue "
+            "not automatable, then update/register code and rerun the "
+            "orchestrator. The orchestrator must not make an in-process "
+            "Hermes gateway strategy call while it is already being run by "
+            "Hermes/Open WebUI."
+        ),
+        "operator_question_allowed": False,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    proposal_path.write_text(json.dumps(proposal, indent=2))
+
+    artifacts = {
+        "strategy_gap": str(gap_path),
+        "strategy_request": str(request_path),
+        "strategy_proposal": str(proposal_path),
+        "repair_plan_post": str(residual_plan_path),
+    }
+
+    for item in hermes_items:
+        emit_hermes_required(
+            item.get("rule_id", ""),
+            item.get("description", ""),
+            item.get("failures", 0),
+            item.get("reason", "strategy_design_required"),
+            item.get("strategies_attempted", []),
+            artifacts=artifacts,
+        )
+
+    gap_record = {
+        "result": "HERMES_REQUIRED",
+        "reason": "residual_strategy_design_required",
+        "rules": [item.get("rule_id", "") for item in hermes_items],
+        "request": str(request_path),
+        "proposal": str(proposal_path),
+        "repair_plan_post": str(residual_plan_path),
+        "proposal_result": proposal.get("result", "UNKNOWN") if isinstance(proposal, dict) else "UNKNOWN",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    gap_path.write_text(json.dumps(gap_record, indent=2))
+
+    emit(
+        "PLAN",
+        "residual_strategy_gap",
+        "HERMES_REQUIRED",
+        data=gap_record,
+    )
+
+    return gap_record
+
+
+
+
+def build_ocr_strategy_gap_request(ocr_attempt_records, preflight_summary):
+    """Build a structured Hermes request for OCR/form-preservation deadlocks."""
+    return {
+        "request_type": "pdfua_preflight_strategy_design",
+        "stage": "ocr_remediation",
+        "rule_id": "local/OCR_REQUIRED",
+        "ticket": TICKET,
+        "job_name": JOB_NAME,
+        "job_dir": str(JOB),
+        "workspace": str(WORKSPACE),
+        "source_pdf": str(SOURCE_PDF),
+        "current_pdf": str(PASS0),
+        "safe_to_package_success": False,
+        "operator_question_allowed": False,
+        "reason": "ocr_required_but_no_promotable_strategy",
+        "problem": (
+            "The source PDF requires OCR, but every available OCR strategy failed. "
+            "At least one strategy left pages image-only, and at least one strategy "
+            "produced extractable text but failed form-field preservation. This is "
+            "a reusable remediation strategy gap, not an operator decision prompt."
+        ),
+        "doc_tags": doc_tags,
+        "preflight_ocr_detection": preflight_summary,
+        "ocr_attempts": ocr_attempt_records,
+        "existing_repair_scripts": list_existing_repair_scripts(),
+        "strategy_attempts": {
+            "local/OCR_REQUIRED": strategy_attempts.get("local/OCR_REQUIRED", []),
+        },
+        "required_response_schema": {
+            "result": (
+                "USE_EXISTING_SCRIPT | PROPOSE_NEW_SCRIPT | "
+                "NEEDS_MORE_EVIDENCE | NOT_AUTOMATABLE"
+            ),
+            "rule_id": "local/OCR_REQUIRED",
+            "strategy": "stable_snake_case_strategy_name",
+            "repair_script": "tools/repair/example.py or null",
+            "preconditions": [],
+            "pdf_edits": [],
+            "validation_plan": [],
+            "rule_map_update": {},
+            "risks": [],
+            "notes": "",
+        },
+    }
+
+
+def write_ocr_strategy_gap_artifacts(ocr_attempt_records, preflight_summary):
+    """Invoke Hermes strategy design when OCR preflight has no safe strategy."""
+    emit(
+        "PREFLIGHT",
+        "ocr_strategy_gap",
+        "RUNNING",
+        data={"attempts": len(ocr_attempt_records)},
+    )
+
+    request_packet = build_ocr_strategy_gap_request(
+        ocr_attempt_records,
+        preflight_summary,
+    )
+
+    request_path = AUDIT_DIR / "ocr_strategy_request.json"
+    proposal_path = AUDIT_DIR / "ocr_strategy_proposal.json"
+    gap_path = AUDIT_DIR / "ocr_strategy_gap.json"
+
+    request_path.write_text(json.dumps(request_packet, indent=2))
+
+    proposal = {
+        "result": "PENDING_AGENT_ACTION",
+        "reason": "ocr_strategy_request_written_for_outer_hermes_agent",
+        "request": str(request_path),
+        "required_action": (
+            "Outer Hermes agent must read the OCR strategy request artifact, "
+            "decide whether to reuse an existing script, propose a new "
+            "deterministic OCR/form-preservation strategy, request more "
+            "evidence, or mark the issue not automatable, then update/register "
+            "code and rerun the orchestrator. The orchestrator must not make "
+            "an in-process Hermes gateway strategy call while it is already "
+            "being run by Hermes/Open WebUI."
+        ),
+        "operator_question_allowed": False,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    proposal_path.write_text(json.dumps(proposal, indent=2))
+
+    artifacts = {
+        "strategy_gap": str(gap_path),
+        "strategy_request": str(request_path),
+        "strategy_proposal": str(proposal_path),
+    }
+
+    emit_hermes_required(
+        "local/OCR_REQUIRED",
+        (
+            "OCR is required, but no current OCR strategy both removes "
+            "image-only pages and preserves AcroForm/widget interactivity."
+        ),
+        len(ocr_attempt_records),
+        "preflight_strategy_exhausted",
+        attempts=ocr_attempt_records,
+        artifacts=artifacts,
+    )
+
+    gap_record = {
+        "result": "HERMES_REQUIRED",
+        "reason": "ocr_preflight_strategy_design_required",
+        "rule_id": "local/OCR_REQUIRED",
+        "request": str(request_path),
+        "proposal": str(proposal_path),
+        "proposal_result": (
+            proposal.get("result", "UNKNOWN")
+            if isinstance(proposal, dict)
+            else "UNKNOWN"
+        ),
+        "operator_question_allowed": False,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    gap_path.write_text(json.dumps(gap_record, indent=2))
+
+    emit(
+        "PREFLIGHT",
+        "ocr_strategy_gap",
+        "HERMES_REQUIRED",
+        data=gap_record,
+    )
+
+    return gap_record
+
 
 def infer_structural_tags(pdf_path):
     """Detect structural document tags using fitz. No LLM call."""
@@ -718,11 +1222,16 @@ if ocr_data and ocr_data.get('ocr_required'):
     ocr_strategies = [
         {
             'strategy': 'ocrmypdf_skip_text',
-            'flags': ['--quiet', '--skip-text'],
+            # Do not let OCRmyPDF default to PDF/A here; PDF/A conversion can
+            # remove interactive form features. The pipeline targets PDF/UA.
+            'flags': ['--quiet', '--output-type', 'pdf', '--skip-text'],
         },
         {
             'strategy': 'ocrmypdf_force_ocr',
-            'flags': ['--quiet', '--force-ocr', '--deskew', '--rotate-pages'],
+            # Force OCR is inherently risky for form PDFs because it rasterizes
+            # page content. A form-preservation gate below prevents promotion
+            # if widgets/AcroForm fields are lost.
+            'flags': ['--quiet', '--output-type', 'pdf', '--force-ocr', '--deskew', '--rotate-pages'],
         },
     ]
     # Default output path names — updated per iteration when a strategy wins
@@ -789,6 +1298,49 @@ if ocr_data and ocr_data.get('ocr_required'):
         })
 
         if val_data and not val_data.get('ocr_required'):
+            form_validation_json = AUDIT_DIR / f'form_field_preservation_{strategy_name}.json'
+            rc_form, _, _ = run(
+                [
+                    'python3',
+                    TOOLS / 'qa' / 'form_field_preservation_audit.py',
+                    str(SOURCE_PDF),
+                    str(output_pdf),
+                    '--out',
+                    str(form_validation_json),
+                ],
+                f'ocr_remediation_form_preservation:{strategy_name}',
+            )
+            form_data = load_json(form_validation_json)
+            form_result = get_result(form_data)
+            record.update({
+                'form_preservation_artifact': str(form_validation_json),
+                'form_preservation_exit_code': rc_form,
+                'form_preservation_result': form_result,
+                'source_has_form': bool(form_data.get('source_has_form')) if isinstance(form_data, dict) else None,
+                'source_field_count': form_data.get('source_field_count') if isinstance(form_data, dict) else None,
+                'output_field_count': form_data.get('output_field_count') if isinstance(form_data, dict) else None,
+            })
+
+            if not is_pass(form_result):
+                record['result'] = 'FAIL'
+                record['promotable'] = False
+                record['error'] = (
+                    'OCR output failed form field preservation; refusing to '
+                    'promote a non-fillable form artifact'
+                )
+                ocr_attempt_records.append(record)
+                strategy_attempts['local/OCR_REQUIRED'].append(record)
+                emit(
+                    'PREFLIGHT',
+                    f'ocr_remediation_form_preservation:{strategy_name}',
+                    form_result,
+                    data={
+                        'artifact': str(output_pdf),
+                        'validation_artifact': str(form_validation_json),
+                    },
+                )
+                continue
+
             record['result'] = 'PASS'
             record['promotable'] = True
             ocr_attempt_records.append(record)
@@ -831,22 +1383,54 @@ if ocr_data and ocr_data.get('ocr_required'):
         prev_ocr_out = output_pdf
 
     else:
-        # All strategies exhausted without a successful validation
-        emit_deviation(
-            step='ocr_remediation_exhausted',
-            expected='one OCR strategy validates with ocr_required=false',
-            actual='all OCR strategies failed validation',
-            context=json.dumps(ocr_attempt_records, indent=2),
-            layer=1,
+        # All strategies exhausted without a successful validation. This is a
+        # remediation strategy gap, not an operator chat prompt.
+        gap_record = write_ocr_strategy_gap_artifacts(
+            ocr_attempt_records,
+            preflight_summary,
         )
+
         emit(
-            'PREFLIGHT', 'ocr_remediation_strategies', 'FAIL',
+            'PREFLIGHT',
+            'ocr_remediation_strategies',
+            'HERMES_REQUIRED',
             data={
                 'attempts': ocr_attempt_records,
                 'preflight_ocr_detection': preflight_summary,
+                'strategy_gap': gap_record,
             },
         )
-        sys.exit(1)
+
+        write_strategy_log(JOB)
+
+        try:
+            (AUDIT_DIR / 'hermes_signals.json').write_text(
+                json.dumps(hermes_signals, indent=2)
+            )
+        except Exception:
+            pass
+
+        try:
+            (AUDIT_DIR / 'orchestrator_outcome.json').write_text(json.dumps({
+                'overall_result': 'ESCALATION',
+                'reason': 'ocr_preflight_strategy_gap',
+                'critical_fails': ['ocr_remediation'],
+                'deviations': deviations,
+                'gate_results': gate_results,
+                'hermes_signals': hermes_signals,
+                'strategy_gap': gap_record,
+                'duration_seconds': (
+                    datetime.now(timezone.utc) - start_time
+                ).total_seconds(),
+            }, indent=2))
+        except Exception:
+            pass
+
+        # Exit 3 means strategy action required. This is intentionally
+        # distinct from generic execution failure so the outer Hermes agent
+        # continues the HERMES_REQUIRED workflow instead of reporting a
+        # terminal operator-facing failure.
+        sys.exit(3)
 
     # At least one strategy validated — record only the winning attempt in the
     # passing emit (failed attempts already recorded above).
@@ -1655,6 +2239,33 @@ if not is_pass(pres_post_result):
                    'Content may have been lost during repair', layer=2)
 emit('VALIDATE', 'preservation_post', pres_post_result)
 
+# Form field preservation post
+emit('VALIDATE', 'form_fields_post', 'RUNNING')
+run(
+    [
+        'python3',
+        TOOLS / 'qa' / 'form_field_preservation_audit.py',
+        SOURCE_PDF,
+        FINAL_PDF,
+        '--out',
+        AUDIT_DIR / 'form_fields_post.json',
+    ],
+    'form_fields_post',
+)
+form_post = load_json(AUDIT_DIR / 'form_fields_post.json')
+form_post_result = get_result(form_post)
+gate_results['form_fields_post'] = form_post_result
+if not is_pass(form_post_result):
+    emit_deviation(
+        'form_fields_post',
+        'PASS',
+        form_post_result,
+        json.dumps(form_post.get('failures', []) if form_post else []),
+        layer=2,
+    )
+emit('VALIDATE', 'form_fields_post', form_post_result)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PHASE 7 — QA
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1681,13 +2292,25 @@ emit('QA', 'visual_qa', vqa_result)
 # PHASE 8 — Outcome determination and packaging
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Residual strategy-gap phase: final validator failures that remain after
+# mapped repairs must become Hermes strategy-design artifacts before outcome
+# packaging. This is intentionally not a repair; it creates the reusable
+# strategy-design packet and proposal for the next deterministic step.
+strategy_gap = write_residual_strategy_gap_artifacts(
+    FINAL_PDF,
+    remaining_failures,
+    post_failures_path,
+)
+
 critical_fails = [k for k, v in gate_results.items()
                   if not is_pass(v)
-                  and k in ('verapdf_pdfua1', 'verapdf_wcag', 'metadata_post', 'preservation_post')]
+                  and k in ('verapdf_pdfua1', 'verapdf_wcag', 'metadata_post', 'preservation_post', 'form_fields_post')]
 
 has_unresolved_hermes = len(hermes_signals) > 0
 
-if critical_fails:
+if critical_fails and has_unresolved_hermes:
+    overall = 'ESCALATION'
+elif critical_fails:
     overall = 'FAIL'
 elif has_unresolved_hermes and total_iterations >= JOB_HARD_CAP:
     overall = 'ESCALATION'
@@ -1697,7 +2320,6 @@ elif deviations:
     overall = 'REVIEW_REQUIRED'
 else:
     overall = 'PASS'
-
 emit('PACKAGE', 'overall_result', overall,
      data={'critical_fails':           critical_fails,
            'deviations':               len(deviations),
@@ -1737,12 +2359,24 @@ rc_status, out_status, err_status = run(
     env={'PYTHONPATH': str(APP)},
 )
 if rc_status != 0:
-    emit_deviation(
-        'status_json', 'exit_code=0', f'exit_code={rc_status}',
-        (out_status + err_status)[:2000], layer=1,
-    )
-    sys.exit(1)
-emit('PACKAGE', 'status_json', 'PASS')
+    if overall in ('FAIL', 'ESCALATION') and rc_status == 1:
+        emit(
+            'PACKAGE',
+            'status_json',
+            'PASS',
+            note='status_json_writer returned 1 for terminal FAIL/ESCALATION as expected',
+        )
+    else:
+        emit_deviation(
+            'status_json',
+            'exit_code=0',
+            f'exit_code={rc_status}',
+            (out_status + err_status)[:2000],
+            layer=1,
+        )
+        sys.exit(1)
+else:
+    emit('PACKAGE', 'status_json', 'PASS')
 
 # Write strategy attempts log
 write_strategy_log(JOB)
