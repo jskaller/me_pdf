@@ -33,3 +33,6 @@ hermes/data/*
 !hermes/.gitkeep
 
 hermes/open-webui/
+
+# Runtime-seeded veraPDF validation profiles; canonical source is /opt/veraPDF-validation-profiles-integration
+workspace/assets/validation_profiles/veraPDF-validation-profiles-integration/

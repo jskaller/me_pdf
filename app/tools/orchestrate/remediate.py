@@ -71,7 +71,24 @@ LANGUAGE   = args.language
 APP        = Path('/app')
 TOOLS      = APP / 'tools'
 VERAPDF_BIN = Path('/opt/verapdf-greenfield/verapdf')
-PROFILES   = WORKSPACE / 'assets' / 'validation_profiles' / 'veraPDF-validation-profiles-integration'
+DEFAULT_VERAPDF_PROFILES = Path(
+    os.environ.get(
+        'VERAPDF_PROFILE_PATH',
+        os.environ.get(
+            'VERAPDF_PROFILE_SOURCE',
+            '/opt/veraPDF-validation-profiles-integration',
+        ),
+    )
+)
+LEGACY_WORKSPACE_PROFILES = (
+    WORKSPACE / 'assets' / 'validation_profiles' /
+    'veraPDF-validation-profiles-integration'
+)
+PROFILES = (
+    DEFAULT_VERAPDF_PROFILES
+    if DEFAULT_VERAPDF_PROFILES.exists()
+    else LEGACY_WORKSPACE_PROFILES
+)
 RULE_MAP   = TOOLS / 'audit' / 'rule_repair_map.json'
 TAXONOMY   = TOOLS / 'audit' / 'doc_taxonomy.json'
 
