@@ -68,11 +68,12 @@ def _run(args):
             pass
 
     # P2: shared verdict on verdict_input.json.
-    # If orchestrator_outcome.json exists, it is authoritative; do not compute
-    # a second overall verdict that can conflict with the orchestrator's final
-    # compliance decision. STATUS.json may still include collected gates, but
-    # the overall result comes from orchestrator_outcome.json.
-    if authoritative_overall is None and verdict_result is None and verdict_input_path.exists():
+    # Computed even when orchestrator_outcome.json exists: the outcome remains
+    # authoritative for overall_result, but the recomputed shared verdict
+    # populates STATUS.json gates{} and powers the verdict_mismatch
+    # reconciliation below. STATUS.json must never silently show empty gates
+    # or skip reconciliation just because the orchestrator already decided.
+    if verdict_result is None and verdict_input_path.exists():
         try:
             raw = _load_json(verdict_input_path) or {}
             vi = VerdictInput.from_gate_dict(
@@ -81,12 +82,13 @@ def _run(args):
                 deviations_count=raw.get("deviations_count", 0),
                 total_iterations=raw.get("total_iterations", 0),
                 job_hard_cap=raw.get("job_hard_cap", 50),
+                has_hard_cap_exceeded=raw.get("has_hard_cap_exceeded", False),
                 experimental_profile_failures=raw.get("experimental_profile_failures", []),
             )
             verdict_result = verdict(vi)
             if authoritative_overall is None:
                 authoritative_overall = verdict_result.overall
-            verdict_result_source = "shared_verdict_on_verdict_input.json"
+                verdict_result_source = "shared_verdict_on_verdict_input.json"
         except Exception:
             pass
 
@@ -166,15 +168,27 @@ def _run(args):
 
     status["verdict"] = verdict_result.as_dict() if verdict_result else {}
 
-    # Reconciliation check
+    # Reconciliation check. The orchestrator may legitimately upgrade a
+    # shared-verdict FAIL to ESCALATION when unresolved HERMES signals are
+    # pending (see remediate.py Phase 8); that is consistency, not mismatch.
+    # When the outcome embeds its own verdict provenance, compare against
+    # that pre-upgrade value first.
     if outcome_path.exists() and verdict_result is not None:
         try:
             outcome = _load_json(outcome_path) or {}
             oo = outcome.get("overall_result")
-            if oo and oo != verdict_result.overall:
+            embedded = (outcome.get("verdict") or {}).get("overall")
+            recomputed = verdict_result.overall
+            consistent = (
+                oo == recomputed
+                or (embedded is not None and embedded == recomputed)
+                or (oo == "ESCALATION" and recomputed == "FAIL"
+                    and bool(outcome.get("escalation_upgrade")))
+            )
+            if oo and not consistent:
                 status["verdict_mismatch"] = {
                     "orchestrator_outcome": oo,
-                    "shared_verdict": verdict_result.overall,
+                    "shared_verdict": recomputed,
                     "note": "STATUS.json uses orchestrator_outcome.json as authoritative",
                 }
         except Exception:
