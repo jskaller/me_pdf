@@ -108,15 +108,15 @@ python3 tools/orchestrate/remediate.py \
 
 4. Watch for `DEVIATION` and `HERMES_REQUIRED` signals — these are the only steps needing your reasoning.
 
-5. When `"phase": "HERMES_REQUIRED"` appears **during the run**, act on it immediately — do not wait for `COMPLETE`. Write the required repair script, register it in the rule map, then re-run the orchestrator so it can retry. Only proceed to step 6 when all HERMES_REQUIRED signals have been resolved or determined to be unsolvable.
+5. **When the orchestrator process exits — BEFORE writing any summary — read `$JOB/audit/hermes_signals.json`.** (The orchestrator runs as one blocking command; you will see the whole stream at once, so "act during the run" is not possible — act immediately after exit instead.) If the file contains signals marked `reconciliation: "active"` (or any signals, if that field is absent) whose `reason` is **actionable** (see the actionable/terminal table in the HERMES_REQUIRED section below), the job is NOT finished and the summary must wait. Instead: read the strategy request artifact(s) named in the signal, reuse or write the repair script, register it in the rule map, rerun the orchestrator, and repeat this check on the new exit. Only proceed to step 6 when no active actionable signals remain, or every remaining one has been explicitly determined unsolvable after a genuine attempt.
 
-**Important:** If the orchestrator exits nonzero after emitting `HERMES_REQUIRED`, especially exit code `3`, do **not** summarize it as a terminal failure and do **not** ask the operator what to do. Treat it as a controlled strategy-action pause. Read the artifact paths included in the `HERMES_REQUIRED` payload, especially `strategy_request`, `strategy_proposal`, `ocr_strategy_request.json`, or `hermes_strategy_request.json`. Then either reuse an existing repair script, write a new focused deterministic repair script, register it in `tools/audit/rule_repair_map.json` when applicable, and rerun the orchestrator. If the artifact states `operator_question_allowed: false`, never ask the operator to choose among strategies.
+**Important:** If the orchestrator exits nonzero after emitting `HERMES_REQUIRED`, especially exit code `3`, do **not** summarize it as a terminal failure and do **not** ask the operator what to do. The same applies when `overall_result` is `ESCALATION` with actionable signal reasons: that ESCALATION is your work queue, not a handoff. Treat it as a controlled strategy-action pause. Read the artifact paths included in the `HERMES_REQUIRED` payload, especially `strategy_request`, `strategy_proposal`, `ocr_strategy_request.json`, or `hermes_strategy_request.json`. Then either reuse an existing repair script, write a new focused deterministic repair script, register it in `tools/audit/rule_repair_map.json` when applicable, and rerun the orchestrator. If the artifact states `operator_question_allowed: false`, never ask the operator to choose among strategies.
 
 6. Report the final summary when `"phase": "COMPLETE"` appears, following the format above. If any HERMES_REQUIRED signals were emitted and not resolved, the summary must list them explicitly as unresolved escalations.
 
 **Do not run individual audit or repair scripts manually.**
 
-**Workspace immutability rule:** Never write helper scripts, scratch files, extracted text, temporary PDFs, logs, JSON, or any other generated artifact under `workspace/input/`. `workspace/input/` is source-only and immutable. If a helper script or scratch artifact is needed, write it under the active job directory, for example `workspace/jobs/<job>/scratch/`, `workspace/jobs/<job>/audit/`, or another orchestrator-owned job subdirectory. If a generated file has already been written under `workspace/input/`, stop and move/remove it before continuing. Do not ask the operator to approve execution of scripts placed in `workspace/input/`.
+**Workspace immutability rule:** Never write helper scripts, scratch files, extracted text, temporary PDFs, logs, JSON, or any other generated artifact under `workspace/input/`, in the `/app` root, or anywhere under `/app/tools/` (the single exception: new repair scripts in `/app/tools/repair/` written per the HERMES_REQUIRED flow). All scratch belongs under the active job directory, e.g. `workspace/jobs/<job>/scratch/`. `workspace/input/` is source-only and immutable. If a helper script or scratch artifact is needed, write it under the active job directory, for example `workspace/jobs/<job>/scratch/`, `workspace/jobs/<job>/audit/`, or another orchestrator-owned job subdirectory. If a generated file has already been written under `workspace/input/`, stop and move/remove it before continuing. Do not ask the operator to approve execution of scripts placed in `workspace/input/`.
 
 If `tools/orchestrate/remediate.py` is missing, stop and report it.
 
@@ -239,11 +239,20 @@ strategy, it emits an `HERMES_REQUIRED` signal:
 ```
 
 `reason` will be one of:
+
+**ACTIONABLE — these are YOUR work queue. Do not summarize, do not hand off; follow "What to do when you see HERMES_REQUIRED" below:**
 - `manual_no_strategies` — rule exists in rule_repair_map but is marked manual with empty strategies
 - `unknown_rule` — rule not in the rule map at all; research it first
 - `all_strategies_exhausted` — every strategy in the map has been tried and failed
+- `detector_mislabeled_no_repair` — the rule's only mapped tooling is a detector (writes no output PDF); a real repair script must be designed. The signal's `detector_scripts` field names the evidence tooling that already exists
+- `preflight_strategy_exhausted` — OCR preflight ran out of strategies; read `ocr_strategy_request.json`
+- `residual_strategy_design_required` — post-repair residual rules need strategies; read `hermes_strategy_request.json`
+
+**TERMINAL — genuine escalations. Do not attempt more strategies; report to engineering:**
 - `per_rule_cap_reached` — 15 strategy attempts for this rule; force escalation
 - `job_hard_cap_reached` — 50 total iterations across the job; force escalation
+
+An `ESCALATION` overall_result whose active signals are all ACTIONABLE means the pipeline is waiting on you to extend it — that is the core design of this system, not a failure state.
 
 ### What to do when you see HERMES_REQUIRED
 
@@ -280,7 +289,7 @@ The orchestrator's `overall_result` is one of:
 | `PASS` | Everything resolved, document compliant | `output/{TICKET}_remediated/{name}_remediated.pdf` + `_AUDIT_REPORT.md` | Upload both to Jira after axesCheck + PAC 2024 sign-off |
 | `REVIEW_REQUIRED` | Document compliant but some issues need human inspection | `output/{TICKET}_remediated/review/` | Operator inspects before uploading |
 | `FAIL` | Critical gate failed (verapdf_pdfua1, verapdf_wcag, metadata_post, or preservation_post) | `output/{TICKET}_remediated/failed/` — audit report only, no remediated PDF | Do not upload remediated PDF; escalate |
-| `ESCALATION` | Per-rule or per-job cap hit; rule could not be automated | `output/{TICKET}_remediated/failed/` + `ESCALATION_REPORT.md` | Engineering review required |
+| `ESCALATION` | Critical gates still failing with active HERMES signals | `output/{TICKET}_remediated/failed/` + `ESCALATION_REPORT.md` | Check signal reasons: ACTIONABLE reasons → return to QUICKSTART step 5 and do the strategy work yourself. Only cap-related (`*_cap_reached`) or explicitly-determined-unsolvable escalations go to engineering |
 
 ---
 
