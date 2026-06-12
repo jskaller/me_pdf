@@ -186,6 +186,27 @@ for failure in failures:
         })
         continue
 
+    # P9: resolvability gate. Entries marked detector_mislabeled point at
+    # audit/detection tooling that writes no output PDF (e.g.
+    # fix_notdef_glyphs.py is a detector despite its tools/repair path);
+    # executing them as repair steps is a guaranteed Layer-1 execution
+    # deviation. Route them to HERMES with an explicit reason instead, and
+    # carry the detector script reference so the agent knows what evidence
+    # tooling already exists when designing the real repair.
+    if entry.get('resolvability') == 'detector_mislabeled':
+        hermes_required.append({
+            'rule_id':              rule_id,
+            'description':          entry.get('description', desc),
+            'failures':             count,
+            'reason':               'detector_mislabeled_no_repair',
+            'resolvability':        'detector_mislabeled',
+            'detector_scripts':     [st.get('repair_script')
+                                     for st in entry.get('strategies', [])
+                                     if st.get('repair_script')],
+            'strategies_attempted': []
+        })
+        continue
+
     # Manual rule with no strategies — emit HERMES_REQUIRED
     if entry.get('manual', False) and not entry.get('strategies'):
         hermes_required.append({
