@@ -2371,6 +2371,58 @@ strategy_gap = write_residual_strategy_gap_artifacts(
     post_failures_path,
 )
 
+# ── HERMES signal reconciliation against the residual (P7) ──────────────────
+# Signals accumulate from PLAN (manual_no_strategies / unknown_rule), the
+# validate cycle, and the residual gap phase -- the same rule can be emitted
+# more than once, and a rule flagged at plan time may have been cleared
+# incidentally by an earlier repair (e.g. the order-0 structural rebuild).
+# Before the verdict: (1) dedupe by (rule_id, reason), keeping the latest
+# emission (residual-phase entries carry artifact pointers); (2) mark signals
+# whose rule no longer appears in failures_post.json as resolved_incidental.
+# Every signal is preserved in hermes_signals.json with its reconciliation
+# flag for provenance; only ACTIVE signals count toward the outcome.
+# Safeguards: 'local/' signals are not veraPDF rules and are never marked
+# incidental; and if the hard veraPDF gates are FAIL while the parsed
+# residual is empty (parse inconsistency), reconciliation is skipped and all
+# signals stay active rather than blessing an unverifiable state.
+residual_rule_ids = {f.get('rule_id') for f in remaining_failures
+                     if isinstance(f, dict) and f.get('rule_id')}
+_raw_signal_count = len(hermes_signals)
+
+_deduped = {}
+for _sig in hermes_signals:
+    _deduped[(_sig.get('rule_id'), _sig.get('reason'))] = _sig
+
+_parse_inconsistent = (not residual_rule_ids) and not (
+    is_pass(gate_results.get('verapdf_pdfua1', 'FAIL'))
+    and is_pass(gate_results.get('verapdf_wcag', 'FAIL'))
+)
+
+reconciled_signals = []
+active_hermes_signals = []
+for _sig in _deduped.values():
+    _rid = _sig.get('rule_id') or ''
+    if _parse_inconsistent or _rid.startswith('local/') or _rid in residual_rule_ids:
+        _sig = dict(_sig, reconciliation='active')
+        active_hermes_signals.append(_sig)
+    else:
+        _sig = dict(
+            _sig,
+            reconciliation='resolved_incidental',
+            reconciliation_note=('rule absent from failures_post.json; '
+                                 'cleared by an earlier repair in this run'),
+        )
+    reconciled_signals.append(_sig)
+
+hermes_signals = reconciled_signals
+emit('PACKAGE', 'hermes_signal_reconciliation', 'PASS',
+     data={'raw_emissions': _raw_signal_count,
+           'deduped': len(_deduped),
+           'active': len(active_hermes_signals),
+           'resolved_incidental': len(_deduped) - len(active_hermes_signals),
+           'parse_inconsistent_safeguard': _parse_inconsistent,
+           'residual_rules': sorted(residual_rule_ids)})
+
 # M1B: the shared verdict module is the single source of truth for the
 # outcome; no inline gate-key lists. Pre-repair gates (*_pre, verapdf_baseline)
 # are excluded from the verdict input -- a failing baseline is the EXPECTED
@@ -2387,7 +2439,7 @@ verdict_gate_results = {
 }
 verdict_input = VerdictInput.from_remediate_state(
     verdict_gate_results,
-    hermes_signals,
+    active_hermes_signals,
     deviations,
     total_iterations,
     job_hard_cap=JOB_HARD_CAP,
@@ -2417,7 +2469,7 @@ critical_fails = [str(g) for g in verdict_result.critical_fails]
 # Orchestrator-level refinement the shared module deliberately does not model:
 # a hard compliance FAIL accompanied by unresolved HERMES_REQUIRED signals is
 # an ESCALATION (strategy-design work pending), not a terminal FAIL.
-escalation_upgrade = bool(critical_fails and hermes_signals)
+escalation_upgrade = bool(critical_fails and active_hermes_signals)
 if escalation_upgrade and overall == 'FAIL':
     overall = 'ESCALATION'
 
@@ -2426,7 +2478,8 @@ emit('PACKAGE', 'overall_result', overall,
            'blocking_qa':              [str(g) for g in verdict_result.blocking_qa],
            'informational_flags':      [str(g) for g in verdict_result.informational_flags],
            'deviations':               len(deviations),
-           'hermes_signals':         len(hermes_signals),
+           'hermes_signals':         len(active_hermes_signals),
+           'hermes_signals_resolved_incidental': len(hermes_signals) - len(active_hermes_signals),
            'total_iterations':         total_iterations,
            'iteration_warning_issued': total_iterations >= JOB_WARN_AT,
            'verdict_source':           'shared_verdict' + ('+escalation_upgrade' if escalation_upgrade else '')})
@@ -2450,7 +2503,7 @@ try:
             'overall_result':   overall,
             'critical_fails':   critical_fails,
             'total_iterations': total_iterations,
-            'has_hermes':     len(hermes_signals) > 0,
+            'has_hermes':     len(active_hermes_signals) > 0,
             'escalation_upgrade': escalation_upgrade,
             'verdict': verdict_result.as_dict(),
         }, indent=2)
