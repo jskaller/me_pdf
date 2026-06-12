@@ -40,3 +40,4 @@ workspace/assets/validation_profiles/veraPDF-validation-profiles-integration/
 # Docker creates app/workspace/ on the host as a root-owned bind-mount point;
 # git must never track or try to remove it (breaks stash/clean with EPERM).
 app/workspace/
+*.log
