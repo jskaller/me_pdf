@@ -2192,8 +2192,19 @@ def _verapdf_xml_result(path):
                         if failed > 0:
                             return 'FAIL'
                 return 'PASS'
-    except Exception:
-        pass
+    except Exception as e:
+        # An unreadable report is an execution signal, not a quiet UNKNOWN:
+        # UNKNOWN is not in PASS_CODES, so it silently drives a critical FAIL.
+        # Surface the real cause (missing file, stderr-contaminated XML, etc).
+        emit_deviation(
+            'verapdf_xml_parse',
+            f'well-formed veraPDF report XML at {path}',
+            f'{type(e).__name__}: {e}',
+            'Report XML unreadable -- gate recorded as UNKNOWN (non-pass). '
+            'Check the matching .stderr sidecar and that veraPDF ran.',
+            layer=1,
+        )
+        return 'UNKNOWN'
     return 'UNKNOWN'
 
 gate_results['verapdf_pdfua1'] = _verapdf_xml_result(AUDIT_DIR/'verapdf_post_pdfua1.xml')

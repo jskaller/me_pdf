@@ -51,13 +51,20 @@ run_profile() {
     local outfile="$2"
     shift 2
     echo "  running: $label"
-    if "$VERAPDF" --format xml --verbose --maxfailuresdisplayed -1 "$@" "$PDF" > "$outfile" 2>&1; then
+    # stderr must NOT be merged into the XML report. veraPDF (Java) can print
+    # warnings to stderr; any such line prepended to the report makes the XML
+    # unparseable downstream (_verapdf_xml_result in remediate.py and
+    # parse_verapdf_summary.py), which silently converts a compliant document
+    # into UNKNOWN/FAIL. Keep stderr in a sidecar instead.
+    if "$VERAPDF" --format xml --verbose --maxfailuresdisplayed -1 "$@" "$PDF" > "$outfile" 2> "$outfile.stderr"; then
         echo "  result:  PASS -> $outfile"
         PASS=$((PASS + 1))
     else
         echo "  result:  FAIL -> $outfile"
         FAIL=$((FAIL + 1))
     fi
+    # Drop empty stderr sidecars; keep non-empty ones as diagnostics.
+    [ -s "$outfile.stderr" ] || rm -f "$outfile.stderr"
 }
 
 echo "=== veraPDF validation: $(basename "$PDF") ==="
