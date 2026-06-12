@@ -2025,6 +2025,26 @@ while unresolved_scripts and total_iterations < JOB_HARD_CAP:
         this_result = get_result(step_data) if step_data else ('PASS' if rc == 0 else 'ERROR')
 
         if rc != 0 and not is_pass(this_result):
+            # Resolved contract decision #2 (RESIDUAL_AND_CAPTURE_CONTRACT.md):
+            # PARTIAL with a valid output PDF is progress, not failure. The
+            # chain advances on the improved file and the post-repair residual
+            # remains the judge of whether the rule actually cleared. This is
+            # deliberately NOT routed through emit_deviation: deviations floor
+            # the verdict at REVIEW_REQUIRED, which would contradict
+            # residual-is-the-judge for a partial repair that fully clears its
+            # rule. The advisory lives in the stream and in script_results.
+            if this_result == 'PARTIAL' and output_pdf.exists():
+                emit('REPAIR', script_label, 'PARTIAL',
+                     data={'iteration': iteration,
+                           'output': str(output_pdf),
+                           'advisory': 'partial_progress_advanced',
+                           'detail': (step_data.get('reason')
+                                      or step_data.get('error') or ''
+                                      )[:300] if step_data else ''})
+                script_results[script] = {'step': step, 'result': 'PARTIAL',
+                                          'executed': True, 'partial': True}
+                iteration_pdf = output_pdf
+                continue
             emit_deviation(script_label, 'exit_code=0 or PASS result',
                            f'exit_code={rc}, result={this_result}',
                            step_data.get('error', err[:300]) if step_data else err[:300],
