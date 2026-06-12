@@ -48,6 +48,7 @@ class GateName(StrEnum):
     table_semantics = "table_semantics"
     font_inventory = "font_inventory"
     struct_tree_check = "struct_tree_check"
+    form_fields = "form_fields"
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,7 @@ LEGACY_NAME_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "parse_summary": ("parse_summary", "parse_verapdf_summary", "failures"),
     "repair_plan": ("repair_plan", "repair_plan_final"),
+    "form_fields": ("form_fields", "form_fields_post", "form_field_preservation"),
 }
 def is_compliance_gate(gate_name):
     """Return True if gate_name is a compliance (hard-fail) gate."""
@@ -111,6 +113,7 @@ COMPLIANCE_GATES: set[str] = {
     "verapdf_wcag",
     "metadata_parity",
     "preservation",
+    "form_fields",
     # struct_tree_check intentionally excluded from hard COMPLIANCE_GATES
     # (Fix 11 — not confirmed as final/blocking in orchestrator; M1-safe)
 }
@@ -155,6 +158,12 @@ def _preservation_sidecar_paths(job_dir: Path) -> list[Path]:
     final_p = job_dir / "qa" / "preservation_final.json"
     # preservation_pre.json excluded (both audit/ and qa/) (Fix 3)
     return [p for p in (post, final_p) if p.exists()]
+
+
+def _form_fields_sidecar_paths(job_dir: Path) -> list[Path]:
+    """Post-repair form-field preservation audit."""
+    post = job_dir / "audit" / "form_fields_post.json"
+    return [p for p in (post,) if p.exists()]
 
 
 def _table_semantics_sidecar_paths(job_dir: Path) -> list[Path]:
@@ -209,6 +218,13 @@ GATE_REGISTRY: dict[GateName, GateDef] = {
         sidecar_resolver=_preservation_sidecar_paths,
         is_compliance_gate=True,
         legacy_aliases=("preservation", "preservation_post", "preservation_audit"),
+    ),
+    GateName.form_fields: GateDef(
+        name=GateName.form_fields,
+        description="AcroForm/widget interactivity preserved after repair",
+        sidecar_resolver=_form_fields_sidecar_paths,
+        is_compliance_gate=True,
+        legacy_aliases=("form_fields", "form_fields_post", "form_field_preservation"),
     ),
     # struct_tree_check present in GateName enum but not in hard COMPLIANCE_GATES
     # (Fix 11 — M1-safe: non-hard unless orchestrator confirms blocking)

@@ -2371,30 +2371,65 @@ strategy_gap = write_residual_strategy_gap_artifacts(
     post_failures_path,
 )
 
-critical_fails = [k for k, v in gate_results.items()
-                  if not is_pass(v)
-                  and k in ('verapdf_pdfua1', 'verapdf_wcag', 'metadata_post', 'preservation_post', 'form_fields_post')]
+# M1B: the shared verdict module is the single source of truth for the
+# outcome; no inline gate-key lists. Pre-repair gates (*_pre, verapdf_baseline)
+# are excluded from the verdict input -- a failing baseline is the EXPECTED
+# starting state of every remediation job and must not floor the verdict of
+# the repaired document.
+if str(APP) not in sys.path:
+    sys.path.insert(0, str(APP))
+import dataclasses as _dataclasses
+from tools.lib.verdict import VerdictInput, verdict as compute_shared_verdict
 
-has_unresolved_hermes = len(hermes_signals) > 0
+verdict_gate_results = {
+    k: v for k, v in gate_results.items()
+    if not k.endswith('_pre') and k != 'verapdf_baseline'
+}
+verdict_input = VerdictInput.from_remediate_state(
+    verdict_gate_results,
+    hermes_signals,
+    deviations,
+    total_iterations,
+    job_hard_cap=JOB_HARD_CAP,
+)
+if total_iterations >= JOB_HARD_CAP:
+    verdict_input = _dataclasses.replace(verdict_input, has_hard_cap_exceeded=True)
 
-if critical_fails and has_unresolved_hermes:
+# Persist the exact verdict input so status_json_writer (and any reviewer)
+# can recompute the same verdict from the same facts (P2 path of the writer).
+try:
+    (AUDIT_DIR / 'verdict_input.json').write_text(json.dumps({
+        'gates': {str(g): {'result': r.value, 'source': r.source}
+                  for g, r in verdict_input.gates.items()},
+        'hermes_signals_count': verdict_input.hermes_signals_count,
+        'deviations_count': verdict_input.deviations_count,
+        'total_iterations': verdict_input.total_iterations,
+        'job_hard_cap': verdict_input.job_hard_cap,
+        'has_hard_cap_exceeded': verdict_input.has_hard_cap_exceeded,
+    }, indent=2))
+except Exception:
+    pass
+
+verdict_result = compute_shared_verdict(verdict_input)
+overall = verdict_result.overall
+critical_fails = [str(g) for g in verdict_result.critical_fails]
+
+# Orchestrator-level refinement the shared module deliberately does not model:
+# a hard compliance FAIL accompanied by unresolved HERMES_REQUIRED signals is
+# an ESCALATION (strategy-design work pending), not a terminal FAIL.
+escalation_upgrade = bool(critical_fails and hermes_signals)
+if escalation_upgrade and overall == 'FAIL':
     overall = 'ESCALATION'
-elif critical_fails:
-    overall = 'FAIL'
-elif has_unresolved_hermes and total_iterations >= JOB_HARD_CAP:
-    overall = 'ESCALATION'
-elif has_unresolved_hermes:
-    overall = 'REVIEW_REQUIRED'
-elif deviations:
-    overall = 'REVIEW_REQUIRED'
-else:
-    overall = 'PASS'
+
 emit('PACKAGE', 'overall_result', overall,
      data={'critical_fails':           critical_fails,
+           'blocking_qa':              [str(g) for g in verdict_result.blocking_qa],
+           'informational_flags':      [str(g) for g in verdict_result.informational_flags],
            'deviations':               len(deviations),
            'hermes_signals':         len(hermes_signals),
            'total_iterations':         total_iterations,
-           'iteration_warning_issued': total_iterations >= JOB_WARN_AT})
+           'iteration_warning_issued': total_iterations >= JOB_WARN_AT,
+           'verdict_source':           'shared_verdict' + ('+escalation_upgrade' if escalation_upgrade else '')})
 
 # Write STATUS.json
 emit('PACKAGE', 'status_json', 'RUNNING')
@@ -2416,6 +2451,8 @@ try:
             'critical_fails':   critical_fails,
             'total_iterations': total_iterations,
             'has_hermes':     len(hermes_signals) > 0,
+            'escalation_upgrade': escalation_upgrade,
+            'verdict': verdict_result.as_dict(),
         }, indent=2)
     )
 except Exception:
