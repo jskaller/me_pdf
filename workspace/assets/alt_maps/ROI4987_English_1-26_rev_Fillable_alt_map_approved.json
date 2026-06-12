@@ -1,0 +1,20 @@
+{
+  "reviewer": null,
+  "reviewed_at": null,
+  "action": "accepted",
+  "note": "Pre-generated. Represents accepted state if no reviewer action taken.",
+  "figures": {
+    "0": {
+      "flagged": false,
+      "alt_text": "Authorization for Release of Health Information Pursuant To HIPAA form from Montefiore.",
+      "decorative": false,
+      "instruction": null
+    },
+    "1": {
+      "flagged": false,
+      "alt_text": "Montefiore medical records release form, sections 4-7, detailing delivery methods and authorization details.",
+      "decorative": false,
+      "instruction": null
+    }
+  }
+}

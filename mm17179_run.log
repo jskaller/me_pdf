@@ -1,0 +1,226 @@
+{"phase": "SETUP", "step": "prereq_check", "result": "RUNNING"}
+{"phase": "SETUP", "step": "prereq_check", "result": "PASS"}
+{"phase": "SETUP", "step": "scaffold", "result": "RUNNING"}
+{"phase": "SETUP", "step": "scaffold", "result": "PASS", "data": {"job_dir": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable", "output_dir": "/app/workspace/output/MM-17179_remediated"}}
+{"phase": "SETUP", "step": "copy_source", "result": "RUNNING"}
+{"phase": "SETUP", "step": "copy_source", "result": "PASS", "data": {"pass0": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/repair/pass0_source.pdf"}}
+{"phase": "SETUP", "step": "doc_tagging", "result": "RUNNING"}
+{"phase": "SETUP", "step": "doc_tagging", "result": "PASS", "data": {"doc_tags": ["images_figures"], "proposed_taxonomy_additions": []}}
+{"phase": "PREFLIGHT", "step": "ocr_detection", "result": "RUNNING"}
+{"phase": "PREFLIGHT", "step": "ocr_remediation_strategies", "result": "RUNNING"}
+{"phase": "PREFLIGHT", "step": "ocr_remediation_run:ocrmypdf_skip_text", "result": "RUNNING"}
+{"phase": "PREFLIGHT", "step": "ocr_remediation_run:ocrmypdf_force_ocr", "result": "RUNNING"}
+{"phase": "PREFLIGHT", "step": "ocr_remediation_form_preservation:ocrmypdf_force_ocr", "result": "FAIL", "data": {"artifact": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/repair/pass0_ocr_force_ocr.pdf", "validation_artifact": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/form_field_preservation_ocrmypdf_force_ocr.json"}}
+{"phase": "PREFLIGHT", "step": "ocr_remediation_run:tesseract_textonly_overlay", "result": "RUNNING"}
+{"phase": "PREFLIGHT", "step": "ocr_remediation_validate", "result": "PASS_WITH_MIXED_PAGES", "data": {"artifact": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/repair/pass0_ocr_textonly_overlay.pdf", "strategy": "tesseract_textonly_overlay", "skip_text_failed": true, "validation_artifact": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/detect_image_only_pages_tesseract_textonly_overlay.json"}}
+{"phase": "PREFLIGHT", "step": "ocr_remediation", "result": "PASS", "data": {"source": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/repair/pass0_source.pdf", "artifact": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/repair/pass0_ocr_textonly_overlay.pdf", "strategy": "tesseract_textonly_overlay", "char_count_before": 52, "char_count_after": 8929, "image_only_pages_before": [1, 2], "image_only_pages_after": []}}
+{"phase": "PREFLIGHT", "step": "qpdf_check", "result": "RUNNING"}
+{"phase": "PREFLIGHT", "step": "qpdf_check", "result": "PASS"}
+{"phase": "PREFLIGHT", "step": "struct_tree_check", "result": "RUNNING"}
+{"phase": "PREFLIGHT", "step": "struct_tree_check", "result": "FAIL", "note": "No StructTreeRoot \u2014 running fix_untagged_pdf.py to auto-generate structure tree"}
+{"phase": "PREFLIGHT", "step": "fix_untagged_pdf", "result": "FIXED"}
+{"phase": "PREFLIGHT", "step": "fix_struct_content_marking", "result": "FIXED"}
+{"phase": "AUDIT", "step": "verapdf_baseline", "result": "RUNNING"}
+{"phase": "AUDIT", "step": "verapdf_baseline", "result": "FAIL", "note": "Failures expected \u2014 repair plan will address them"}
+{"phase": "AUDIT", "step": "parse_failures", "result": "RUNNING"}
+{"phase": "AUDIT", "step": "parse_failures", "result": "PASS", "data": {"unique_rules": 9, "total_failures": 424}}
+{"phase": "AUDIT", "step": "metadata_parity", "result": "RUNNING"}
+{"phase": "AUDIT", "step": "metadata_parity", "result": "FAIL"}
+{"phase": "AUDIT", "step": "preservation", "result": "RUNNING"}
+{"phase": "AUDIT", "step": "preservation", "result": "PASS"}
+{"phase": "AUDIT", "step": "table_semantics", "result": "RUNNING"}
+{"phase": "AUDIT", "step": "table_semantics", "result": "REVIEW_REQUIRED"}
+{"phase": "AUDIT", "step": "contrast", "result": "RUNNING"}
+{"phase": "AUDIT", "step": "contrast", "result": "PASS"}
+{"phase": "PLAN", "step": "lookup_repair_plan", "result": "RUNNING"}
+{"phase": "PLAN", "step": "lookup_repair_plan", "result": "PLAN_READY", "data": {"repair_steps": 6, "hermes_required": 3, "unknown_rules": 1, "th_fix_injected": false}}
+{"phase": "HERMES_REQUIRED", "rule_id": "PDF/UA-1/7.18.4", "reason": "all_strategies_exhausted", "data": {"rule_id": "PDF/UA-1/7.18.4", "description": "Widget annotation not nested within a Form tag in the structure tree", "failures": 204, "reason": "all_strategies_exhausted", "strategies_attempted": [], "timestamp": "2026-06-12T15:11:24.416684+00:00"}}
+{"phase": "HERMES_REQUIRED", "rule_id": "PDF/UA-1/7.21.7", "reason": "all_strategies_exhausted", "data": {"rule_id": "PDF/UA-1/7.21.7", "description": "Font dictionary missing ToUnicode map \u2014 character codes cannot be mapped to Unicode values", "failures": 4, "reason": "all_strategies_exhausted", "strategies_attempted": [], "timestamp": "2026-06-12T15:11:24.416834+00:00"}}
+{"phase": "HERMES_REQUIRED", "rule_id": "PDF/UA-1/7.21.4.1", "reason": "unknown_rule", "data": {"rule_id": "PDF/UA-1/7.21.4.1", "description": "", "failures": 2, "reason": "unknown_rule", "strategies_attempted": [], "timestamp": "2026-06-12T15:11:24.416934+00:00"}}
+{"phase": "PLAN", "step": "alt_text_branch", "result": "A_ASSET"}
+{"phase": "REPAIR", "step": "iteration_1", "result": "RUNNING", "data": {"scripts_remaining": 6, "total_iterations": 1}}
+{"phase": "REPAIR", "step": "fix_pdfua_identifier", "result": "RUNNING", "data": {"iteration": 1, "strategy": "set_pdfua_identifier", "rules": ["PDF/UA-1/5"]}}
+{"phase": "REPAIR", "step": "fix_pdfua_identifier", "result": "FIXED", "data": {"iteration": 1, "output": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/repair/pass3_iter1_fix_pdfua_identifier.pdf"}}
+{"phase": "REPAIR", "step": "fix_metadata_xmp_parity", "result": "RUNNING", "data": {"iteration": 1, "strategy": "set_metadata_xmp_parity", "rules": ["PDF/UA-1/7.1"]}}
+{"phase": "REPAIR", "step": "metadata_inputs", "result": "PASS", "data": {"source": "hermes_gateway", "title": "Authorization for Release of Health Information Pursuant To HIPAA", "subject": "Patient authorization form granting consent for the release of medical records and protected health information from Montefiore Medical Center.", "keywords": "HIPAA, medical records, authorization, health information release, Montefiore, patient consent, fillable form"}}
+{"phase": "REPAIR", "step": "fix_metadata_xmp_parity", "result": "FIXED", "data": {"iteration": 1, "output": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/repair/pass4_iter1_fix_metadata_xmp_parity.pdf"}}
+{"phase": "REPAIR", "step": "fix_ocproperties_config_names", "result": "RUNNING", "data": {"iteration": 1, "strategy": "set_ocproperties_config_names", "rules": ["PDF/UA-1/7.10"]}}
+{"phase": "REPAIR", "step": "fix_ocproperties_config_names", "result": "FIXED", "data": {"iteration": 1, "output": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/repair/pass5_iter1_fix_ocproperties_config_names.pdf"}}
+{"phase": "REPAIR", "step": "fix_figure_alt_text", "result": "RUNNING", "data": {"iteration": 1, "strategy": "apply_approved_alt_map", "rules": ["PDF/UA-1/7.3"]}}
+{"phase": "REPAIR", "step": "fix_figure_alt_text", "result": "FIXED", "data": {"iteration": 1, "output": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/repair/pass6_iter1_fix_figure_alt_text.pdf"}}
+{"phase": "REPAIR", "step": "fix_link_annotation_descriptions", "result": "RUNNING", "data": {"iteration": 1, "strategy": "fix_link_annotation_descriptions", "rules": ["PDF/UA-1/7.18.1"]}}
+{"phase": "REPAIR", "step": "fix_link_annotation_descriptions", "result": "ALREADY_CORRECT", "data": {"iteration": 1, "output": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/repair/pass7_iter1_fix_link_annotation_descriptions.pdf"}}
+{"phase": "REPAIR", "step": "fix_cidset", "result": "RUNNING", "data": {"iteration": 1, "strategy": "fix_cidset", "rules": ["PDF/UA-1/7.21.4.2"]}}
+{"phase": "REPAIR", "step": "fix_cidset", "result": "FIXED", "data": {"iteration": 1, "output": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/repair/pass8_iter1_fix_cidset.pdf"}}
+{"phase": "VALIDATE", "step": "iteration_1", "result": "RUNNING"}
+{"phase": "VALIDATE", "step": "rule_resolved/PDF/UA-1/5", "result": "PASS", "data": {"iteration": 1}}
+{"phase": "VALIDATE", "step": "rule_resolved/PDF/UA-1/7.1", "result": "PASS", "data": {"iteration": 1}}
+{"phase": "VALIDATE", "step": "rule_resolved/PDF/UA-1/7.10", "result": "PASS", "data": {"iteration": 1}}
+{"phase": "VALIDATE", "step": "rule_resolved/PDF/UA-1/7.3", "result": "PASS", "data": {"iteration": 1}}
+{"phase": "HERMES_REQUIRED", "rule_id": "PDF/UA-1/7.18.1", "reason": "all_strategies_exhausted", "data": {"rule_id": "PDF/UA-1/7.18.1", "description": "", "failures": 0, "reason": "all_strategies_exhausted", "strategies_attempted": [{"iteration": 1, "strategy": "fix_link_annotation_descriptions", "script": "tools/repair/fix_link_annotation_descriptions.py", "result": "FAIL", "reason": "rule_still_present_after_repair"}], "timestamp": "2026-06-12T15:11:48.850512+00:00"}}
+{"phase": "VALIDATE", "step": "rule_resolved/PDF/UA-1/7.21.4.2", "result": "PASS", "data": {"iteration": 1}}
+{"phase": "VALIDATE", "step": "iteration_1", "result": "COMPLETE", "data": {"resolved_cumulative": 5, "still_failing": 4, "preservation": "PASS"}}
+{"phase": "VALIDATE", "step": "final_verapdf", "result": "RUNNING"}
+{"phase": "AUDIT", "step": "verapdf_summary", "result": "FAIL", "note": "diagnostic artifact \u2014 does not drive compliance outcome"}
+{"phase": "VALIDATE", "step": "final_verapdf", "result": "FAIL", "data": {"remaining_failures": 4}}
+{"phase": "VALIDATE", "step": "metadata_post", "result": "RUNNING"}
+{"phase": "VALIDATE", "step": "metadata_post", "result": "PASS"}
+{"phase": "VALIDATE", "step": "table_semantics_post", "result": "RUNNING"}
+{"phase": "VALIDATE", "step": "table_semantics_post", "result": "REVIEW_REQUIRED"}
+{"phase": "VALIDATE", "step": "preservation_post", "result": "RUNNING"}
+{"phase": "VALIDATE", "step": "preservation_post", "result": "PASS"}
+{"phase": "VALIDATE", "step": "form_fields_post", "result": "RUNNING"}
+{"phase": "VALIDATE", "step": "form_fields_post", "result": "PASS"}
+{"phase": "QA", "step": "render_compare", "result": "RUNNING"}
+{"phase": "QA", "step": "render_compare", "result": "PASS"}
+{"phase": "QA", "step": "visual_qa", "result": "RUNNING"}
+{"phase": "QA", "step": "visual_qa", "result": "PASS"}
+{"phase": "PLAN", "step": "residual_strategy_gap", "result": "RUNNING", "data": {"remaining_failures": 4}}
+{"phase": "HERMES_REQUIRED", "rule_id": "PDF/UA-1/7.18.4", "reason": "all_strategies_exhausted", "data": {"rule_id": "PDF/UA-1/7.18.4", "description": "Widget annotation not nested within a Form tag in the structure tree", "failures": 204, "reason": "all_strategies_exhausted", "strategies_attempted": [], "timestamp": "2026-06-12T15:12:14.414281+00:00", "artifacts": {"strategy_gap": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/strategy_gap.json", "strategy_request": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/hermes_strategy_request.json", "strategy_proposal": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/hermes_strategy_proposal.json", "repair_plan_post": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/repair_plan_post.json"}}}
+{"phase": "HERMES_REQUIRED", "rule_id": "PDF/UA-1/7.21.7", "reason": "all_strategies_exhausted", "data": {"rule_id": "PDF/UA-1/7.21.7", "description": "Font dictionary missing ToUnicode map \u2014 character codes cannot be mapped to Unicode values", "failures": 4, "reason": "all_strategies_exhausted", "strategies_attempted": [], "timestamp": "2026-06-12T15:12:14.414340+00:00", "artifacts": {"strategy_gap": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/strategy_gap.json", "strategy_request": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/hermes_strategy_request.json", "strategy_proposal": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/hermes_strategy_proposal.json", "repair_plan_post": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/repair_plan_post.json"}}}
+{"phase": "HERMES_REQUIRED", "rule_id": "PDF/UA-1/7.21.4.1", "reason": "unknown_rule", "data": {"rule_id": "PDF/UA-1/7.21.4.1", "description": "", "failures": 2, "reason": "unknown_rule", "strategies_attempted": [], "timestamp": "2026-06-12T15:12:14.414358+00:00", "artifacts": {"strategy_gap": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/strategy_gap.json", "strategy_request": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/hermes_strategy_request.json", "strategy_proposal": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/hermes_strategy_proposal.json", "repair_plan_post": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/repair_plan_post.json"}}}
+{"phase": "PLAN", "step": "residual_strategy_gap", "result": "HERMES_REQUIRED", "data": {"result": "HERMES_REQUIRED", "reason": "residual_strategy_design_required", "rules": ["PDF/UA-1/7.18.4", "PDF/UA-1/7.21.7", "PDF/UA-1/7.21.4.1"], "request": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/hermes_strategy_request.json", "proposal": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/hermes_strategy_proposal.json", "repair_plan_post": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/repair_plan_post.json", "proposal_result": "PENDING_AGENT_ACTION", "timestamp": "2026-06-12T15:12:14.414373+00:00"}}
+{"phase": "PACKAGE", "step": "overall_result", "result": "ESCALATION", "data": {"critical_fails": ["verapdf_pdfua1", "verapdf_wcag"], "deviations": 0, "hermes_signals": 7, "total_iterations": 1, "iteration_warning_issued": false}}
+{"phase": "PACKAGE", "step": "status_json", "result": "RUNNING"}
+{"phase": "PACKAGE", "step": "status_json", "result": "PASS", "note": "status_json_writer returned 1 for terminal FAIL/ESCALATION as expected"}
+{"phase": "PACKAGE", "step": "package_deliverables", "result": "RUNNING"}
+{"phase": "PACKAGE", "step": "package_deliverables", "result": "OK", "note": "Audit report at /app/workspace/output/MM-17179_remediated/failed"}
+{"phase": "PACKAGE", "step": "escalation_report", "result": "PASS", "note": "Escalation report at /app/workspace/output/MM-17179_remediated/failed/ESCALATION_REPORT.md"}
+{"phase": "PACKAGE", "step": "post_job_indexer", "result": "SKIPPED", "note": "overall=ESCALATION -- indexer dry-runs on PASS jobs only"}
+{
+  "phase": "COMPLETE",
+  "summary": {
+    "result": "ESCALATION",
+    "job_dir": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable",
+    "output_dir": "/app/workspace/output/MM-17179_remediated",
+    "source_pdf": "/app/workspace/input/MM-17179/ROI4987_English_1-26_rev_Fillable.pdf",
+    "final_pdf": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/repair/pass8_iter1_fix_cidset.pdf",
+    "gates": {
+      "ocr_detection": "PASS",
+      "qpdf": "PASS",
+      "struct_tree_check": "FIXED",
+      "verapdf_baseline": "FAIL",
+      "metadata_pre": "FAIL",
+      "preservation_pre": "PASS",
+      "table_semantics_pre": "REVIEW_REQUIRED",
+      "contrast_pre": "PASS",
+      "verapdf_pdfua1": "FAIL",
+      "verapdf_wcag": "FAIL",
+      "verapdf_iso": "PASS",
+      "metadata_post": "PASS",
+      "table_semantics_post": "REVIEW_REQUIRED",
+      "preservation_post": "PASS",
+      "form_fields_post": "PASS",
+      "render_compare": "PASS",
+      "visual_qa": "PASS"
+    },
+    "deviations": [],
+    "hermes_signals": [
+      {
+        "rule_id": "PDF/UA-1/7.18.4",
+        "description": "Widget annotation not nested within a Form tag in the structure tree",
+        "failures": 204,
+        "reason": "all_strategies_exhausted",
+        "strategies_attempted": [],
+        "timestamp": "2026-06-12T15:11:24.416684+00:00"
+      },
+      {
+        "rule_id": "PDF/UA-1/7.21.7",
+        "description": "Font dictionary missing ToUnicode map \u2014 character codes cannot be mapped to Unicode values",
+        "failures": 4,
+        "reason": "all_strategies_exhausted",
+        "strategies_attempted": [],
+        "timestamp": "2026-06-12T15:11:24.416834+00:00"
+      },
+      {
+        "rule_id": "PDF/UA-1/7.21.4.1",
+        "description": "",
+        "failures": 2,
+        "reason": "unknown_rule",
+        "strategies_attempted": [],
+        "timestamp": "2026-06-12T15:11:24.416934+00:00"
+      },
+      {
+        "rule_id": "PDF/UA-1/7.18.1",
+        "description": "",
+        "failures": 0,
+        "reason": "all_strategies_exhausted",
+        "strategies_attempted": [
+          {
+            "iteration": 1,
+            "strategy": "fix_link_annotation_descriptions",
+            "script": "tools/repair/fix_link_annotation_descriptions.py",
+            "result": "FAIL",
+            "reason": "rule_still_present_after_repair"
+          }
+        ],
+        "timestamp": "2026-06-12T15:11:48.850512+00:00"
+      },
+      {
+        "rule_id": "PDF/UA-1/7.18.4",
+        "description": "Widget annotation not nested within a Form tag in the structure tree",
+        "failures": 204,
+        "reason": "all_strategies_exhausted",
+        "strategies_attempted": [],
+        "timestamp": "2026-06-12T15:12:14.414281+00:00",
+        "artifacts": {
+          "strategy_gap": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/strategy_gap.json",
+          "strategy_request": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/hermes_strategy_request.json",
+          "strategy_proposal": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/hermes_strategy_proposal.json",
+          "repair_plan_post": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/repair_plan_post.json"
+        }
+      },
+      {
+        "rule_id": "PDF/UA-1/7.21.7",
+        "description": "Font dictionary missing ToUnicode map \u2014 character codes cannot be mapped to Unicode values",
+        "failures": 4,
+        "reason": "all_strategies_exhausted",
+        "strategies_attempted": [],
+        "timestamp": "2026-06-12T15:12:14.414340+00:00",
+        "artifacts": {
+          "strategy_gap": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/strategy_gap.json",
+          "strategy_request": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/hermes_strategy_request.json",
+          "strategy_proposal": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/hermes_strategy_proposal.json",
+          "repair_plan_post": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/repair_plan_post.json"
+        }
+      },
+      {
+        "rule_id": "PDF/UA-1/7.21.4.1",
+        "description": "",
+        "failures": 2,
+        "reason": "unknown_rule",
+        "strategies_attempted": [],
+        "timestamp": "2026-06-12T15:12:14.414358+00:00",
+        "artifacts": {
+          "strategy_gap": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/strategy_gap.json",
+          "strategy_request": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/hermes_strategy_request.json",
+          "strategy_proposal": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/hermes_strategy_proposal.json",
+          "repair_plan_post": "/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/audit/repair_plan_post.json"
+        }
+      }
+    ],
+    "resolved_rules": [
+      "PDF/UA-1/5",
+      "PDF/UA-1/7.1",
+      "PDF/UA-1/7.10",
+      "PDF/UA-1/7.21.4.2",
+      "PDF/UA-1/7.3"
+    ],
+    "total_iterations": 1,
+    "iteration_warning": false,
+    "duration_secs": 122.0,
+    "repair_steps_executed": 6,
+    "unknown_rules": [
+      {
+        "rule_id": "PDF/UA-1/7.21.4.1",
+        "description": "",
+        "failures": 2,
+        "reason": "unknown_rule"
+      }
+    ],
+    "doc_tags": [
+      "images_figures"
+    ],
+    "proposed_taxonomy_additions": []
+  }
+}

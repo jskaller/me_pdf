@@ -2457,6 +2457,15 @@ verdict_gate_results = {
     k: v for k, v in gate_results.items()
     if not k.endswith('_pre') and k != 'verapdf_baseline'
 }
+# Contrast carve-out: the contrast audit runs once, pre-repair. Unlike the
+# other pre gates it is not expected-to-fail, and when render_compare proves
+# the rendering did not change, the pre-repair contrast result remains valid
+# for the final document. Surface it under the canonical 'contrast' gate so
+# the verdict and the audit report stop showing NOT_RUN for a check that ran.
+if ('contrast' not in verdict_gate_results
+        and 'contrast_pre' in gate_results
+        and is_pass(gate_results.get('render_compare', 'FAIL'))):
+    verdict_gate_results['contrast'] = gate_results['contrast_pre']
 verdict_input = VerdictInput.from_remediate_state(
     verdict_gate_results,
     active_hermes_signals,

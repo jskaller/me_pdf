@@ -183,15 +183,8 @@ RUN rm -rf "$VERAPDF_PROFILE_SOURCE" \
         "$VERAPDF_PROFILE_SOURCE" \
     && test -d "$VERAPDF_PROFILE_SOURCE/PDF_UA"
 
-# Seed validation profiles into the bind-mounted workspace during container init.
-# This preserves the original Hermes command path (`gateway run`) and avoids
-# wrapping the gateway command from a shell where it may not be on PATH.
-RUN cat > /etc/cont-init.d/03-seed-verapdf-profiles <<'EOF'
-#!/command/with-contenv sh
-set -eu
-
-EOF
-
-RUN chmod +x /etc/cont-init.d/03-seed-verapdf-profiles
+# NOTE: an earlier empty cont-init seed script for veraPDF profiles was
+# removed (P10). The orchestrator reads profiles directly from the in-image
+# VERAPDF_PROFILE_SOURCE path; no workspace seeding occurs at container init.
 
 WORKDIR /app
