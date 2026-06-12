@@ -70,6 +70,14 @@ LANGUAGE   = args.language
 
 APP        = Path('/app')
 TOOLS      = APP / 'tools'
+# Interpreter for all spawned audit/repair/QA/packaging scripts. The Hermes
+# base image puts /opt/hermes/.venv first on PATH; that venv has pymupdf but
+# NOT pikepdf/pdfplumber/ocrmypdf/etc (deliberately -- see Dockerfile note
+# about not disturbing Hermes' pinned dependencies). A bare 'python3' child
+# therefore resolves to an interpreter missing required modules whenever the
+# orchestrator itself was launched from the venv. Pin the system interpreter,
+# overridable for non-container/dev environments.
+REMEDIATION_PYTHON = os.environ.get('REMEDIATION_PYTHON', '/usr/bin/python3')
 VERAPDF_BIN = Path('/opt/verapdf-greenfield/verapdf')
 DEFAULT_VERAPDF_PROFILES = Path(
     os.environ.get(
@@ -1120,6 +1128,9 @@ def is_pass(result):
 
 def check_prereqs():
     errors = []
+    if not Path(REMEDIATION_PYTHON).exists() and shutil.which(REMEDIATION_PYTHON) is None:
+        errors.append(f'Remediation python interpreter not found: {REMEDIATION_PYTHON} '
+                      '(set REMEDIATION_PYTHON to a python3 with pikepdf/pdfplumber installed)')
     if not SOURCE_PDF.exists():
         errors.append(f'Source PDF not found: {SOURCE_PDF}')
     if not VERAPDF_BIN.exists():
@@ -1144,7 +1155,7 @@ emit('SETUP', 'prereq_check', 'PASS')
 # Scaffold
 emit('SETUP', 'scaffold', 'RUNNING')
 rc, out, err = run(
-    ['python3', TOOLS/'packaging'/'package_scaffold.py',
+    [REMEDIATION_PYTHON, TOOLS/'packaging'/'package_scaffold.py',
      WORKSPACE, TICKET, BASENAME],
     'scaffold',
     env={'PYTHONPATH': str(APP)},
@@ -1214,7 +1225,7 @@ if doc_tags:
 # 1a. OCR detection
 emit('PREFLIGHT', 'ocr_detection', 'RUNNING')
 rc, out, _ = run(
-    ['python3', TOOLS/'audit'/'detect_image_only_pages.py', PASS0,
+    [REMEDIATION_PYTHON, TOOLS/'audit'/'detect_image_only_pages.py', PASS0,
      '--out', AUDIT_DIR/'detect_image_only_pages.json'],
     'ocr_detection'
 )
@@ -1294,7 +1305,7 @@ if ocr_data and ocr_data.get('ocr_required'):
         # Validate the OCR output — no more ocrmypdf flags, just detector
         rc_v, _, _ = run(
             [
-                'python3', TOOLS / 'audit' / 'detect_image_only_pages.py',
+                REMEDIATION_PYTHON, TOOLS / 'audit' / 'detect_image_only_pages.py',
                 str(output_pdf),
                 '--out', str(validation_json),
             ],
@@ -1318,7 +1329,7 @@ if ocr_data and ocr_data.get('ocr_required'):
             form_validation_json = AUDIT_DIR / f'form_field_preservation_{strategy_name}.json'
             rc_form, _, _ = run(
                 [
-                    'python3',
+                    REMEDIATION_PYTHON,
                     TOOLS / 'qa' / 'form_field_preservation_audit.py',
                     str(SOURCE_PDF),
                     str(output_pdf),
@@ -1507,7 +1518,7 @@ if _has_struct is False:
 
     if untagged_fix.exists():
         rc_tag, out_tag, _ = run(
-            ['python3', untagged_fix, PASS0, pass1_tagged,
+            [REMEDIATION_PYTHON, untagged_fix, PASS0, pass1_tagged,
              '--out', AUDIT_DIR / 'fix_untagged.json'],
             'fix_untagged_pdf'
         )
@@ -1517,7 +1528,7 @@ if _has_struct is False:
             pass2_marked = REPAIR_DIR / 'pass2_fix_struct_content_marking.pdf'
             if marking_fix.exists():
                 rc_mark, _, _ = run(
-                    ['python3', marking_fix, pass1_tagged, pass2_marked,
+                    [REMEDIATION_PYTHON, marking_fix, pass1_tagged, pass2_marked,
                      '--out', AUDIT_DIR / 'fix_struct_content_marking.json'],
                     'fix_struct_content_marking'
                 )
@@ -1564,7 +1575,7 @@ emit('AUDIT', 'verapdf_baseline', gate_results['verapdf_baseline'],
 # 2b. Parse veraPDF failures
 emit('AUDIT', 'parse_failures', 'RUNNING')
 rc, out, _ = run(
-    ['python3', TOOLS/'audit'/'parse_verapdf_summary.py',
+    [REMEDIATION_PYTHON, TOOLS/'audit'/'parse_verapdf_summary.py',
      AUDIT_DIR/'verapdf_pre_pdfua1.xml',
      AUDIT_DIR/'verapdf_pre_wcag.xml'],
     'parse_failures'
@@ -1583,7 +1594,7 @@ except Exception as e:
 
 # 2c. Metadata audit
 emit('AUDIT', 'metadata_parity', 'RUNNING')
-run(['python3', TOOLS/'audit'/'metadata_xmp_parity_audit.py', PASS0,
+run([REMEDIATION_PYTHON, TOOLS/'audit'/'metadata_xmp_parity_audit.py', PASS0,
      '--out', AUDIT_DIR/'metadata_pre.json'], 'metadata_parity')
 meta_pre = load_json(AUDIT_DIR/'metadata_pre.json')
 gate_results['metadata_pre'] = get_result(meta_pre)
@@ -1591,7 +1602,7 @@ emit('AUDIT', 'metadata_parity', gate_results['metadata_pre'])
 
 # 2d. Preservation audit
 emit('AUDIT', 'preservation', 'RUNNING')
-run(['python3', TOOLS/'qa'/'preservation_audit.py', PASS0, PASS0,
+run([REMEDIATION_PYTHON, TOOLS/'qa'/'preservation_audit.py', PASS0, PASS0,
      '--out', AUDIT_DIR/'preservation_pre.json'], 'preservation')
 pres_pre = load_json(AUDIT_DIR/'preservation_pre.json')
 gate_results['preservation_pre'] = get_result(pres_pre)
@@ -1599,7 +1610,7 @@ emit('AUDIT', 'preservation', gate_results['preservation_pre'])
 
 # 2e. Table semantics audit
 emit('AUDIT', 'table_semantics', 'RUNNING')
-run(['python3', TOOLS/'audit'/'table_semantics_audit.py', PASS0,
+run([REMEDIATION_PYTHON, TOOLS/'audit'/'table_semantics_audit.py', PASS0,
      '--out', AUDIT_DIR/'table_semantics_pre.json'], 'table_semantics')
 table_pre = load_json(AUDIT_DIR/'table_semantics_pre.json')
 gate_results['table_semantics_pre'] = get_result(table_pre)
@@ -1608,7 +1619,7 @@ emit('AUDIT', 'table_semantics', gate_results['table_semantics_pre'])
 
 # 2f. Contrast audit
 emit('AUDIT', 'contrast', 'RUNNING')
-run(['python3', TOOLS/'audit'/'contrast_audit.py', PASS0,
+run([REMEDIATION_PYTHON, TOOLS/'audit'/'contrast_audit.py', PASS0,
      '--out', AUDIT_DIR/'contrast_pre.json'], 'contrast')
 contrast_pre = load_json(AUDIT_DIR/'contrast_pre.json')
 gate_results['contrast_pre'] = get_result(contrast_pre)
@@ -1619,7 +1630,7 @@ emit('AUDIT', 'contrast', gate_results['contrast_pre'])
 # ─────────────────────────────────────────────────────────────────────────────
 
 emit('PLAN', 'lookup_repair_plan', 'RUNNING')
-lookup_cmd = ['python3', TOOLS/'audit'/'lookup_repair_plan.py',
+lookup_cmd = [REMEDIATION_PYTHON, TOOLS/'audit'/'lookup_repair_plan.py',
               failures_path, '--map', RULE_MAP, '--taxonomy', TAXONOMY]
 if doc_tags:
     lookup_cmd.extend(['--doc-tags', ','.join(doc_tags)])
@@ -1736,7 +1747,7 @@ def run_validate_cycle(pdf_path, iteration):
             shutil.copy2(src, dst)
 
     rc2, out2, _ = run(
-        ['python3', TOOLS/'audit'/'parse_verapdf_summary.py',
+        [REMEDIATION_PYTHON, TOOLS/'audit'/'parse_verapdf_summary.py',
          iter_pdfua, iter_wcag],
         f'parse_iter{iteration}'
     )
@@ -1747,7 +1758,7 @@ def run_validate_cycle(pdf_path, iteration):
         failures = []
 
     # Preservation check
-    run(['python3', TOOLS/'qa'/'preservation_audit.py',
+    run([REMEDIATION_PYTHON, TOOLS/'qa'/'preservation_audit.py',
          PASS0, pdf_path,
          '--out', AUDIT_DIR/f'preservation_iter{iteration}.json'],
         f'preservation_iter{iteration}')
@@ -1821,7 +1832,7 @@ while unresolved_scripts and total_iterations < JOB_HARD_CAP:
         if 'fix_figure_alt_text' in script:
             if alt_branch in ('A_LOCAL', 'A_ASSET'):
                 rc, out, err = run(
-                    ['python3', script_path, iteration_pdf, output_pdf,
+                    [REMEDIATION_PYTHON, script_path, iteration_pdf, output_pdf,
                      '--alt-map', ALT_MAP_JOB, '--language', LANGUAGE],
                     script_label
                 )
@@ -1832,7 +1843,7 @@ while unresolved_scripts and total_iterations < JOB_HARD_CAP:
                 review_html = REPORTS_DIR/ 'alt_text_review.html'
 
                 rc_auto, out_auto, _ = run(
-                    ['python3', script_path, iteration_pdf, auto_pdf,
+                    [REMEDIATION_PYTHON, script_path, iteration_pdf, auto_pdf,
                      '--language', LANGUAGE],
                     f'{script_label}_auto'
                 )
@@ -1863,7 +1874,7 @@ while unresolved_scripts and total_iterations < JOB_HARD_CAP:
                 # python3. Model/provider selection remains dynamic through
                 # Hermes call_llm(task='vision') and the admin/config runtime.
                 hermes_python = Path('/opt/hermes/.venv/bin/python3')
-                draft_python = hermes_python if hermes_python.exists() else Path('python3')
+                draft_python = hermes_python if hermes_python.exists() else Path(REMEDIATION_PYTHON)
                 run([draft_python, TOOLS/'repair'/'generate_alt_text_drafts.py',
                      auto_pdf, '--fix-output', auto_json, '--out', drafts_json],
                     f'{script_label}_drafts')
@@ -1899,7 +1910,7 @@ while unresolved_scripts and total_iterations < JOB_HARD_CAP:
                 # generate_alt_text_review_report.py writes the pre-approved map
                 # directly via --map-out, and produces the HTML review report.
                 rc_review, out_review, _ = run(
-                    ['python3', TOOLS/'repair'/'generate_alt_text_review_report.py',
+                    [REMEDIATION_PYTHON, TOOLS/'repair'/'generate_alt_text_review_report.py',
                      str(auto_pdf),
                      '--draft',   str(drafts_json),
                      '--out',     str(review_html),
@@ -1920,7 +1931,7 @@ while unresolved_scripts and total_iterations < JOB_HARD_CAP:
 
                 # Step B4: apply approved map
                 rc, out, err = run(
-                    ['python3', script_path, auto_pdf, output_pdf,
+                    [REMEDIATION_PYTHON, script_path, auto_pdf, output_pdf,
                      '--alt-map', ALT_MAP_JOB, '--language', LANGUAGE],
                     f'{script_label}_apply'
                 )
@@ -1960,7 +1971,7 @@ while unresolved_scripts and total_iterations < JOB_HARD_CAP:
                     pass
             else:
                 rc, out, err = run(
-                    ['python3', script_path, iteration_pdf, output_pdf,
+                    [REMEDIATION_PYTHON, script_path, iteration_pdf, output_pdf,
                      '--title',    args.title,
                      '--subject',  args.subject,
                      '--keywords', args.keywords,
@@ -1971,7 +1982,7 @@ while unresolved_scripts and total_iterations < JOB_HARD_CAP:
         # ── All other scripts ─────────────────────────────────────────────────
         else:
             rc, out, err = run(
-                ['python3', script_path, iteration_pdf, output_pdf],
+                [REMEDIATION_PYTHON, script_path, iteration_pdf, output_pdf],
                 script_label
             )
 
@@ -2215,7 +2226,7 @@ if (AUDIT_DIR/'verapdf_post_pdfua2.xml').exists():
     gate_results['verapdf_pdfua2'] = _verapdf_xml_result(AUDIT_DIR/'verapdf_post_pdfua2.xml')
 
 rc2, out2, _ = run(
-    ['python3', TOOLS/'audit'/'parse_verapdf_summary.py',
+    [REMEDIATION_PYTHON, TOOLS/'audit'/'parse_verapdf_summary.py',
      AUDIT_DIR/'verapdf_post_pdfua1.xml',
      AUDIT_DIR/'verapdf_post_wcag.xml'],
     'parse_post_failures'
@@ -2235,7 +2246,7 @@ emit('VALIDATE', 'final_verapdf', 'PASS' if hard_pass else 'FAIL',
 
 # Metadata post
 emit('VALIDATE', 'metadata_post', 'RUNNING')
-run(['python3', TOOLS/'audit'/'metadata_xmp_parity_audit.py', FINAL_PDF,
+run([REMEDIATION_PYTHON, TOOLS/'audit'/'metadata_xmp_parity_audit.py', FINAL_PDF,
      '--out', AUDIT_DIR/'metadata_post.json'], 'metadata_post')
 meta_post        = load_json(AUDIT_DIR/'metadata_post.json')
 meta_post_result = get_result(meta_post)
@@ -2247,7 +2258,7 @@ emit('VALIDATE', 'metadata_post', meta_post_result)
 
 # Table semantics post
 emit('VALIDATE', 'table_semantics_post', 'RUNNING')
-run(['python3', TOOLS/'audit'/'table_semantics_audit.py', FINAL_PDF,
+run([REMEDIATION_PYTHON, TOOLS/'audit'/'table_semantics_audit.py', FINAL_PDF,
      '--out', AUDIT_DIR/'table_semantics_post.json'], 'table_semantics_post')
 table_post        = load_json(AUDIT_DIR/'table_semantics_post.json')
 table_post_result = get_result(table_post)
@@ -2256,7 +2267,7 @@ emit('VALIDATE', 'table_semantics_post', table_post_result)
 
 # Preservation post
 emit('VALIDATE', 'preservation_post', 'RUNNING')
-run(['python3', TOOLS/'qa'/'preservation_audit.py',
+run([REMEDIATION_PYTHON, TOOLS/'qa'/'preservation_audit.py',
      PASS0, FINAL_PDF,
      '--out', AUDIT_DIR/'preservation_post.json'], 'preservation_post')
 pres_post        = load_json(AUDIT_DIR/'preservation_post.json')
@@ -2271,7 +2282,7 @@ emit('VALIDATE', 'preservation_post', pres_post_result)
 emit('VALIDATE', 'form_fields_post', 'RUNNING')
 run(
     [
-        'python3',
+        REMEDIATION_PYTHON,
         TOOLS / 'qa' / 'form_field_preservation_audit.py',
         SOURCE_PDF,
         FINAL_PDF,
@@ -2299,7 +2310,7 @@ emit('VALIDATE', 'form_fields_post', form_post_result)
 # ─────────────────────────────────────────────────────────────────────────────
 
 emit('QA', 'render_compare', 'RUNNING')
-run(['python3', TOOLS/'qa'/'render_compare.py',
+run([REMEDIATION_PYTHON, TOOLS/'qa'/'render_compare.py',
      PASS0, FINAL_PDF, QA_DIR,
      '--out', AUDIT_DIR/'render_compare.json'], 'render_compare')
 rc_data   = load_json(AUDIT_DIR/'render_compare.json')
@@ -2308,7 +2319,7 @@ gate_results['render_compare'] = rc_result
 emit('QA', 'render_compare', rc_result)
 
 emit('QA', 'visual_qa', 'RUNNING')
-run(['python3', TOOLS/'qa'/'visual_qa.py',
+run([REMEDIATION_PYTHON, TOOLS/'qa'/'visual_qa.py',
      FINAL_PDF, QA_DIR,
      '--out', AUDIT_DIR/'visual_qa.json'], 'visual_qa')
 vqa_data   = load_json(AUDIT_DIR/'visual_qa.json')
@@ -2381,7 +2392,7 @@ except Exception:
     pass
 
 rc_status, out_status, err_status = run(
-    ['python3', TOOLS/'packaging'/'status_json_writer.py', JOB,
+    [REMEDIATION_PYTHON, TOOLS/'packaging'/'status_json_writer.py', JOB,
      '--pdf', str(SOURCE_PDF)],
     'status_json',
     env={'PYTHONPATH': str(APP)},
@@ -2415,7 +2426,7 @@ if overall == 'PASS':
     # Full package — remediated PDF + audit report
     emit('PACKAGE', 'package_deliverables', 'RUNNING')
     rc, out, _ = run(
-        ['python3', TOOLS/'packaging'/'package_deliverables.py',
+        [REMEDIATION_PYTHON, TOOLS/'packaging'/'package_deliverables.py',
          JOB, FINAL_PDF,
          '--output-dir', OUT,
          '--source-pdf', str(SOURCE_PDF)],
@@ -2436,7 +2447,7 @@ elif overall == 'REVIEW_REQUIRED':
     review_dir.mkdir(parents=True, exist_ok=True)
     emit('PACKAGE', 'package_deliverables', 'RUNNING')
     rc, out, _ = run(
-        ['python3', TOOLS/'packaging'/'package_deliverables.py',
+        [REMEDIATION_PYTHON, TOOLS/'packaging'/'package_deliverables.py',
          JOB, FINAL_PDF,
          '--output-dir', str(review_dir),
          '--source-pdf', str(SOURCE_PDF)],
@@ -2454,7 +2465,7 @@ elif overall in ('FAIL', 'ESCALATION'):
     # Generate audit report into failed/ — no remediated PDF
     emit('PACKAGE', 'package_deliverables', 'RUNNING')
     rc, out, _ = run(
-        ['python3', TOOLS/'packaging'/'package_deliverables.py',
+        [REMEDIATION_PYTHON, TOOLS/'packaging'/'package_deliverables.py',
          JOB, FINAL_PDF,
          '--output-dir', str(failed_dir),
          '--source-pdf', str(SOURCE_PDF),
@@ -2518,7 +2529,7 @@ if overall == 'PASS':
     emit('PACKAGE', 'post_job_indexer', 'RUNNING',
          note='dry-run only -- capture contract not yet implemented')
     rc_idx, out_idx, err_idx = run(
-        ['python3', TOOLS/'audit'/'post_job_indexer.py', JOB,
+        [REMEDIATION_PYTHON, TOOLS/'audit'/'post_job_indexer.py', JOB,
          '--map', RULE_MAP, '--dry-run'],
         'post_job_indexer',
     )
