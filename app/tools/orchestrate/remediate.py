@@ -192,6 +192,13 @@ def clean_metadata_text(value):
     return ' '.join(str(value or '').split()).strip()
 
 
+def tesseract_lang(language):
+    """Map the job --language (BCP-47-ish, e.g. en-US) to tesseract codes.
+    The image ships tesseract-ocr-eng and tesseract-ocr-spa."""
+    primary = (language or 'en').split('-')[0].strip().lower()
+    return {'en': 'eng', 'es': 'spa'}.get(primary, 'eng')
+
+
 def summarize_ocr_detector(data):
     """Return a flat summary of per-page char counts plus top-level gate fields."""
     pages = data.get("pages", []) if isinstance(data, dict) else []
@@ -1250,22 +1257,35 @@ if ocr_data and ocr_data.get('ocr_required'):
     ocr_strategies = [
         {
             'strategy': 'ocrmypdf_skip_text',
+            'script': 'ocrmypdf',
             # Do not let OCRmyPDF default to PDF/A here; PDF/A conversion can
             # remove interactive form features. The pipeline targets PDF/UA.
             'flags': ['--quiet', '--output-type', 'pdf', '--skip-text'],
         },
         {
             'strategy': 'ocrmypdf_force_ocr',
+            'script': 'ocrmypdf',
             # Force OCR is inherently risky for form PDFs because it rasterizes
             # page content. A form-preservation gate below prevents promotion
             # if widgets/AcroForm fields are lost.
             'flags': ['--quiet', '--output-type', 'pdf', '--force-ocr', '--deskew', '--rotate-pages'],
         },
+        {
+            # Scanned fillable forms: --skip-text skips any page carrying even
+            # incidental text (page numbers) while the detector still calls it
+            # image-only; --force-ocr rasterizes and destroys AcroForm fields.
+            # This repair script overlays an invisible tesseract text layer on
+            # the ORIGINAL pages -- geometry, content, and widgets untouched.
+            'strategy': 'tesseract_textonly_overlay',
+            'script': 'tools/repair/ocr_preserve_forms.py',
+            'flags': [],
+        },
     ]
     # Default output path names — updated per iteration when a strategy wins
     strategy_output_map = {
-        'ocrmypdf_skip_text':  REPAIR_DIR / 'pass0_ocr_skip_text.pdf',
-        'ocrmypdf_force_ocr': REPAIR_DIR / 'pass0_ocr_force_ocr.pdf',
+        'ocrmypdf_skip_text':           REPAIR_DIR / 'pass0_ocr_skip_text.pdf',
+        'ocrmypdf_force_ocr':           REPAIR_DIR / 'pass0_ocr_force_ocr.pdf',
+        'tesseract_textonly_overlay':   REPAIR_DIR / 'pass0_ocr_textonly_overlay.pdf',
     }
 
     ocr_attempt_records = []
@@ -1279,15 +1299,25 @@ if ocr_data and ocr_data.get('ocr_required'):
         validation_json = AUDIT_DIR / f'detect_image_only_pages_{strategy_name}.json'
 
         emit('PREFLIGHT', f'ocr_remediation_run:{strategy_name}', 'RUNNING')
-        rc_ocr, out_ocr, err_ocr = run(
-            ['ocrmypdf', *strategy['flags'], str(PASS0), str(output_pdf)],
-            f'ocr_remediation:{strategy_name}',
-        )
+        if strategy['script'] == 'ocrmypdf':
+            ocr_cmd = ['ocrmypdf', *strategy['flags'], str(PASS0), str(output_pdf)]
+        else:
+            # Repair-script strategy: standard contract plus this script's
+            # language/audit options. Its own JSON result (incl. quality_notes
+            # and skew flags) lands in AUDIT_DIR for the attempt record.
+            ocr_cmd = [
+                REMEDIATION_PYTHON, APP / strategy['script'],
+                str(PASS0), str(output_pdf),
+                '--out', str(AUDIT_DIR / f'ocr_repair_{strategy_name}.json'),
+                '--audit-dir', str(AUDIT_DIR),
+                '--language', tesseract_lang(LANGUAGE),
+            ]
+        rc_ocr, out_ocr, err_ocr = run(ocr_cmd, f'ocr_remediation:{strategy_name}')
 
         record = {
             'iteration': len(ocr_attempt_records),
             'strategy': strategy_name,
-            'script': 'ocrmypdf',
+            'script': strategy['script'],
             'flags': strategy['flags'],
             'input_pdf': str(PASS0),
             'output_pdf': str(output_pdf),
