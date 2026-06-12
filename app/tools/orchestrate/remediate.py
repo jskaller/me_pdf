@@ -2503,11 +2503,40 @@ elif overall in ('FAIL', 'ESCALATION'):
     emit('PACKAGE', 'escalation_report', 'PASS',
          note=f'Escalation report at {escalation_report}')
 
-# Post-job knowledge update
-emit('PACKAGE', 'post_job_indexer', 'RUNNING')
-run(['python3', TOOLS/'audit'/'post_job_indexer.py', JOB, '--map', RULE_MAP],
-    'post_job_indexer')
-emit('PACKAGE', 'post_job_indexer', 'PASS')
+# Post-job knowledge update -- QUARANTINED to dry-run on PASS jobs only.
+# Rationale (see ORCHESTRATOR_REVIEW.md S1 indexer finding and
+# RESIDUAL_AND_CAPTURE_CONTRACT.md): the indexer's capture logic reads a
+# deviation_log that nothing writes, keys off baseline failures rather than
+# the residual, and writes new entries in the v1 flat schema (repair_script
+# key) into the v2 map (strategies array) -- entries lookup_repair_plan.py
+# cannot use. Live writes therefore mutate rule_repair_map.json with
+# unusable or wrong knowledge and make reruns of the same document
+# non-reproducible. Until the learned_strategies/residual_analysis capture
+# contract is implemented, the indexer proposes only; its dry-run output is
+# preserved per job as design evidence for that future work.
+if overall == 'PASS':
+    emit('PACKAGE', 'post_job_indexer', 'RUNNING',
+         note='dry-run only -- capture contract not yet implemented')
+    rc_idx, out_idx, err_idx = run(
+        ['python3', TOOLS/'audit'/'post_job_indexer.py', JOB,
+         '--map', RULE_MAP, '--dry-run'],
+        'post_job_indexer',
+    )
+    try:
+        (AUDIT_DIR / 'indexer_proposals.json').write_text(
+            out_idx if out_idx else json.dumps(
+                {'result': 'ERROR', 'exit_code': rc_idx, 'stderr': err_idx[:2000]}
+            )
+        )
+    except Exception:
+        pass
+    emit('PACKAGE', 'post_job_indexer',
+         'PASS' if rc_idx == 0 else 'WARN',
+         data={'mode': 'dry_run',
+               'proposals': str(AUDIT_DIR / 'indexer_proposals.json')})
+else:
+    emit('PACKAGE', 'post_job_indexer', 'SKIPPED',
+         note=f'overall={overall} -- indexer dry-runs on PASS jobs only')
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Final summary
