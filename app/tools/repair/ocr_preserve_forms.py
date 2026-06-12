@@ -2,508 +2,319 @@
 """
 ocr_preserve_forms.py
 
-Strategy: `ocrmypdf_force_ocr_with_form_merge`.
+Strategy: `tesseract_textonly_overlay`.
 
-OCR a PDF via ocrmypdf while preserving AcroForm form fields and widget
-annotations.  This is the script referenced by `tools/repair/ocr_preserve_forms.py`
-in ocr_strategy_proposal.json.
+Add a searchable, invisible OCR text layer to a scanned PDF WITHOUT touching
+anything else in the document. The source pages, images, geometry, AcroForm,
+and widget annotations are never modified -- the only change is an overlaid
+text-only content layer per OCR'd page. This is the OCR strategy for the
+document class neither stock ocrmypdf invocation can handle:
 
-Pipeline
---------
-1. Open the source PDF with pikepdf (no mutation) and extract the `/AcroForm`
-   subtree plus every `/Annots` array whose entries carry `/Subtype /Widget`.
-2. Run `ocrmypdf --force-ocr --deskew --rotate-pages --no-correct-tz`
-   to produce a searchable-OCR PDF on a temp path.
-3. Open the OCR output with pikepdf.  Overwrite its `/AcroForm` with the
-   source one, then for each page inject the corresponding widget annotations
-   (with `/P` references rewritten to the new page objects), merging them with
-   any annotations already produced by ocrmypdf.
-4. Save the merged document and verify with the project's image-only-pages and
-   form-field-preservation audits.
+  - ocrmypdf --skip-text skips any page containing ANY text element, so a
+    scanned page with a few incidental characters (page number, watermark)
+    is skipped while the pipeline's detector (min-chars threshold) still
+    classifies it image-only.
+  - ocrmypdf --force-ocr rasterizes page content, destroying AcroForm
+    fields and widget interactivity.
 
-Exit codes
-----------
-0  PROMOTABLE: OCR text present and all source form fields are present with the
-   same or greater field count in output.
-1  FORM_MISMATCH / DOCUMENT_CHANGED: a sanity check or post-merge audit found
-   inconsistent form state.
-2  TOOL_FAILURE: ocrmypdf or pikepdf raised an exception.
+Pipeline (per page classified image-only by the same rule as
+tools/audit/detect_image_only_pages.py -- char_count < min-chars AND at
+least one image):
+  1. Render the page to a raster at --dpi via PyMuPDF (rotation-as-displayed).
+  2. Run tesseract with `-c textonly_pdf=1` producing a PDF page containing
+     ONLY invisible text (render mode 3), plus a TSV for quality metrics and
+     an OSD pass for orientation.
+  3. Overlay the text-only page onto the ORIGINAL page with pikepdf
+     Page.add_overlay, which compensates for target-page /Rotate.
+  4. Self-validate the saved output with the project's real audit scripts:
+     tools/audit/detect_image_only_pages.py and
+     tools/qa/form_field_preservation_audit.py.
+
+Deliberately NOT done: deskew or rotation correction. The page geometry must
+stay fixed underneath existing widget rects, so the image is never altered.
+Instead, orientation/skew signals are REPORTED per page in `quality_notes`
+(universal rule -- always emitted when detected, never gating): OSD-detected
+orientation != 0, or low mean word confidence, sets
+`skew_or_rotation_detected` so the operator knows OCR accuracy may be
+degraded on that page.
+
+Usage:
+  ocr_preserve_forms.py <input.pdf> <output.pdf> [--out results.json]
+                        [--language eng] [--dpi 300] [--min-chars 30]
+                        [--audit-dir DIR]
+
+Output: one JSON object on stdout with at minimum
+  {"result": "PASS|ALREADY_CORRECT|FAIL|ERROR", "strategy": "...", "reason": "..."}
+
+Exit codes:
+  0  PASS (validated) or ALREADY_CORRECT (no image-only pages; input copied)
+  1  FAIL (output written but validation did not pass; see reason)
+  2  ERROR (tool failure: tesseract/pikepdf/pymupdf unavailable or crashed)
 """
-
 from __future__ import annotations
 
-import sys
-import json
 import argparse
-import gc
+import csv
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
+STRATEGY = 'tesseract_textonly_overlay'
+SCRIPT_DIR = Path(__file__).resolve().parent          # tools/repair
+TOOLS_DIR = SCRIPT_DIR.parent                          # tools
+DETECT_SCRIPT = TOOLS_DIR / 'audit' / 'detect_image_only_pages.py'
+FORM_SCRIPT = TOOLS_DIR / 'qa' / 'form_field_preservation_audit.py'
+PER_PAGE_TIMEOUT = 300
+
 try:
-    import pikepdf
-except Exception as exc:  # pragma: no cover – hard dependency
-    err = json.dumps({"result": "ERROR", "error": f"pikepdf unavailable: {exc}"})
-    print(err)
+    import fitz  # PyMuPDF
+except Exception as exc:  # pragma: no cover
+    print(json.dumps({'result': 'ERROR', 'strategy': STRATEGY,
+                      'reason': f'PyMuPDF unavailable: {exc}'}))
     sys.exit(2)
 
 try:
-    import ocrmypdf
-    _OCRM_OK = True
-except Exception:  # pragma: no cover – optional at import time
-    _OCRM_OK = False
+    import pikepdf
+except Exception as exc:  # pragma: no cover
+    print(json.dumps({'result': 'ERROR', 'strategy': STRATEGY,
+                      'reason': f'pikepdf unavailable: {exc}'}))
+    sys.exit(2)
 
 
-# ---------------------------------------------------------------------------
-# Pytest fixtures (used by tools/repair/tests when this file is imported)
-# ---------------------------------------------------------------------------
-
-try:
-    import pytest
-
-    @pytest.fixture()
-    def sample_form_pdf(tmp_path: Path) -> Path:
-        """Build a minimal one-page PDF that has an AcroForm with a Text field
-        and a fresh /P page reference, suitable for end-to-end merge tests."""
-        import pikepdf  # re-import inside fixture scope
-
-        out = tmp_path / "sample_form.pdf"
-        pdf = pikepdf.Pdf.new()
-
-        # Page
-        page = pikepdf.Page(pdf, pikepdf.Rect(0, 0, 612, 792))
-
-        # Widget annotation on the page (Rect covers lower-left corner)
-        widget = pikepdf.Dictionary(
-            Type=pikepdf.Name("/Annot"),
-            Subtype=pikepdf.Name("/Widget"),
-            Rect=pikepdf.Array([50, 50, 200, 80]),
-            FT=pikepdf.Name("/Tx"),
-            T=pikepdf.String("Field1"),
-            V=pikepdf.String(""),
-            Ff=pikepdf.Integer(0),
-            P=page.obj,
-        )
-
-        # Form field node that points to the widget via /Kids
-        field = pikepdf.Dictionary(
-            Type=pikepdf.Name("/Annot"),
-            Subtype=pikepdf.Name("/Widget"),
-            FT=pikepdf.Name("/Tx"),
-            T=pikepdf.String("Field1"),
-            Kids=pikepdf.Array([widget]),
-            V=pikepdf.String(""),
-            Ff=pikepdf.Integer(0),
-        )
-
-        # AcroForm root
-        acroform = pikepdf.Dictionary(
-            Type=pikepdf.Name("/XObject"),
-            Fields=pikepdf.Array([field]),
-            NeedAppearances=pikepdf.Boolean(False),
-            SigFlags=pikepdf.Integer(0),
-        )
-
-        page_obj = page.obj
-        page_obj.Annots = pikepdf.Array([widget])
-        pdf.Root = pikepdf.Dictionary(
-            AcroForm=acroform,
-            Type=pikepdf.Name("/Catalog"),
-            Pages=pikepdf.Dictionary(
-                Type=pikepdf.Name("/Pages"),
-                Kids=pikepdf.Array([page_obj]),
-                Count=pikepdf.Integer(1),
-            ),
-        )
-        pdf.save(str(out))
-        pdf.close()
-        return out
-
-    _PYTEST_AVAILABLE = True
-except ImportError:
-    _PYTEST_AVAILABLE = False
+def fail_error(reason, out_path=None, **extra):
+    payload = {'result': 'ERROR', 'strategy': STRATEGY, 'reason': reason, **extra}
+    text = json.dumps(payload, indent=2)
+    print(text)
+    if out_path:
+        try:
+            Path(out_path).write_text(text)
+        except Exception:
+            pass
+    sys.exit(2)
 
 
-# ---------------------------------------------------------------------------
-# pikepdf helpers
-# ---------------------------------------------------------------------------
-
-def _rewrite_page_refs(obj: pikepdf.Object, mapping: dict[pikepdf.Object, pikepdf.Object]) -> None:
-    """Rewrite direct /P page references inside *obj* in-place."""
-    if isinstance(obj, pikepdf.Dictionary):
-        current = obj.get("/P")
-        if current is not None and isinstance(current, pikepdf.Object):
-            new_page = mapping.get(current)
-            if new_page is not None:
-                obj["/P"] = new_page
-        for _, val in obj.items():
-            _rewrite_page_refs(val, mapping)
-    elif isinstance(obj, pikepdf.Array):
-        for item in obj:
-            _rewrite_page_refs(item, mapping)
+def classify_pages(pdf_path, min_chars):
+    """Mirror detect_image_only_pages.py: image-bearing pages below the
+    char threshold are OCR targets. Returns (targets, page_count)."""
+    doc = fitz.open(str(pdf_path))
+    targets = []
+    for idx in range(len(doc)):
+        page = doc[idx]
+        chars = len((page.get_text() or '').strip())
+        images = len(page.get_images(full=True))
+        if chars < min_chars and images > 0:
+            targets.append(idx)
+    count = len(doc)
+    doc.close()
+    return targets, count
 
 
-def _collect_src_widgets(doc: pikepdf.Pdf, page_obj: pikepdf.Object) -> pikepdf.Array:
-    """Return a pikepdf.Array of widget annotations on *page_obj* from *doc*.
-
-    Non-widget entries are silently skipped so that link annotations embedded
-    by ocrmypdf are preserved rather than discarded.
-    """
-    result = pikepdf.Array()
-    annots_raw = page_obj.get("/Annots")
-    if not isinstance(annots_raw, pikepdf.Array):
-        return result
-
-    for annot in annots_raw:
-        if not isinstance(annot, pikepdf.Dictionary):
-            continue
-        # Tentative: accept anything without /Subtype (broader) or with /Widget
-        subtype = annot.get("/Subtype")
-        if subtype is pikepdf.Name("/Widget"):
-            result.append(annot)
-    return result
-
-
-def _merge_page_annotations(
-    new_doc: pikepdf.Pdf,
-    new_page: pikepdf.Page,
-    src_widgets: pikepdf.Array,
-) -> None:
-    """Inject *src_widgets* (objects still belonging to the *source* doc) into
-    *new_page*, rewriting their `/P` references to the new page objects and
-    merging transparently with any annotations already present that ocrmypdf
-    wrote into the output.
-
-    Any objects in *new_page* already carrying a `/P` pointing at another new
-    page (link annotations, ocrmypdf internal annots) are preserved first.  If
-    a merged widget has the same indirect-object number as an existing skip
-    entry it is deduplicated automatically.
-
-    The merge is safe because:
-    - widget annotations self-identify via their `/T` (field name) and `/Rect`.
-    - page-level link annotations have no `/T` and non-overlapping `/Rect`s.
-    """
-    # Gather existing annotations already written by ocrmypdf, preserving
-    # non-widget annotations (link annots etc.) that we do not want to drop.
-    existing_annots: list[pikepdf.Object] = []
-    annots_raw = new_page.obj.get("/Annots")
-    if isinstance(annots_raw, pikepdf.Array):
-        existing_annots = [item for item in annots_raw if isinstance(item, pikepdf.Object)]
-
-    # Build a per-page mapping from old page objects → new page objects.
-    # Needed for multiple pages, though we're only called page-by-page here.
-    page_map: dict[pikepdf.Object, pikepdf.Object] = {new_page.obj: new_page.obj}
-
-    # Rewrite source widget /P references and import into new_doc.
-    imported_widgets: list[pikepdf.Object] = []
-    for src_widget in src_widgets:
-        # Import into new_doc's object graph (new_obj has the same body but a
-        # fresh indirect reference in new_doc).
-        new_obj = pikepdf.Dictionary(new_doc, src_widget)
-        new_obj = new_doc.make_indirect(new_obj)
-        _rewrite_page_refs(new_obj, page_map)
-        imported_widgets.append(new_obj)
-
-    # Build a set of already-present indirect references to deduplicate.
-    existing_ids = {id(item) for item in existing_annots}
-    merged_annots: list[pikepdf.Object] = list(existing_annots)
-    for widget in imported_widgets:
-        if id(widget) not in existing_ids:
-            merged_annots.append(widget)
-
-    # Write the merged array back to the page.
-    if merged_annots:
-        arr = pikepdf.Array(merged_annots)
-        new_page.obj["/Annots"] = arr
-
-
-# ---------------------------------------------------------------------------
-# Core OCR + merge logic
-# ---------------------------------------------------------------------------
-
-def _run_ocrmypdf(source: Path, output: Path) -> None:
-    """Run ocrmypdf with the recommended form-preservation flags."""
-    if not _OCRM_OK:
-        raise RuntimeError(
-            "ocrmypdf is not installed. Install it first: pip install ocrmypdf"
-        )
-    output.parent.mkdir(parents=True, exist_ok=True)
-    ocrmypdf.ocr(
-        str(source),
-        str(output),
-        output_type="pdf",
-        force_ocr=True,
-        deskew=True,
-        rotate_pages=True,
-        no_correct_tz=True,
-        quiet=True,
-    )
-
-
-def _check_image_only_pages(path: Path, audit_json: Path) -> dict:
-    """Audit *path* for residual image-only pages.  Returns the parsed JSON."""
-    ctx = _get_job_ctx()  # never None in production via sys.argv injection
-    detect_script = Path(ctx["script_dir"]) / "detect_image_only_pages.py"
-    result = _run_standalone_audit(
-        [sys.executable, str(detect_script), str(path), "--out", str(audit_json), "--min-chars", "30"],
-        audit_json,
-    )
-    return result
-
-
-def _check_form_fields(source: Path, output: Path, audit_json: Path) -> dict:
-    """Audit form-field preservation between *source* and *output*."""
-    ctx = _get_job_ctx()
-    audit_script = Path(ctx["script_dir"]) / "form_field_preservation_audit.py"
-    result = _run_standalone_audit(
-        [sys.executable, str(audit_script), str(source), str(output), "--out", str(audit_json)],
-        audit_json,
-    )
-    return result
-
-
-# ---------------------------------------------------------------------------
-# argparse store – must be defined before resolve() so entry-points can set it
-# ---------------------------------------------------------------------------
-
-_ARGS: argparse.Namespace | None = None
-
-
-def _get_args() -> argparse.Namespace:
-    global _ARGS
-    if _ARGS is None:
-        _ARGS = _parse_args(["noop", "--out", "/dev/null"])
-    return _ARGS
-
-
-def _parse_args(argv: list[str]) -> argparse.Namespace:
-    p = argparse.ArgumentParser()
-    p.add_argument("source", type=Path)
-    p.add_argument("output", type=Path)
-    p.add_argument("--out", required=True, type=Path, help="Write JSON result here")
-    p.add_argument("--audit-dir", type=Path, default=None)
-    p.add_argument("base_name", nargs="?", default="")
-    return p.parse_args(argv[1:])
-
-
-# Re-declare with defaults so resolve() below can safely use them when the
-# module is invoked directly (normal path) or imported (test stub path).
-
-def _run_standalone_audit(cmd: list[str], audit_json: Path) -> dict:
-    """Execute a subprocess audit script and return its parsed JSON."""
+def osd_orientation(image_path):
+    """Return (rotate_degrees, confidence) from tesseract OSD, or (None, None)."""
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if audit_json.exists():
-            return json.loads(audit_json.read_text())
-        return {
-            "exit_code": proc.returncode,
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
-        }
-    except FileNotFoundError as exc:
-        return {"error": str(exc)}
-    except Exception as exc:  # pragma: no cover
-        return {"error": str(exc)}
+        r = subprocess.run(
+            ['tesseract', str(image_path), '-', '--psm', '0'],
+            capture_output=True, text=True, timeout=PER_PAGE_TIMEOUT,
+        )
+        rotate = conf = None
+        for line in r.stdout.splitlines():
+            if line.startswith('Rotate:'):
+                rotate = int(line.split(':', 1)[1].strip())
+            elif line.startswith('Orientation confidence:'):
+                conf = float(line.split(':', 1)[1].strip())
+        return rotate, conf
+    except Exception:
+        return None, None
 
 
-def resolve(
-    source: Path,
-    output: Path,
-    audit_dir: Path | None = None,
-) -> dict:
-    """Main logic used by both the CLI entry-point and test code."""
-    args_out = Path("/dev/null")  # overridden in tests via _ARGS
-    args_audit_dir = audit_dir or source.parent
-
-    # Temp paths
-    ocr_artifact = args_audit_dir / "ocr_preserve_forms_ocr_output.pdf"
-    image_audit = args_audit_dir / "ocr_preserve_forms_image_only_pages.json"
-    form_audit = args_audit_dir / "ocr_preserve_forms_form_preservation.json"
-
-    # ── Phase 1: ocrmypdf ────────────────────────────────────────────────────
+def mean_word_conf(tsv_path):
+    """Return (word_count, mean_confidence) from a tesseract TSV, or (0, None)."""
     try:
-        _run_ocrmypdf(source, ocr_artifact)
+        with open(tsv_path, newline='') as fh:
+            rows = csv.DictReader(fh, delimiter='\t')
+            confs = [float(r['conf']) for r in rows
+                     if r.get('conf') not in (None, '', '-1') and (r.get('text') or '').strip()]
+        if not confs:
+            return 0, None
+        return len(confs), round(sum(confs) / len(confs), 1)
+    except Exception:
+        return 0, None
+
+
+def run_audit(cmd, audit_json):
+    """Run a project audit script; return its parsed JSON (or an error dict)."""
+    try:
+        proc = subprocess.run([sys.executable] + [str(c) for c in cmd],
+                              capture_output=True, text=True, timeout=PER_PAGE_TIMEOUT)
     except Exception as exc:
-        err = {"result": "TOOL_FAILURE", "stage": "ocr", "error": str(exc)}
-        _write_result(err, args_out)
-        return err
+        return {'result': 'ERROR', 'error': f'{type(exc).__name__}: {exc}'}
+    try:
+        return json.loads(Path(audit_json).read_text())
+    except Exception:
+        return {'result': 'ERROR', 'error': 'audit produced no readable JSON',
+                'exit_code': proc.returncode, 'stderr': proc.stderr[:1000]}
 
-    # ── Phase 2: pikepdf merge ───────────────────────────────────────────────
-    src_doc = pikepdf.open(str(source), fix_orphans=True)
-    ocr_doc = pikepdf.open(str(ocr_artifact))
 
-    # Save AcroForm from source into ocr_doc
-    src_root = src_doc.Root
-    ocr_root = ocr_doc.Root
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('input', type=Path)
+    parser.add_argument('output', type=Path)
+    parser.add_argument('--out', type=Path, default=None,
+                        help='Write the JSON result here as well as stdout')
+    parser.add_argument('--language', default='eng',
+                        help='Tesseract language code(s), e.g. eng or eng+spa')
+    parser.add_argument('--dpi', type=int, default=300)
+    parser.add_argument('--min-chars', type=int, default=30,
+                        help='Match detect_image_only_pages.py threshold')
+    parser.add_argument('--audit-dir', type=Path, default=None,
+                        help='Directory for self-validation audit JSONs '
+                             '(default: directory of --out, else of output)')
+    args = parser.parse_args()
 
-    src_acro = src_root.get("/AcroForm")
-    if isinstance(src_acro, pikepdf.Dictionary):
-        ocr_root["/AcroForm"] = src_acro
+    if not args.input.exists():
+        fail_error(f'input not found: {args.input}', args.out)
+    if shutil.which('tesseract') is None:
+        fail_error('tesseract not in PATH', args.out)
+    for script in (DETECT_SCRIPT, FORM_SCRIPT):
+        if not script.exists():
+            fail_error(f'required audit script missing: {script}', args.out)
 
-    # Build new_acro after assignment so we can collect its /Fields pages for /P rewrite below
-    new_acro = ocr_root.get("/AcroForm")
-    page_field_refs: list[pikepdf.Object] = []
+    audit_dir = args.audit_dir or (args.out.parent if args.out else args.output.parent)
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
 
-    # Sanity – validate AcroForm structure
-    if not isinstance(new_acro, pikepdf.Dictionary):
-        result_err: dict = {
-            "result": "DOCUMENT_CHANGED",
-            "stage": "merge",
-            "error": "AcroForm was not restorable in OCR output (non-dict after injection).",
-        }
-        _write_result(result_err, args_out)
-        src_doc.close()
-        ocr_doc.close()
-        return result_err
+    targets, page_count = classify_pages(args.input, args.min_chars)
 
-    fields = new_acro.get("/Fields")
-    if not isinstance(fields, pikepdf.Array):
-        result_err = {
-            "result": "DOCUMENT_CHANGED",
-            "stage": "merge",
-            "error": "/Fields is not an Array in merged AcroForm.",
-        }
-        _write_result(result_err, args_out)
-        src_doc.close()
-        ocr_doc.close()
-        return result_err
+    result = {
+        'result': 'UNKNOWN',
+        'strategy': STRATEGY,
+        'input': str(args.input),
+        'output': str(args.output),
+        'page_count': page_count,
+        'ocr_target_pages': [i + 1 for i in targets],
+        'language': args.language,
+        'dpi': args.dpi,
+        'quality_notes': [],
+        'skew_or_rotation_detected': False,
+        'source_pdf_modified': False,
+    }
 
-    # All source total fields – used for a sanity field-count check later.
-    source_total_fields = len(fields)
+    if not targets:
+        shutil.copy2(args.input, args.output)
+        result.update({'result': 'ALREADY_CORRECT',
+                       'reason': 'no image-only pages; input copied unchanged'})
+        text = json.dumps(result, indent=2)
+        print(text)
+        if args.out:
+            args.out.write_text(text)
+        sys.exit(0)
 
-    # Collect every /P page reference from source AcroForm widgets.
-    def _add_pages_from_node(node: pikepdf.Object) -> None:
-        if isinstance(node, pikepdf.Dictionary):
-            p_val = node.get("/P")
-            if p_val is not None and isinstance(p_val, pikepdf.Object):
-                page_field_refs.append(p_val)
-            kids = node.get("/Kids")
-            if isinstance(kids, pikepdf.Array):
-                for k in kids:
-                    _add_pages_from_node(k)
+    with tempfile.TemporaryDirectory(prefix='ocr_overlay_') as tmp:
+        tmp = Path(tmp)
+        layers = {}
+        try:
+            doc = fitz.open(str(args.input))
+            for idx in targets:
+                page = doc[idx]
+                pix = page.get_pixmap(matrix=fitz.Matrix(args.dpi / 72, args.dpi / 72))
+                img = tmp / f'page{idx}.png'
+                pix.save(str(img))
 
-    for field_node in fields:
-        _add_pages_from_node(field_node)
+                base = tmp / f'layer{idx}'
+                proc = subprocess.run(
+                    ['tesseract', str(img), str(base),
+                     '-l', args.language, '--dpi', str(args.dpi),
+                     '-c', 'textonly_pdf=1', 'pdf', 'tsv'],
+                    capture_output=True, text=True, timeout=PER_PAGE_TIMEOUT,
+                )
+                layer_pdf = base.with_suffix('.pdf')
+                if proc.returncode != 0 or not layer_pdf.exists():
+                    doc.close()
+                    fail_error(f'tesseract failed on page {idx + 1}: '
+                               f'{proc.stderr.strip()[:500]}', args.out)
 
-    # Sanity: all collected /P refs must be page objects that exist in the
-    # output's page tree.  (Orphan page-node references would break AcroForm
-    # resolution in Acrobat/AT.)
-    ocr_pages = list(ocr_doc.pages)
-    for p_obj in page_field_refs:
-        if p_obj not in ocr_pages:
-            result_err = {
-                "result": "DOCUMENT_CHANGED",
-                "stage": "merge",
-                "error": (
-                    f"AcroForm /P reference ({p_obj.objgen}) not found in output "
-                    "page tree; merge aborted."
-                ),
-            }
-            _write_result(result_err, args_out)
-            src_doc.close()
-            ocr_doc.close()
-            return result_err
+                rotate, rot_conf = osd_orientation(img)
+                words, conf = mean_word_conf(base.with_suffix('.tsv'))
+                note = {
+                    'page': idx + 1,
+                    'page_rotation': page.rotation,
+                    'osd_orientation_rotate': rotate,
+                    'osd_orientation_confidence': rot_conf,
+                    'words_recognized': words,
+                    'mean_word_confidence': conf,
+                }
+                if (rotate not in (None, 0)) or (conf is not None and conf < 60):
+                    note['flag'] = ('orientation_or_skew_suspected -- deskew is '
+                                    'deliberately not applied (geometry must stay '
+                                    'fixed under form widgets); OCR accuracy may '
+                                    'be reduced on this page')
+                    result['skew_or_rotation_detected'] = True
+                result['quality_notes'].append(note)
+                layers[idx] = layer_pdf
+            doc.close()
+        except subprocess.TimeoutExpired:
+            fail_error('tesseract timed out', args.out)
+        except Exception as exc:
+            fail_error(f'render/OCR failed: {type(exc).__name__}: {exc}', args.out)
 
-    # For each ocrmypdf output page, inject the source widget annotations.
-    for ocr_page in ocr_pages:
-        page_number = ocr_page.objgen
-        src_annots_obj = None
-        for i, p in enumerate(src_doc.pages):
-            if i == ocr_pages.index(ocr_page):
-                src_annots_obj = p.obj
-                break
+        # Overlay text layers onto the ORIGINAL document. Source content,
+        # AcroForm, and annotations are untouched; add_overlay compensates
+        # for target-page /Rotate (verified).
+        try:
+            out_pdf = pikepdf.open(str(args.input))
+            for idx, layer_path in layers.items():
+                layer = pikepdf.open(str(layer_path))
+                out_pdf.pages[idx].add_overlay(layer.pages[0])
+                layer.close()
+            out_pdf.save(str(args.output))
+            out_pdf.close()
+        except Exception as exc:
+            fail_error(f'overlay/save failed: {type(exc).__name__}: {exc}', args.out)
 
-        src_widgets = (
-            _collect_src_widgets(src_doc, src_annots_obj) if src_annots_obj else pikepdf.Array()
-        )
-        _merge_page_annotations(ocr_doc, ocr_page, src_widgets)
+    # ── Self-validation with the project's real audit scripts ────────────────
+    det_json = audit_dir / 'ocr_preserve_forms_image_only_pages.json'
+    det = run_audit([DETECT_SCRIPT, args.output, '--out', det_json,
+                     '--min-chars', str(args.min_chars)], det_json)
+    form_json = audit_dir / 'ocr_preserve_forms_form_preservation.json'
+    form = run_audit([FORM_SCRIPT, args.input, args.output, '--out', form_json], form_json)
 
-    ocr_doc.save(str(output))
-    ocr_doc.close()
-    src_doc.close()
-    # Release caches before subprocess calls.
-    del ocr_doc, src_doc
-    gc.collect()
+    ocr_ok = (det.get('ocr_required') is False and not det.get('image_only_pages'))
+    form_ok = (form.get('result') == 'PASS')
 
-    # ── Phase 3: post-merge audits ──────────────────────────────────────────
-    image_result = _check_image_only_pages(output, image_audit)
-    form_result = _check_form_fields(source, output, form_audit)
-
-    ocr_ok = (
-        image_result.get("ocr_required", True) is False
-        and not image_result.get("image_only_pages")
-    )
-    form_ok = (
-        form_result.get("result") == "FORM_FIELDS_PRESERVED"
-        and form_result.get("output_field_count", 0) >= source_total_fields
-    )
+    result['validation'] = {
+        'image_only_pages': {'artifact': str(det_json),
+                             'result': det.get('result'),
+                             'residual_image_only_pages': det.get('image_only_pages')},
+        'form_preservation': {'artifact': str(form_json),
+                              'result': form.get('result'),
+                              'source_field_count': form.get('source_field_count'),
+                              'output_field_count': form.get('output_field_count')},
+    }
 
     if ocr_ok and form_ok:
-        verdict: dict = {
-            "result": "PROMOTABLE",
-            "strategy": "ocrmypdf_force_ocr_with_form_merge",
-            "output": str(output),
-            "ocr_result": image_result,
-            "form_result": form_result,
-            "source_field_count": source_total_fields,
-            "output_field_count": form_result.get("output_field_count"),
-        }
+        result['result'] = 'PASS'
     else:
-        verdict = {
-            "result": "FORM_MISMATCH",
-            "ocr_result": image_result,
-            "form_result": form_result,
-            "ocr_pass": ocr_ok,
-            "form_pass": form_ok,
-            "source_field_count": source_total_fields,
-            "output_field_count": form_result.get("output_field_count"),
-        }
+        result['result'] = 'FAIL'
+        reasons = []
+        if not ocr_ok:
+            reasons.append('image-only pages remain after OCR overlay: '
+                           f'{det.get("image_only_pages")} -- these pages have no '
+                           'machine-recognizable text (photo/blank/handwriting?)')
+        if not form_ok:
+            reasons.append(f'form-field preservation: {form.get("result")} '
+                           f'({form.get("source_field_count")} -> '
+                           f'{form.get("output_field_count")})')
+        result['reason'] = '; '.join(reasons)
 
-    _write_result(verdict, args_out)
-    return verdict
-
-
-def _write_result(data: dict, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
-
-
-# ---------------------------------------------------------------------------
-# CLI entry-point
-# ---------------------------------------------------------------------------
-
-def main() -> None:
-    global _ARGS
-    args = _parse_args(sys.argv)
-    _ARGS = args  # make visible to helpers
-
-    script_dir = Path(sys.argv[0]).resolve().parent
-    ctx = {
-        "script_dir": script_dir,
-        "ticket": "MM-17179",
-    }
-
-    # Inject context into helpers (monkey-patch module-level so _check_* can use it)
-    global _get_job_ctx
-    _get_job_ctx = lambda: ctx  # type: ignore[assignment,misc]
-
-    result = resolve(
-        source=args.source,
-        output=args.output,
-        audit_dir=args.audit_dir,
-    )
-    exit_code = 0 if result.get("result") == "PROMOTABLE" else 1
-    sys.exit(exit_code)
+    text = json.dumps(result, indent=2)
+    print(text)
+    if args.out:
+        args.out.write_text(text)
+    sys.exit(0 if result['result'] == 'PASS' else 1)
 
 
-# ---------------------------------------------------------------------------
-# Module-level job-context placeholder (set by main() at runtime)
-# ---------------------------------------------------------------------------
-
-def _get_job_ctx() -> dict:  # pragma: no cover – overridden by main()
-    return {
-        "script_dir": Path.cwd(),
-        "ticket": "unknown",
-    }
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
