@@ -13,6 +13,10 @@ services:
       HERMES_DASHBOARD_HOST: "0.0.0.0"
       API_SERVER_HOST: "0.0.0.0"
       GATEWAY_ALLOW_ALL_USERS: "true"
+      # Seed bundled skills from the git-tracked repo dir (mounted via ./app:/app)
+      # instead of the default /opt/data/skills. Makes the pdf-remediation
+      # job runbook version-controlled and deployable via git + restart.
+      HERMES_BUNDLED_SKILLS: "/app/hermes_skills"
     ports:
       - "${HERMES_API_BIND:-127.0.0.1}:${HERMES_API_PORT:-8642}:8642"
       - "${HERMES_DASHBOARD_BIND:-127.0.0.1}:${HERMES_DASHBOARD_PORT:-9119}:9119"
