@@ -6,6 +6,7 @@ from pathlib import Path
 from tools.orchestrate.self_extension_executor import (
     build_generation_failure_record,
     build_generation_prompt,
+    classify_generation_failure,
     build_residual_script_generation_request,
     evaluate_residual_success,
     parse_generation_response,
@@ -183,6 +184,34 @@ class SelfExtensionExecutorTests(unittest.TestCase):
         self.assertIn("HTTP 429", record["raw_content_prefix"])
         self.assertEqual(record["raw_content_chars"], len(raw))
         self.assertEqual(record["reported_usage"]["total_tokens"], 0)
+        self.assertEqual(record["failure_category"], "gateway_rate_limited")
+        self.assertTrue(record["retryable"])
+        self.assertEqual(record["gateway_status_code"], 429)
+
+    def test_generation_failure_classification_distinguishes_common_failures(self):
+        self.assertEqual(
+            classify_generation_failure(
+                raw_content="API call failed after 3 retries: HTTP 429: Too Many Requests"
+            )["failure_category"],
+            "gateway_rate_limited",
+        )
+        self.assertTrue(
+            classify_generation_failure(reason="gateway call failed: TimeoutError: timed out")[
+                "retryable"
+            ]
+        )
+        self.assertEqual(
+            classify_generation_failure(raw_content="The repair script has been written to /app/x.py")[
+                "failure_category"
+            ],
+            "generation_boundary_violation",
+        )
+        self.assertEqual(
+            classify_generation_failure(raw_content="plain prose, not json")[
+                "failure_category"
+            ],
+            "non_json_generation_response",
+        )
 
 
 if __name__ == "__main__":

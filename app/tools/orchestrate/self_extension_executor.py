@@ -403,6 +403,42 @@ def parse_generation_response(raw_content: str) -> Dict[str, Any]:
     return parsed
 
 
+
+
+def classify_generation_failure(raw_content: str = "", reason: str = "") -> Dict[str, Any]:
+    """Return stable failure classification fields for generation failures."""
+    combined = ((raw_content or "") + "\n" + (reason or "")).lower()
+    if (
+        "http 429" in combined
+        or "too many requests" in combined
+        or "'status': 429" in combined
+        or '"status": 429' in combined
+    ):
+        return {
+            "failure_category": "gateway_rate_limited",
+            "retryable": True,
+            "gateway_status_code": 429,
+        }
+    if "timeout" in combined or "timed out" in combined:
+        return {
+            "failure_category": "gateway_timeout",
+            "retryable": True,
+        }
+    if "claimed external side effects" in combined or _claims_generation_side_effect(raw_content):
+        return {
+            "failure_category": "generation_boundary_violation",
+            "retryable": False,
+        }
+    if raw_content and not _looks_like_json_object(_strip_json_fence(raw_content)):
+        return {
+            "failure_category": "non_json_generation_response",
+            "retryable": False,
+        }
+    return {
+        "failure_category": "generation_rejected",
+        "retryable": False,
+    }
+
 def build_generation_failure_record(
     *,
     generation_request: Dict[str, Any],
@@ -435,6 +471,7 @@ def build_generation_failure_record(
         "gateway_model": response.get("gateway_model"),
         "gateway_base_url": response.get("gateway_base_url"),
     }
+    record.update(classify_generation_failure(raw_content=raw_content, reason=reason))
     if raw_content_path:
         record["raw_content_path"] = raw_content_path
     return record
