@@ -89,6 +89,15 @@ class CandidateRejected(SelfExtensionExecutorError):
     """Raised when a generated candidate violates the execution contract."""
 
 
+class GenerationRejected(CandidateRejected):
+    """Raised when gateway generation fails with diagnostic context."""
+
+    def __init__(self, message: str, failure_record: Dict[str, Any], raw_content: str = ""):
+        super().__init__(message)
+        self.failure_record = failure_record
+        self.raw_content = raw_content
+
+
 def _clean_text(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
 
@@ -303,6 +312,43 @@ def parse_generation_response(raw_content: str) -> Dict[str, Any]:
     return parsed
 
 
+def build_generation_failure_record(
+    *,
+    generation_request: Dict[str, Any],
+    prompt: str,
+    elapsed_seconds: float,
+    reason: str,
+    error_type: str,
+    response: Optional[Dict[str, Any]] = None,
+    raw_content: str = "",
+    raw_content_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    response = response or {}
+    raw_content = raw_content or ""
+    record: Dict[str, Any] = {
+        "result": "FAIL",
+        "phase": "generation",
+        "reason": reason,
+        "error_type": error_type,
+        "target_rule_id": generation_request.get("target_rule_id"),
+        "attempt": generation_request.get("attempt"),
+        "candidate_relative_path": generation_request.get("candidate_relative_path"),
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "reported_usage": response.get("usage", {}),
+        "local_prompt_chars": len(prompt),
+        "request_packet_chars": len(json.dumps(generation_request)),
+        "raw_content_chars": len(raw_content),
+        "raw_content_prefix": raw_content[:4000],
+        "raw_content_truncated": len(raw_content) > 4000,
+        "response_model": response.get("response_model"),
+        "gateway_model": response.get("gateway_model"),
+        "gateway_base_url": response.get("gateway_base_url"),
+    }
+    if raw_content_path:
+        record["raw_content_path"] = raw_content_path
+    return record
+
+
 def generate_candidate_source(
     *,
     generation_request: Dict[str, Any],
@@ -314,14 +360,41 @@ def generate_candidate_source(
     client = HermesGatewayClient(cfg, throttle=throttle)
     prompt = build_generation_prompt(generation_request)
     start = time.time()
-    response = client.chat_completion(
-        [{"role": "user", "content": prompt}],
-        max_tokens=cfg.max_tokens,
-        timeout_seconds=cfg.gateway_timeout_seconds,
-        throttle=True,
-    )
+    try:
+        response = client.chat_completion(
+            [{"role": "user", "content": prompt}],
+            max_tokens=cfg.max_tokens,
+            timeout_seconds=cfg.gateway_timeout_seconds,
+            throttle=True,
+        )
+    except Exception as exc:
+        elapsed = time.time() - start
+        reason = f"gateway call failed: {type(exc).__name__}: {exc}"
+        failure_record = build_generation_failure_record(
+            generation_request=generation_request,
+            prompt=prompt,
+            elapsed_seconds=elapsed,
+            reason=reason,
+            error_type=type(exc).__name__,
+        )
+        raise GenerationRejected(reason, failure_record) from exc
+
     elapsed = time.time() - start
-    parsed = parse_generation_response(response.get("content", ""))
+    raw_content = response.get("content", "")
+    try:
+        parsed = parse_generation_response(raw_content)
+    except CandidateRejected as exc:
+        failure_record = build_generation_failure_record(
+            generation_request=generation_request,
+            prompt=prompt,
+            elapsed_seconds=elapsed,
+            reason=str(exc),
+            error_type=type(exc).__name__,
+            response=response,
+            raw_content=raw_content,
+        )
+        raise GenerationRejected(str(exc), failure_record, raw_content=raw_content) from exc
+
     parsed["_self_extension_gateway"] = {
         "elapsed_seconds": round(elapsed, 3),
         "reported_usage": response.get("usage", {}),
@@ -784,10 +857,22 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if ns.command == "generate":
         generation_request = _load_json(Path(ns.generation_request))
-        response = generate_candidate_source(
-            generation_request=generation_request,
-            job_dir=Path(ns.job_dir),
-        )
+        try:
+            response = generate_candidate_source(
+                generation_request=generation_request,
+                job_dir=Path(ns.job_dir),
+            )
+        except GenerationRejected as exc:
+            failure = dict(exc.failure_record)
+            raw_content = exc.raw_content or failure.get("raw_content_prefix") or ""
+            if raw_content:
+                raw_path = Path(ns.out).with_suffix(Path(ns.out).suffix + ".raw.txt")
+                raw_path.parent.mkdir(parents=True, exist_ok=True)
+                raw_path.write_text(str(raw_content))
+                failure["raw_content_path"] = str(raw_path)
+            _write_json_atomic(Path(ns.out), failure)
+            print(json.dumps({"result": "FAIL", "out": ns.out, "reason": str(exc)}, indent=2))
+            return 2
         _write_json_atomic(Path(ns.out), response)
         print(json.dumps({"result": "PASS", "out": ns.out}, indent=2))
         return 0

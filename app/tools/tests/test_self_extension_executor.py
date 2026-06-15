@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from tools.orchestrate.self_extension_executor import (
+    build_generation_failure_record,
     build_residual_script_generation_request,
     evaluate_residual_success,
     parse_generation_response,
@@ -89,6 +90,35 @@ class SelfExtensionExecutorTests(unittest.TestCase):
     def test_parse_generation_response_rejects_plan_without_source(self):
         with self.assertRaises(Exception):
             parse_generation_response(json.dumps({"result": "PROPOSE_NEW_SCRIPT", "repair_script": "tools/repair/x.py"}))
+
+    def test_generation_failure_record_preserves_gateway_error_content(self):
+        request = {
+            "target_rule_id": "PDF/UA-1/7.21.4.1",
+            "attempt": 1,
+            "candidate_relative_path": "tools/repair/generated/fix_generated_x.py",
+        }
+        raw = "API call failed after 3 retries: HTTP 429: Too Many Requests"
+        record = build_generation_failure_record(
+            generation_request=request,
+            prompt="PROMPT",
+            elapsed_seconds=9.25,
+            reason="generation response was not strict JSON",
+            error_type="CandidateRejected",
+            response={
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                "response_model": "Hermes Agent",
+                "gateway_model": "Hermes Agent",
+                "gateway_base_url": "http://127.0.0.1:8642/v1",
+            },
+            raw_content=raw,
+        )
+
+        self.assertEqual(record["result"], "FAIL")
+        self.assertEqual(record["phase"], "generation")
+        self.assertEqual(record["target_rule_id"], "PDF/UA-1/7.21.4.1")
+        self.assertIn("HTTP 429", record["raw_content_prefix"])
+        self.assertEqual(record["raw_content_chars"], len(raw))
+        self.assertEqual(record["reported_usage"]["total_tokens"], 0)
 
 
 if __name__ == "__main__":
