@@ -276,9 +276,17 @@ def build_generation_prompt(generation_request: Dict[str, Any]) -> str:
     return (
         "You are writing a deterministic PDF/UA repair script for the "
         "Montefiore remediation pipeline. Return strict JSON only.\n\n"
-        "Do not return a plan. Do not return markdown. Do not claim success. "
-        "Return complete executable Python source in script_source. The script "
-        "must follow the provided script_contract exactly.\n\n"
+        "You are in source-generation mode only. Do not write files. Do not "
+        "execute commands. Do not run validation. Do not modify the repository, "
+        "the job workspace, or any PDF. Do not claim that you wrote, executed, "
+        "verified, tested, or validated anything.\n\n"
+        "The executor is the only component allowed to write candidate scripts, "
+        "run them, validate PDFs, or decide whether a candidate succeeded. Your "
+        "only successful output is a single strict JSON object with "
+        "result='SCRIPT_SOURCE' and complete executable Python source in "
+        "script_source.\n\n"
+        "Do not return a plan. Do not return markdown. Do not return prose. "
+        "The script must follow the provided script_contract exactly.\n\n"
         "Use only dependencies already present in the repository/runtime. Prefer "
         "pikepdf and PyMuPDF where appropriate. The script must be generalized, "
         "not hardcoded to the current document.\n\n"
@@ -297,9 +305,41 @@ def _strip_json_fence(content: str) -> str:
     return content
 
 
+def _looks_like_json_object(content: str) -> bool:
+    return (content or "").lstrip().startswith("{")
+
+
+def _claims_generation_side_effect(raw_content: str) -> bool:
+    content = (raw_content or "").lower()
+    if not content:
+        return False
+    side_effect_phrases = (
+        "script has been written",
+        "repair script has been written",
+        "written to `/app/",
+        "written to /app/",
+        "verified end-to-end",
+        "live execution result",
+        "exit code:",
+        "output pdf written",
+        "input hash unchanged",
+        "i wrote",
+        "i executed",
+        "i verified",
+        "i tested",
+        "i validated",
+    )
+    return any(phrase in content for phrase in side_effect_phrases)
+
+
 def parse_generation_response(raw_content: str) -> Dict[str, Any]:
+    stripped = _strip_json_fence(raw_content)
+    if not _looks_like_json_object(stripped) and _claims_generation_side_effect(raw_content):
+        raise CandidateRejected(
+            "generation response claimed external side effects instead of returning SCRIPT_SOURCE JSON"
+        )
     try:
-        parsed = json.loads(_strip_json_fence(raw_content))
+        parsed = json.loads(stripped)
     except Exception as exc:
         raise CandidateRejected(f"generation response was not strict JSON: {type(exc).__name__}: {exc}") from exc
     if not isinstance(parsed, dict):

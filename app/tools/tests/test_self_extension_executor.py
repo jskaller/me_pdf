@@ -5,6 +5,7 @@ from pathlib import Path
 
 from tools.orchestrate.self_extension_executor import (
     build_generation_failure_record,
+    build_generation_prompt,
     build_residual_script_generation_request,
     evaluate_residual_success,
     parse_generation_response,
@@ -90,6 +91,26 @@ class SelfExtensionExecutorTests(unittest.TestCase):
     def test_parse_generation_response_rejects_plan_without_source(self):
         with self.assertRaises(Exception):
             parse_generation_response(json.dumps({"result": "PROPOSE_NEW_SCRIPT", "repair_script": "tools/repair/x.py"}))
+
+
+    def test_generation_prompt_forbids_agent_side_effects(self):
+        prompt = build_generation_prompt({"target_rule_id": "PDF/UA-1/7.21.4.1"})
+        self.assertIn("source-generation mode only", prompt)
+        self.assertIn("Do not write files", prompt)
+        self.assertIn("Do not execute commands", prompt)
+        self.assertIn("Do not run validation", prompt)
+        self.assertIn("executor is the only component allowed", prompt)
+        self.assertIn("script_source", prompt)
+
+    def test_parse_generation_response_rejects_side_effect_claims(self):
+        raw = (
+            "The repair script has been written to `/app/tools/repair/generated/x.py` "
+            "and verified end-to-end on the target PDF.\n\n"
+            "Live execution result: {\"result\": \"SUCCESS\"}"
+        )
+        with self.assertRaises(Exception) as ctx:
+            parse_generation_response(raw)
+        self.assertIn("claimed external side effects", str(ctx.exception))
 
     def test_generation_failure_record_preserves_gateway_error_content(self):
         request = {
