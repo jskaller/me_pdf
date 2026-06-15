@@ -695,6 +695,162 @@ def call_hermes_strategy_designer(request_packet):
     return proposal
 
 
+def env_flag(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def select_residual_self_extension_rule(hermes_items, remaining_failures):
+    """Pick exactly one residual rule for the Patch 2 self-extension hook."""
+    requested = clean_metadata_text(os.environ.get("HERMES_SELF_EXTENSION_RULE_ID", ""))
+    candidates = []
+    for item in hermes_items or []:
+        rule_id = clean_metadata_text(item.get("rule_id", "")) if isinstance(item, dict) else ""
+        if rule_id:
+            candidates.append(rule_id)
+    for failure in remaining_failures or []:
+        rule_id = clean_metadata_text(failure.get("rule_id", "")) if isinstance(failure, dict) else ""
+        if rule_id and rule_id not in candidates:
+            candidates.append(rule_id)
+
+    if requested:
+        return requested if requested in candidates else ""
+    return candidates[0] if candidates else ""
+
+
+def try_residual_self_extension_candidate(
+    request_packet,
+    request_path,
+    current_pdf,
+    remaining_failures,
+    hermes_items,
+):
+    """Run one guarded residual self-extension candidate attempt.
+
+    Patch 2 is intentionally conservative: default off, residual-only, one
+    attempt, no adoption, no rule-map mutation, and no change to the final PDF
+    used by packaging. A successful candidate is recorded as evidence for the
+    next adoption/re-entry patch; the existing HERMES_REQUIRED fallback remains
+    authoritative for outcome calculation.
+    """
+    if not env_flag("HERMES_ENABLE_SELF_EXTENSION", False):
+        return None
+
+    target_rule_id = select_residual_self_extension_rule(
+        hermes_items,
+        remaining_failures,
+    )
+    if not target_rule_id:
+        record = {
+            "result": "SKIPPED",
+            "reason": "no_residual_rule_selected",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        (AUDIT_DIR / "self_extension_residual_result.json").write_text(
+            json.dumps(record, indent=2)
+        )
+        emit("PLAN", "residual_self_extension", "SKIPPED", data=record)
+        return record
+
+    emit(
+        "PLAN",
+        "residual_self_extension",
+        "RUNNING",
+        data={"target_rule_id": target_rule_id, "attempt": 1},
+    )
+
+    artifacts = {
+        "generation_request": AUDIT_DIR / "self_extension_generation_request.json",
+        "generation_response": AUDIT_DIR / "self_extension_generation_response.json",
+        "candidate_result": AUDIT_DIR / "self_extension_candidate_result.json",
+        "residual_result": AUDIT_DIR / "self_extension_residual_result.json",
+    }
+
+    try:
+        from tools.orchestrate.self_extension_executor import (
+            build_residual_script_generation_request,
+            execute_residual_candidate,
+            generate_candidate_source,
+            prepare_candidate_paths,
+        )
+
+        attempt = 1
+        paths = prepare_candidate_paths(APP, JOB, target_rule_id, attempt)
+        generation_request = build_residual_script_generation_request(
+            strategy_request=request_packet,
+            target_rule_id=target_rule_id,
+            attempt=attempt,
+            candidate_relative_path=paths.candidate_relative_path,
+        )
+        artifacts["generation_request"].write_text(
+            json.dumps(generation_request, indent=2)
+        )
+
+        generation_response = generate_candidate_source(
+            generation_request=generation_request,
+            job_dir=JOB,
+        )
+        artifacts["generation_response"].write_text(
+            json.dumps(generation_response, indent=2)
+        )
+
+        candidate_result = execute_residual_candidate(
+            app_dir=APP,
+            job_dir=JOB,
+            strategy_request_path=request_path,
+            target_rule_id=target_rule_id,
+            attempt=attempt,
+            current_pdf=Path(current_pdf),
+            source_pdf=SOURCE_PDF,
+            reference_pdf=PASS0,
+            script_source=generation_response.get("script_source", ""),
+            remediation_python=REMEDIATION_PYTHON,
+            verapdf_bin=VERAPDF_BIN,
+            profiles=PROFILES,
+        )
+        artifacts["candidate_result"].write_text(
+            json.dumps(candidate_result, indent=2)
+        )
+
+        record = {
+            "result": candidate_result.get("result", "UNKNOWN"),
+            "reason": "candidate_validated_no_adoption" if candidate_result.get("result") == "PASS" else "candidate_rejected_or_failed",
+            "target_rule_id": target_rule_id,
+            "attempt": attempt,
+            "adoption_performed": False,
+            "final_pdf_updated": False,
+            "existing_residual_gap_fallback_preserved": True,
+            "artifacts": {key: str(value) for key, value in artifacts.items()},
+            "candidate_relative_path": candidate_result.get("candidate_relative_path"),
+            "candidate_output_pdf": candidate_result.get("candidate_output_pdf"),
+            "success_predicate": candidate_result.get("success_predicate"),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as exc:
+        record = {
+            "result": "ERROR",
+            "reason": f"{type(exc).__name__}: {exc}",
+            "target_rule_id": target_rule_id,
+            "attempt": 1,
+            "adoption_performed": False,
+            "final_pdf_updated": False,
+            "existing_residual_gap_fallback_preserved": True,
+            "artifacts": {key: str(value) for key, value in artifacts.items()},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    artifacts["residual_result"].write_text(json.dumps(record, indent=2))
+    emit(
+        "PLAN",
+        "residual_self_extension",
+        record.get("result", "UNKNOWN"),
+        data=record,
+    )
+    return record
+
+
 def write_residual_strategy_gap_artifacts(current_pdf, remaining_failures, post_failures_path):
     """Invoke Hermes strategy design for residual final validator failures."""
     if not remaining_failures:
@@ -769,6 +925,14 @@ def write_residual_strategy_gap_artifacts(current_pdf, remaining_failures, post_
 
     request_path.write_text(json.dumps(request_packet, indent=2))
 
+    self_extension_record = try_residual_self_extension_candidate(
+        request_packet,
+        request_path,
+        current_pdf,
+        remaining_failures,
+        hermes_items,
+    )
+
     proposal = {
         "result": "PENDING_AGENT_ACTION",
         "reason": "strategy_request_written_for_outer_hermes_agent",
@@ -793,6 +957,12 @@ def write_residual_strategy_gap_artifacts(current_pdf, remaining_failures, post_
         "strategy_proposal": str(proposal_path),
         "repair_plan_post": str(residual_plan_path),
     }
+    if self_extension_record:
+        artifacts["self_extension_residual_result"] = str(
+            AUDIT_DIR / "self_extension_residual_result.json"
+        )
+        for key, value in self_extension_record.get("artifacts", {}).items():
+            artifacts[f"self_extension_{key}"] = value
 
     for item in hermes_items:
         emit_hermes_required(
@@ -812,6 +982,7 @@ def write_residual_strategy_gap_artifacts(current_pdf, remaining_failures, post_
         "proposal": str(proposal_path),
         "repair_plan_post": str(residual_plan_path),
         "proposal_result": proposal.get("result", "UNKNOWN") if isinstance(proposal, dict) else "UNKNOWN",
+        "self_extension": self_extension_record,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     gap_path.write_text(json.dumps(gap_record, indent=2))
