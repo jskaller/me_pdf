@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from tools.orchestrate.self_extension_executor import (
+    build_candidate_retry_feedback,
     build_generation_failure_record,
     build_generation_prompt,
     classify_generation_failure,
@@ -11,6 +12,7 @@ from tools.orchestrate.self_extension_executor import (
     evaluate_residual_success,
     parse_generation_response,
     prepare_candidate_paths,
+    run_residual_self_extension_attempts,
 )
 
 
@@ -212,6 +214,150 @@ class SelfExtensionExecutorTests(unittest.TestCase):
             ],
             "non_json_generation_response",
         )
+
+
+    def test_candidate_retry_feedback_summarizes_failed_attempt(self):
+        feedback = build_candidate_retry_feedback(
+            attempt=2,
+            generation_response={"rule_id": "PDF/UA-1/7.21.4.1", "strategy": "bad_strategy"},
+            candidate_result={
+                "result": "FAIL",
+                "stage": "validated_candidate",
+                "candidate_relative_path": "tools/repair/generated/bad.py",
+                "execution_contract": {
+                    "result": "PASS",
+                    "stdout_json": {
+                        "result": "MODIFIED",
+                        "strategy": "bad_strategy",
+                        "reason": "changed_something_else",
+                    },
+                },
+                "success_predicate": {
+                    "result": "FAIL",
+                    "target_rule_id": "PDF/UA-1/7.21.4.1",
+                    "target_rule_count_before": 2,
+                    "target_rule_count_after": 2,
+                    "target_rule_strictly_decreased": False,
+                    "failed_gates": ["preservation"],
+                    "execution_contract_result": "PASS",
+                },
+                "validation": {
+                    "result": "FAIL",
+                    "gate_results": {"preservation": "ERROR"},
+                    "candidate_post_failures": [
+                        {"rule_id": "PDF/UA-1/7.21.4.1", "failures": 2},
+                        {"rule_id": "PDF/UA-1/7.18.4", "failures": 204},
+                    ],
+                },
+            },
+        )
+
+        self.assertEqual(feedback["attempt"], 2)
+        self.assertEqual(feedback["strategy"], "bad_strategy")
+        self.assertFalse(feedback["success_predicate"]["target_rule_strictly_decreased"])
+        self.assertEqual(
+            feedback["validation"]["target_rule_candidate_post_failures"],
+            [{"rule_id": "PDF/UA-1/7.21.4.1", "failures": 2}],
+        )
+        self.assertIn("Do not repeat", feedback["instruction"])
+
+    def test_run_attempt_loop_retries_with_prior_feedback(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            app_dir = root / "app"
+            job_dir = root / "job"
+            app_dir.mkdir()
+            job_dir.mkdir()
+            strategy_request = job_dir / "hermes_strategy_request.json"
+            strategy_request.write_text(json.dumps({
+                "ticket": "MM-TEST",
+                "job_name": "MM-TEST_doc",
+                "current_pdf": str(job_dir / "current.pdf"),
+                "source_pdf": str(job_dir / "source.pdf"),
+                "residual_failures": [
+                    {"rule_id": "PDF/UA-1/7.21.4.1", "failures": 2},
+                ],
+            }))
+            for name in ["current.pdf", "source.pdf", "reference.pdf"]:
+                (job_dir / name).write_bytes(b"%PDF-1.7\n%%EOF\n")
+
+            generation_requests = []
+
+            def fake_generate(*, generation_request, job_dir):
+                generation_requests.append(generation_request)
+                return {
+                    "result": "SCRIPT_SOURCE",
+                    "rule_id": generation_request["target_rule_id"],
+                    "strategy": f"strategy_attempt_{generation_request['attempt']}",
+                    "script_source": "print('{}')",
+                }
+
+            def fake_execute(**kwargs):
+                attempt = kwargs["attempt"]
+                if attempt == 1:
+                    return {
+                        "result": "FAIL",
+                        "stage": "validated_candidate",
+                        "candidate_relative_path": "tools/repair/generated/a1.py",
+                        "execution_contract": {
+                            "result": "PASS",
+                            "stdout_json": {"result": "MODIFIED", "strategy": "strategy_attempt_1"},
+                        },
+                        "validation": {
+                            "result": "FAIL",
+                            "gate_results": {"preservation": "PASS"},
+                            "candidate_post_failures": [
+                                {"rule_id": "PDF/UA-1/7.21.4.1", "failures": 2}
+                            ],
+                        },
+                        "success_predicate": {
+                            "result": "FAIL",
+                            "target_rule_id": "PDF/UA-1/7.21.4.1",
+                            "target_rule_count_before": 2,
+                            "target_rule_count_after": 2,
+                            "target_rule_strictly_decreased": False,
+                            "failed_gates": [],
+                            "execution_contract_result": "PASS",
+                        },
+                    }
+                return {
+                    "result": "PASS",
+                    "stage": "validated_candidate",
+                    "candidate_relative_path": "tools/repair/generated/a2.py",
+                    "candidate_output_pdf": str(job_dir / "out.pdf"),
+                    "execution_contract": {"result": "PASS", "stdout_json": {"strategy": "strategy_attempt_2"}},
+                    "validation": {"result": "PASS", "gate_results": {}},
+                    "success_predicate": {
+                        "result": "PASS",
+                        "target_rule_id": "PDF/UA-1/7.21.4.1",
+                        "target_rule_count_before": 2,
+                        "target_rule_count_after": 1,
+                        "target_rule_strictly_decreased": True,
+                        "failed_gates": [],
+                        "execution_contract_result": "PASS",
+                    },
+                }
+
+            result = run_residual_self_extension_attempts(
+                app_dir=app_dir,
+                job_dir=job_dir,
+                strategy_request_path=strategy_request,
+                target_rule_id="PDF/UA-1/7.21.4.1",
+                current_pdf=job_dir / "current.pdf",
+                source_pdf=job_dir / "source.pdf",
+                reference_pdf=job_dir / "reference.pdf",
+                max_attempts=2,
+                generate_func=fake_generate,
+                execute_func=fake_execute,
+            )
+
+            self.assertEqual(result["result"], "PASS")
+            self.assertEqual(len(generation_requests), 2)
+            self.assertEqual(generation_requests[0]["prior_feedback"], {})
+            prior = generation_requests[1]["prior_feedback"]["previous_attempts"]
+            self.assertEqual(len(prior), 1)
+            self.assertEqual(prior[0]["attempt"], 1)
+            self.assertFalse(prior[0]["success_predicate"]["target_rule_strictly_decreased"])
 
 
 if __name__ == "__main__":

@@ -929,6 +929,201 @@ def execute_residual_candidate(
     return result
 
 
+def build_candidate_retry_feedback(
+    *,
+    attempt: int,
+    candidate_result: Dict[str, Any],
+    generation_response: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Summarize a failed candidate attempt for the next generation request."""
+
+    generation_response = generation_response or {}
+    execution_contract = candidate_result.get("execution_contract") or {}
+    stdout_json = execution_contract.get("stdout_json") or {}
+    success_predicate = candidate_result.get("success_predicate") or {}
+    validation = candidate_result.get("validation") or {}
+    target_rule_id = (
+        success_predicate.get("target_rule_id")
+        or generation_response.get("rule_id")
+        or generation_response.get("target_rule_id")
+    )
+    candidate_post_failures = validation.get("candidate_post_failures") or []
+    target_post_failures = [
+        failure for failure in candidate_post_failures
+        if isinstance(failure, dict) and failure.get("rule_id") == target_rule_id
+    ]
+
+    feedback = {
+        "attempt": int(attempt),
+        "result": candidate_result.get("result", "UNKNOWN"),
+        "stage": candidate_result.get("stage"),
+        "strategy": (
+            generation_response.get("strategy")
+            or stdout_json.get("strategy")
+        ),
+        "candidate_relative_path": candidate_result.get("candidate_relative_path"),
+        "candidate_output_pdf": candidate_result.get("candidate_output_pdf"),
+        "candidate_stdout_json": stdout_json,
+        "success_predicate": {
+            "result": success_predicate.get("result"),
+            "target_rule_id": success_predicate.get("target_rule_id"),
+            "target_rule_count_before": success_predicate.get("target_rule_count_before"),
+            "target_rule_count_after": success_predicate.get("target_rule_count_after"),
+            "target_rule_strictly_decreased": success_predicate.get("target_rule_strictly_decreased"),
+            "new_rule_ids_relative_to_gap_entry": success_predicate.get("new_rule_ids_relative_to_gap_entry", []),
+            "worsened_existing_rules_relative_to_gap_entry": success_predicate.get("worsened_existing_rules_relative_to_gap_entry", []),
+            "failed_gates": success_predicate.get("failed_gates", []),
+            "execution_contract_result": success_predicate.get("execution_contract_result"),
+        },
+        "validation": {
+            "result": validation.get("result"),
+            "parse_result": validation.get("parse_result"),
+            "gate_results": validation.get("gate_results", {}),
+            "target_rule_candidate_post_failures": target_post_failures,
+            "artifacts": validation.get("artifacts", {}),
+        },
+        "instruction": (
+            "This prior candidate did not pass validation. Do not repeat the same "
+            "strategy unless the new script directly explains and implements why it "
+            "will reduce the target validator rule count. Use the failed success "
+            "predicate and candidate stdout as evidence for the next SCRIPT_SOURCE."
+        ),
+    }
+    return feedback
+
+
+def run_residual_self_extension_attempts(
+    *,
+    app_dir: Path,
+    job_dir: Path,
+    strategy_request_path: Path,
+    target_rule_id: str,
+    current_pdf: Path,
+    source_pdf: Path,
+    reference_pdf: Path,
+    start_attempt: int = 1,
+    max_attempts: Optional[int] = None,
+    prior_attempt_feedback: Optional[List[Dict[str, Any]]] = None,
+    remediation_python: str = DEFAULT_REMEDIATION_PYTHON,
+    verapdf_bin: Path = DEFAULT_VERAPDF_BIN,
+    profiles: Path = DEFAULT_PROFILES,
+    generate_func: Optional[Any] = None,
+    execute_func: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Generate, execute, validate, and retry residual candidates with feedback."""
+
+    cfg = SelfExtensionConfig.from_env()
+    max_attempts = int(max_attempts or cfg.max_attempts_per_rule)
+    generate_func = generate_func or generate_candidate_source
+    execute_func = execute_func or execute_residual_candidate
+    strategy_request = _load_json(strategy_request_path)
+    feedback_items: List[Dict[str, Any]] = list(prior_attempt_feedback or [])
+    attempts: List[Dict[str, Any]] = []
+
+    for attempt in range(int(start_attempt), max_attempts + 1):
+        paths = prepare_candidate_paths(app_dir, job_dir, target_rule_id, attempt)
+        prior_feedback = {"previous_attempts": feedback_items} if feedback_items else {}
+        generation_request = build_residual_script_generation_request(
+            strategy_request=strategy_request,
+            target_rule_id=target_rule_id,
+            attempt=attempt,
+            candidate_relative_path=paths.candidate_relative_path,
+            prior_feedback=prior_feedback,
+        )
+        generation_request_path = paths.attempt_dir / "generation_request.json"
+        generation_response_path = paths.attempt_dir / "generation_response.json"
+        _write_json_atomic(generation_request_path, generation_request)
+
+        attempt_record: Dict[str, Any] = {
+            "attempt": attempt,
+            "target_rule_id": target_rule_id,
+            "generation_request": str(generation_request_path),
+            "generation_response": str(generation_response_path),
+            "candidate_result": str(paths.attempt_dir / "candidate_result.json"),
+        }
+        try:
+            generation_response = generate_func(
+                generation_request=generation_request,
+                job_dir=job_dir,
+            )
+        except GenerationRejected as exc:
+            failure = dict(exc.failure_record)
+            raw_content = exc.raw_content or failure.get("raw_content_prefix") or ""
+            if raw_content:
+                raw_path = generation_response_path.with_suffix(generation_response_path.suffix + ".raw.txt")
+                raw_path.write_text(str(raw_content))
+                failure["raw_content_path"] = str(raw_path)
+            _write_json_atomic(generation_response_path, failure)
+            attempt_record.update({
+                "result": "BLOCKED" if failure.get("retryable") else "FAIL",
+                "stage": "generate_candidate",
+                "failure": failure,
+            })
+            attempts.append(attempt_record)
+            return {
+                "result": attempt_record["result"],
+                "reason": failure.get("failure_category") or str(exc),
+                "target_rule_id": target_rule_id,
+                "attempts": attempts,
+                "adoption_performed": False,
+                "final_pdf_updated": False,
+            }
+
+        _write_json_atomic(generation_response_path, generation_response)
+        candidate_result = execute_func(
+            app_dir=app_dir,
+            job_dir=job_dir,
+            strategy_request_path=strategy_request_path,
+            target_rule_id=target_rule_id,
+            attempt=attempt,
+            current_pdf=current_pdf,
+            source_pdf=source_pdf,
+            reference_pdf=reference_pdf,
+            script_source=generation_response.get("script_source", ""),
+            remediation_python=remediation_python,
+            verapdf_bin=verapdf_bin,
+            profiles=profiles,
+        )
+        _write_json_atomic(paths.attempt_dir / "candidate_result.json", candidate_result)
+        attempt_record.update({
+            "result": candidate_result.get("result", "UNKNOWN"),
+            "stage": candidate_result.get("stage"),
+            "candidate_relative_path": candidate_result.get("candidate_relative_path"),
+            "candidate_output_pdf": candidate_result.get("candidate_output_pdf"),
+            "success_predicate": candidate_result.get("success_predicate"),
+        })
+        attempts.append(attempt_record)
+        if candidate_result.get("result") == "PASS":
+            return {
+                "result": "PASS",
+                "reason": "candidate_validated",
+                "target_rule_id": target_rule_id,
+                "attempt": attempt,
+                "attempts": attempts,
+                "candidate_result": candidate_result,
+                "adoption_performed": False,
+                "final_pdf_updated": False,
+            }
+        feedback_items.append(
+            build_candidate_retry_feedback(
+                attempt=attempt,
+                candidate_result=candidate_result,
+                generation_response=generation_response,
+            )
+        )
+
+    return {
+        "result": "FAIL",
+        "reason": "max_attempts_exhausted",
+        "target_rule_id": target_rule_id,
+        "max_attempts": max_attempts,
+        "attempts": attempts,
+        "prior_feedback": {"previous_attempts": feedback_items},
+        "adoption_performed": False,
+        "final_pdf_updated": False,
+    }
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Residual self-extension candidate executor")
     sub = parser.add_subparsers(dest="command")
@@ -960,6 +1155,21 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     exe.add_argument("--verapdf-bin", default=str(DEFAULT_VERAPDF_BIN))
     exe.add_argument("--profiles", default=str(DEFAULT_PROFILES))
     exe.add_argument("--out", required=True)
+
+    loop = sub.add_parser("run-attempts", help="Generate, execute, validate, and retry residual candidates")
+    loop.add_argument("--strategy-request", required=True)
+    loop.add_argument("--rule-id", required=True)
+    loop.add_argument("--start-attempt", type=int, default=1)
+    loop.add_argument("--max-attempts", type=int, default=None)
+    loop.add_argument("--current-pdf", required=True)
+    loop.add_argument("--source-pdf", required=True)
+    loop.add_argument("--reference-pdf", required=True)
+    loop.add_argument("--job-dir", required=True)
+    loop.add_argument("--app-dir", default=str(DEFAULT_APP_DIR))
+    loop.add_argument("--remediation-python", default=DEFAULT_REMEDIATION_PYTHON)
+    loop.add_argument("--verapdf-bin", default=str(DEFAULT_VERAPDF_BIN))
+    loop.add_argument("--profiles", default=str(DEFAULT_PROFILES))
+    loop.add_argument("--out", required=True)
 
     return parser
 
@@ -1021,6 +1231,25 @@ def main(argv: Optional[List[str]] = None) -> int:
             source_pdf=Path(ns.source_pdf),
             reference_pdf=Path(ns.reference_pdf),
             script_source=script_source,
+            remediation_python=ns.remediation_python,
+            verapdf_bin=Path(ns.verapdf_bin),
+            profiles=Path(ns.profiles),
+        )
+        _write_json_atomic(Path(ns.out), result)
+        print(json.dumps({"result": result.get("result", "UNKNOWN"), "out": ns.out}, indent=2))
+        return 0 if result.get("result") == "PASS" else 1
+
+    if ns.command == "run-attempts":
+        result = run_residual_self_extension_attempts(
+            app_dir=Path(ns.app_dir),
+            job_dir=Path(ns.job_dir),
+            strategy_request_path=Path(ns.strategy_request),
+            target_rule_id=ns.rule_id,
+            start_attempt=ns.start_attempt,
+            max_attempts=ns.max_attempts,
+            current_pdf=Path(ns.current_pdf),
+            source_pdf=Path(ns.source_pdf),
+            reference_pdf=Path(ns.reference_pdf),
             remediation_python=ns.remediation_python,
             verapdf_bin=Path(ns.verapdf_bin),
             profiles=Path(ns.profiles),
