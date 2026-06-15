@@ -287,6 +287,11 @@ def build_residual_script_generation_request(
             "required_gates": ["preservation", "form_fields", "render_compare"],
             "contract": "script compiles, exits in timeout, leaves input hash unchanged, writes output PDF, emits parseable JSON stdout",
         },
+        "semantic_refusal_policy": {
+            "within_attempt_budget": "NEEDS_MORE_EVIDENCE and NOT_AUTOMATABLE are failed attempts, not terminal answers",
+            "required_behavior": "Return executable SCRIPT_SOURCE while attempts remain; the executor will validate whether it works",
+            "after_refusal": "If prior_feedback contains a semantic refusal, generate a different deterministic repair candidate rather than repeating the refusal",
+        },
         "evidence": {
             "ticket": strategy_request.get("ticket"),
             "job_name": strategy_request.get("job_name"),
@@ -405,6 +410,25 @@ def parse_generation_response(raw_content: str) -> Dict[str, Any]:
 
 
 
+def _semantic_refusal_result(raw_content: str = "", reason: str = "") -> str:
+    """Return LLM semantic refusal result when present in raw JSON/prose."""
+
+    stripped = _strip_json_fence(raw_content or "")
+    try:
+        parsed = json.loads(stripped)
+    except Exception:
+        parsed = None
+    if isinstance(parsed, dict):
+        result = str(parsed.get("result") or "").upper()
+        if result in {"NOT_AUTOMATABLE", "NEEDS_MORE_EVIDENCE"}:
+            return result
+    combined = ((raw_content or "") + "\n" + (reason or "")).upper()
+    for result in ("NOT_AUTOMATABLE", "NEEDS_MORE_EVIDENCE"):
+        if result in combined:
+            return result
+    return ""
+
+
 def classify_generation_failure(raw_content: str = "", reason: str = "") -> Dict[str, Any]:
     """Return stable failure classification fields for generation failures."""
     combined = ((raw_content or "") + "\n" + (reason or "")).lower()
@@ -423,6 +447,13 @@ def classify_generation_failure(raw_content: str = "", reason: str = "") -> Dict
         return {
             "failure_category": "gateway_timeout",
             "retryable": True,
+        }
+    semantic_refusal = _semantic_refusal_result(raw_content=raw_content, reason=reason)
+    if semantic_refusal:
+        return {
+            "failure_category": "llm_semantic_refusal",
+            "retryable": False,
+            "llm_result": semantic_refusal,
         }
     if "claimed external side effects" in combined or _claims_generation_side_effect(raw_content):
         return {
@@ -929,6 +960,28 @@ def execute_residual_candidate(
     return result
 
 
+def build_generation_retry_feedback(*, attempt: int, failure: Dict[str, Any]) -> Dict[str, Any]:
+    """Summarize a rejected generation/refusal for the next generation request."""
+
+    return {
+        "attempt": int(attempt),
+        "result": failure.get("result", "FAIL"),
+        "stage": "generate_candidate",
+        "failure_category": failure.get("failure_category"),
+        "llm_result": failure.get("llm_result"),
+        "reason": failure.get("reason"),
+        "candidate_relative_path": failure.get("candidate_relative_path"),
+        "raw_content_prefix": failure.get("raw_content_prefix"),
+        "raw_content_path": failure.get("raw_content_path"),
+        "instruction": (
+            "The previous generation response refused to provide SCRIPT_SOURCE. "
+            "That refusal is not terminal while attempt budget remains. Generate a "
+            "different deterministic executable SCRIPT_SOURCE candidate that the "
+            "executor can run and validate, even if it may fail validation."
+        ),
+    }
+
+
 def build_candidate_retry_feedback(
     *,
     attempt: int,
@@ -1060,11 +1113,17 @@ def run_residual_self_extension_attempts(
                 "failure": failure,
             })
             attempts.append(attempt_record)
+            if failure.get("failure_category") == "llm_semantic_refusal" and attempt < max_attempts:
+                feedback_items.append(
+                    build_generation_retry_feedback(attempt=attempt, failure=failure)
+                )
+                continue
             return {
                 "result": attempt_record["result"],
                 "reason": failure.get("failure_category") or str(exc),
                 "target_rule_id": target_rule_id,
                 "attempts": attempts,
+                "prior_feedback": {"previous_attempts": feedback_items},
                 "adoption_performed": False,
                 "final_pdf_updated": False,
             }

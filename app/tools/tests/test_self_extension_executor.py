@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from tools.orchestrate.self_extension_executor import (
+    GenerationRejected,
     build_candidate_retry_feedback,
     build_generation_failure_record,
     build_generation_prompt,
@@ -214,6 +215,13 @@ class SelfExtensionExecutorTests(unittest.TestCase):
             ],
             "non_json_generation_response",
         )
+        semantic = classify_generation_failure(
+            raw_content=json.dumps({"result": "NOT_AUTOMATABLE", "notes": "cannot repair"}),
+            reason="generation did not return SCRIPT_SOURCE: NOT_AUTOMATABLE",
+        )
+        self.assertEqual(semantic["failure_category"], "llm_semantic_refusal")
+        self.assertEqual(semantic["llm_result"], "NOT_AUTOMATABLE")
+        self.assertFalse(semantic["retryable"])
 
 
     def test_candidate_retry_feedback_summarizes_failed_attempt(self):
@@ -358,6 +366,91 @@ class SelfExtensionExecutorTests(unittest.TestCase):
             self.assertEqual(len(prior), 1)
             self.assertEqual(prior[0]["attempt"], 1)
             self.assertFalse(prior[0]["success_predicate"]["target_rule_strictly_decreased"])
+
+    def test_run_attempt_loop_retries_semantic_refusal_while_attempts_remain(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            app_dir = root / "app"
+            job_dir = root / "job"
+            app_dir.mkdir()
+            job_dir.mkdir()
+            strategy_request = job_dir / "hermes_strategy_request.json"
+            strategy_request.write_text(json.dumps({
+                "ticket": "MM-TEST",
+                "job_name": "MM-TEST_doc",
+                "current_pdf": str(job_dir / "current.pdf"),
+                "source_pdf": str(job_dir / "source.pdf"),
+                "residual_failures": [
+                    {"rule_id": "PDF/UA-1/7.21.4.1", "failures": 2},
+                ],
+            }))
+            for name in ["current.pdf", "source.pdf", "reference.pdf"]:
+                (job_dir / name).write_bytes(b"%PDF-1.7\n%%EOF\n")
+
+            generation_requests = []
+
+            def fake_generate(*, generation_request, job_dir):
+                generation_requests.append(generation_request)
+                if generation_request["attempt"] == 1:
+                    raw = json.dumps({
+                        "result": "NOT_AUTOMATABLE",
+                        "rule_id": generation_request["target_rule_id"],
+                        "notes": "refused instead of generating",
+                    })
+                    failure = build_generation_failure_record(
+                        generation_request=generation_request,
+                        prompt="PROMPT",
+                        elapsed_seconds=1.0,
+                        reason="generation did not return SCRIPT_SOURCE: NOT_AUTOMATABLE",
+                        error_type="CandidateRejected",
+                        raw_content=raw,
+                    )
+                    raise GenerationRejected(failure["reason"], failure, raw_content=raw)
+                return {
+                    "result": "SCRIPT_SOURCE",
+                    "rule_id": generation_request["target_rule_id"],
+                    "strategy": "strategy_after_refusal",
+                    "script_source": "print('{}')",
+                }
+
+            def fake_execute(**kwargs):
+                return {
+                    "result": "PASS",
+                    "stage": "validated_candidate",
+                    "candidate_relative_path": "tools/repair/generated/a2.py",
+                    "candidate_output_pdf": str(job_dir / "out.pdf"),
+                    "execution_contract": {"result": "PASS", "stdout_json": {"strategy": "strategy_after_refusal"}},
+                    "validation": {"result": "PASS", "gate_results": {}},
+                    "success_predicate": {
+                        "result": "PASS",
+                        "target_rule_id": "PDF/UA-1/7.21.4.1",
+                        "target_rule_count_before": 2,
+                        "target_rule_count_after": 1,
+                        "target_rule_strictly_decreased": True,
+                        "failed_gates": [],
+                        "execution_contract_result": "PASS",
+                    },
+                }
+
+            result = run_residual_self_extension_attempts(
+                app_dir=app_dir,
+                job_dir=job_dir,
+                strategy_request_path=strategy_request,
+                target_rule_id="PDF/UA-1/7.21.4.1",
+                current_pdf=job_dir / "current.pdf",
+                source_pdf=job_dir / "source.pdf",
+                reference_pdf=job_dir / "reference.pdf",
+                max_attempts=2,
+                generate_func=fake_generate,
+                execute_func=fake_execute,
+            )
+
+            self.assertEqual(result["result"], "PASS")
+            self.assertEqual(len(generation_requests), 2)
+            prior = generation_requests[1]["prior_feedback"]["previous_attempts"]
+            self.assertEqual(prior[0]["failure_category"], "llm_semantic_refusal")
+            self.assertEqual(prior[0]["llm_result"], "NOT_AUTOMATABLE")
+            self.assertIn("not terminal", prior[0]["instruction"])
 
 
 if __name__ == "__main__":
