@@ -202,6 +202,39 @@ def evaluate_residual_success(
     }
 
 
+def _item_mentions_rule(item: Any, target_rule_id: str) -> bool:
+    """Return whether a request evidence item appears specific to target_rule_id."""
+
+    target = _clean_text(target_rule_id)
+    if not target:
+        return False
+    if isinstance(item, dict):
+        for key in ("rule_id", "rule", "id"):
+            if _clean_text(item.get(key)) == target:
+                return True
+        return target in json.dumps(item, sort_keys=True)
+    return target in str(item or "")
+
+
+def _filter_items_for_rule(items: Any, target_rule_id: str) -> List[Any]:
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if _item_mentions_rule(item, target_rule_id)]
+
+
+def _compact_rule_map_context(rule_map_context: Any, target_rule_id: str) -> Dict[str, Any]:
+    if not isinstance(rule_map_context, dict):
+        return {}
+    target = _clean_text(target_rule_id)
+    compact: Dict[str, Any] = {}
+    for key, value in rule_map_context.items():
+        if _clean_text(key) == target:
+            compact[key] = value
+        elif isinstance(value, dict) and _item_mentions_rule(value, target):
+            compact[key] = value
+    return compact
+
+
 def build_residual_script_generation_request(
     *,
     strategy_request: Dict[str, Any],
@@ -210,21 +243,30 @@ def build_residual_script_generation_request(
     candidate_relative_path: str,
     prior_feedback: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Build the script-generation request schema for Patch 1.
+    """Build a compact residual script-generation request.
 
-    This is intentionally distinct from remediate.py's strategy-design schema.
-    The response must include complete executable Python source in script_source.
+    The full hermes_strategy_request.json remains the durable audit artifact.
+    This model-facing packet intentionally carries only target-rule evidence so
+    generation stays cheaper, less rate-limit prone, and less likely to drift
+    into unrelated residual rules. The response must include complete executable
+    Python source in script_source.
     """
 
     residual_failures = strategy_request.get("residual_failures", [])
     target_failure = None
-    for failure in residual_failures:
-        if isinstance(failure, dict) and failure.get("rule_id") == target_rule_id:
-            target_failure = failure
-            break
+    if isinstance(residual_failures, list):
+        for failure in residual_failures:
+            if isinstance(failure, dict) and failure.get("rule_id") == target_rule_id:
+                target_failure = failure
+                break
+    else:
+        residual_failures = []
+
+    target_residual_failures = [target_failure] if target_failure else []
 
     return {
         "request_type": "pdfua_residual_repair_script_generation",
+        "request_payload_profile": "compact_target_rule_only",
         "patch_scope": "residual_only_no_adoption",
         "target_rule_id": target_rule_id,
         "target_failure": target_failure,
@@ -251,11 +293,20 @@ def build_residual_script_generation_request(
             "doc_tags": strategy_request.get("doc_tags", []),
             "current_pdf": strategy_request.get("current_pdf"),
             "source_pdf": strategy_request.get("source_pdf"),
-            "residual_failures": residual_failures,
+            "residual_failures": target_residual_failures,
+            "residual_failure_payload": "target_rule_only",
+            "total_residual_rule_count": len(residual_failures),
+            "omitted_non_target_residual_rule_count": max(0, len(residual_failures) - len(target_residual_failures)),
             "residual_repair_plan": strategy_request.get("residual_repair_plan"),
             "validator_artifacts": strategy_request.get("validator_artifacts"),
-            "validator_rule_xml_snippets": strategy_request.get("validator_rule_xml_snippets", []),
-            "rule_map_context": strategy_request.get("rule_map_context", {}),
+            "validator_rule_xml_snippets": _filter_items_for_rule(
+                strategy_request.get("validator_rule_xml_snippets", []),
+                target_rule_id,
+            ),
+            "rule_map_context": _compact_rule_map_context(
+                strategy_request.get("rule_map_context", {}),
+                target_rule_id,
+            ),
             "existing_repair_scripts": strategy_request.get("existing_repair_scripts", []),
             "strategy_attempts": strategy_request.get("strategy_attempts", {}),
         },

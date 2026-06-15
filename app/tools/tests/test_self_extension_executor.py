@@ -75,6 +75,49 @@ class SelfExtensionExecutorTests(unittest.TestCase):
         self.assertNotIn("repair_script", schema)
         self.assertEqual(schema["result"], "SCRIPT_SOURCE | NEEDS_MORE_EVIDENCE | NOT_AUTOMATABLE")
 
+
+    def test_generation_request_is_compact_target_rule_only(self):
+        request = build_residual_script_generation_request(
+            strategy_request={
+                "ticket": "MM-TEST",
+                "job_name": "MM-TEST_doc",
+                "current_pdf": "/job/repair/pass.pdf",
+                "source_pdf": "/workspace/input/MM-TEST/doc.pdf",
+                "residual_failures": [
+                    {
+                        "rule_id": "PDF/UA-1/7.21.4.1",
+                        "failures": 2,
+                        "description": "Target font embedding issue",
+                    },
+                    {
+                        "rule_id": "PDF/UA-1/7.18.4",
+                        "failures": 204,
+                        "description": "UNRELATED_WIDGET_CONTEXT_SHOULD_NOT_BE_SENT",
+                    },
+                ],
+                "validator_rule_xml_snippets": [
+                    {"rule_id": "PDF/UA-1/7.21.4.1", "snippet": "target xml"},
+                    {"rule_id": "PDF/UA-1/7.18.4", "snippet": "unrelated xml"},
+                ],
+            },
+            target_rule_id="PDF/UA-1/7.21.4.1",
+            attempt=1,
+            candidate_relative_path="tools/repair/generated/fix_generated_x.py",
+        )
+
+        evidence = request["evidence"]
+        self.assertEqual(request["request_payload_profile"], "compact_target_rule_only")
+        self.assertEqual(evidence["residual_failure_payload"], "target_rule_only")
+        self.assertEqual(evidence["total_residual_rule_count"], 2)
+        self.assertEqual(evidence["omitted_non_target_residual_rule_count"], 1)
+        self.assertEqual(len(evidence["residual_failures"]), 1)
+        self.assertEqual(evidence["residual_failures"][0]["rule_id"], "PDF/UA-1/7.21.4.1")
+        self.assertEqual(len(evidence["validator_rule_xml_snippets"]), 1)
+        serialized = json.dumps(request)
+        self.assertIn("Target font embedding issue", serialized)
+        self.assertNotIn("UNRELATED_WIDGET_CONTEXT_SHOULD_NOT_BE_SENT", serialized)
+        self.assertNotIn("unrelated xml", serialized)
+
     def test_candidate_paths_use_generated_quarantine_dir(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
