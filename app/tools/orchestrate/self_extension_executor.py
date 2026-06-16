@@ -1136,6 +1136,15 @@ def run_residual_self_extension_attempts(
                 raw_path.write_text(str(raw_content))
                 failure["raw_content_path"] = str(raw_path)
             _write_json_atomic(generation_response_path, failure)
+            from tools.audit.learned_strategy_capture import capture_generation_event
+            capture_generation_event(
+                job_dir=job_dir,
+                rule_id=target_rule_id,
+                failure=failure,
+                generation_request=generation_request,
+                run_state=run_state.data,
+                attempt_number=attempt,
+            )
 
             attempt_record.update({
                 "result": TRANSPORT_BLOCKED if failure.get("result") == TRANSPORT_BLOCKED else "FAIL",
@@ -1191,6 +1200,16 @@ def run_residual_self_extension_attempts(
         )
         _write_json_atomic(paths.attempt_dir / "candidate_result.json", candidate_result)
         run_state.record_candidate_attempt(candidate_result)
+        from tools.audit.learned_strategy_capture import capture_candidate_result
+        capture_candidate_result(
+            job_dir=job_dir,
+            rule_id=target_rule_id,
+            candidate_result=candidate_result,
+            generation_request=generation_request,
+            generation_response=generation_response,
+            run_state=run_state.data,
+            attempt_number=attempt,
+        )
         attempt_record.update({
             "result": candidate_result.get("result", "UNKNOWN"),
             "stage": candidate_result.get("stage"),
