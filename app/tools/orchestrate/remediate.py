@@ -48,6 +48,8 @@ import sys, json, subprocess, shutil, argparse, os
 from pathlib import Path
 from datetime import datetime, timezone
 from collections import defaultdict
+from tools.audit.execution_log import build_execution_log_from_repair_steps, write_execution_log
+from tools.audit.residual_analysis import analyze_residuals, targetable_failures_from_analysis
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 
@@ -2460,6 +2462,60 @@ except Exception:
     post_failures = {'failures_by_rule': []}
 
 remaining_failures = post_failures.get('failures_by_rule', [])
+execution_log_path = AUDIT_DIR / 'execution_log.json'
+residual_analysis_path = AUDIT_DIR / 'residual_analysis.json'
+residual_analysis = None
+targetable_remaining_failures = remaining_failures
+try:
+    execution_log = build_execution_log_from_repair_steps(
+        job_dir=JOB,
+        source_pdf=SOURCE_PDF,
+        current_pdf=FINAL_PDF,
+        repair_steps=repair_steps,
+        strategy_attempts=strategy_attempts,
+    )
+    write_execution_log(execution_log, execution_log_path)
+except Exception as e:
+    execution_log = {'repair_steps': []}
+    emit('AUDIT', 'execution_log', 'WARN', note=f'execution log unavailable: {type(e).__name__}: {e}')
+try:
+    residual_analysis = analyze_residuals(
+        baseline_failures=load_json(failures_path) or {'failures_by_rule': []},
+        post_failures=post_failures,
+        repair_plan=load_json(plan_path) or {'repair_steps': []},
+        execution_log=execution_log,
+        rule_map=load_json(RULE_MAP) or {'rules': {}},
+        job_dir=JOB,
+        input_paths={
+            'baseline_failures': failures_path,
+            'post_failures': post_failures_path,
+            'repair_plan': plan_path,
+            'execution_log': execution_log_path,
+            'rule_map': RULE_MAP,
+        },
+    )
+    residual_analysis_path.write_text(json.dumps(residual_analysis, indent=2, sort_keys=True))
+    targetable_remaining_failures = targetable_failures_from_analysis(residual_analysis, post_failures)
+    emit('AUDIT', 'residual_analysis', 'PASS', data={
+        'artifact': str(residual_analysis_path),
+        'targetable': len(targetable_remaining_failures),
+        'counts_by_outcome': residual_analysis.get('summary', {}).get('counts_by_outcome', {}),
+    })
+except Exception as e:
+    residual_analysis = None
+    targetable_remaining_failures = remaining_failures
+    try:
+        residual_analysis_path.write_text(json.dumps({
+            'schema': 'montefiore.residual_analysis',
+            'version': '1.0.0',
+            'result': 'ERROR',
+            'fallback': 'raw_failures_post_remaining_failures',
+            'error': f'{type(e).__name__}: {e}',
+            'created_at': datetime.now(timezone.utc).isoformat(),
+        }, indent=2))
+    except Exception:
+        pass
+    emit('AUDIT', 'residual_analysis', 'WARN', note=f'falling back to raw failures_post routing: {type(e).__name__}: {e}')
 
 hard_pass = is_pass(gate_results['verapdf_pdfua1']) and is_pass(gate_results['verapdf_wcag'])
 emit('VALIDATE', 'final_verapdf', 'PASS' if hard_pass else 'FAIL',
@@ -2556,9 +2612,10 @@ emit('QA', 'visual_qa', vqa_result)
 # mapped repairs must become Hermes strategy-design artifacts before outcome
 # packaging. This is intentionally not a repair; it creates the reusable
 # strategy-design packet and proposal for the next deterministic step.
+self_extension_failures = targetable_remaining_failures if residual_analysis else remaining_failures
 strategy_gap = write_residual_strategy_gap_artifacts(
     FINAL_PDF,
-    remaining_failures,
+    self_extension_failures,
     post_failures_path,
 )
 
