@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -452,6 +453,76 @@ class SelfExtensionExecutorTests(unittest.TestCase):
             self.assertEqual(prior[0]["llm_result"], "NOT_AUTOMATABLE")
             self.assertIn("not terminal", prior[0]["instruction"])
 
+
+    def test_run_attempt_loop_transport_blocked_writes_run_state_without_candidate_attempt(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            app_dir = root / "app"
+            job_dir = root / "job"
+            app_dir.mkdir()
+            job_dir.mkdir()
+
+            strategy_request = job_dir / "hermes_strategy_request.json"
+            strategy_request.write_text(json.dumps({
+                "ticket": "MM-TEST",
+                "job_name": "MM-TEST_doc",
+                "current_pdf": str(job_dir / "current.pdf"),
+                "source_pdf": str(job_dir / "source.pdf"),
+                "residual_failures": [
+                    {"rule_id": "PDF/UA-1/7.21.4.1", "failures": 2},
+                ],
+            }))
+            for name in ["current.pdf", "source.pdf", "reference.pdf"]:
+                (job_dir / name).write_bytes(b"%PDF-1.7\n%%EOF\n")
+
+            generation_calls = []
+
+            def fake_generate(*, generation_request, job_dir):
+                generation_calls.append(generation_request)
+                raw = "API call failed after 3 retries: HTTP 429: Too Many Requests"
+                failure = build_generation_failure_record(
+                    generation_request=generation_request,
+                    prompt="PROMPT",
+                    elapsed_seconds=1.0,
+                    reason="generation response was not strict JSON",
+                    error_type="CandidateRejected",
+                    raw_content=raw,
+                )
+                raise GenerationRejected(failure["reason"], failure, raw_content=raw)
+
+            old_retry_budget = os.environ.get("HERMES_SELF_EXTENSION_TRANSPORT_RETRY_BUDGET")
+            os.environ["HERMES_SELF_EXTENSION_TRANSPORT_RETRY_BUDGET"] = "0"
+            try:
+                result = run_residual_self_extension_attempts(
+                    app_dir=app_dir,
+                    job_dir=job_dir,
+                    strategy_request_path=strategy_request,
+                    target_rule_id="PDF/UA-1/7.21.4.1",
+                    current_pdf=job_dir / "current.pdf",
+                    source_pdf=job_dir / "source.pdf",
+                    reference_pdf=job_dir / "reference.pdf",
+                    max_attempts=2,
+                    generate_func=fake_generate,
+                    execute_func=lambda **kwargs: self.fail("transport failure must not execute a candidate"),
+                )
+            finally:
+                if old_retry_budget is None:
+                    os.environ.pop("HERMES_SELF_EXTENSION_TRANSPORT_RETRY_BUDGET", None)
+                else:
+                    os.environ["HERMES_SELF_EXTENSION_TRANSPORT_RETRY_BUDGET"] = old_retry_budget
+
+            self.assertEqual(result["result"], "TRANSPORT_BLOCKED")
+            self.assertEqual(len(generation_calls), 1)
+            self.assertIn("run_state_path", result)
+
+            run_state_path = Path(result["run_state_path"])
+            self.assertTrue(run_state_path.exists())
+            run_state = json.loads(run_state_path.read_text())
+
+            self.assertEqual(run_state["self_extension"]["repair_attempts_used"], 0)
+            self.assertEqual(run_state["self_extension"]["candidate_attempt_count"], 0)
+            self.assertEqual(run_state["self_extension"]["transport_failure_count"], 1)
+            self.assertEqual(run_state["self_extension"]["last_outcome"], "TRANSPORT_BLOCKED")
 
 if __name__ == "__main__":
     unittest.main()

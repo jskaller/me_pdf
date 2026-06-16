@@ -54,6 +54,21 @@ except ModuleNotFoundError:
     )
 
 
+
+try:
+    from tools.orchestrate.self_extension_run_state import (
+        SelfExtensionRunState,
+        generation_call_with_run_state,
+        TRANSPORT_BLOCKED,
+    )
+except ModuleNotFoundError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from tools.orchestrate.self_extension_run_state import (  # type: ignore
+        SelfExtensionRunState,
+        generation_call_with_run_state,
+        TRANSPORT_BLOCKED,
+    )
+
 PASS_CODES = {
     "PASS",
     "FIXED",
@@ -1070,6 +1085,16 @@ def run_residual_self_extension_attempts(
     generate_func = generate_func or generate_candidate_source
     execute_func = execute_func or execute_residual_candidate
     strategy_request = _load_json(strategy_request_path)
+    run_state = SelfExtensionRunState.start(
+        job_dir=job_dir,
+        target_rule_id=target_rule_id,
+        source_pdf=source_pdf,
+        current_pdf=current_pdf,
+        residual_gap_entry_anchor=str(strategy_request_path),
+        repair_attempt_budget=max_attempts,
+        transport_retry_budget=int(os.environ.get("HERMES_SELF_EXTENSION_TRANSPORT_RETRY_BUDGET", "3")),
+        generation_call_budget=int(os.environ.get("HERMES_SELF_EXTENSION_GENERATION_CALL_BUDGET", "10")),
+    )
     feedback_items: List[Dict[str, Any]] = list(prior_attempt_feedback or [])
     attempts: List[Dict[str, Any]] = []
 
@@ -1094,38 +1119,59 @@ def run_residual_self_extension_attempts(
             "generation_response": str(generation_response_path),
             "candidate_result": str(paths.attempt_dir / "candidate_result.json"),
         }
-        try:
-            generation_response = generate_func(
-                generation_request=generation_request,
-                job_dir=job_dir,
-            )
-        except GenerationRejected as exc:
-            failure = dict(exc.failure_record)
-            raw_content = exc.raw_content or failure.get("raw_content_prefix") or ""
+        generation_response = generation_call_with_run_state(
+            run_state=run_state,
+            generation_request=generation_request,
+            generate_fn=generate_func,
+            sleep_fn=lambda seconds: time.sleep(seconds),
+            config=cfg,
+            job_dir=job_dir,
+        )
+
+        if generation_response.get("result") != "SCRIPT_SOURCE":
+            failure = dict(generation_response)
+            raw_content = failure.get("raw_content_prefix") or ""
             if raw_content:
                 raw_path = generation_response_path.with_suffix(generation_response_path.suffix + ".raw.txt")
                 raw_path.write_text(str(raw_content))
                 failure["raw_content_path"] = str(raw_path)
             _write_json_atomic(generation_response_path, failure)
+
             attempt_record.update({
-                "result": "BLOCKED" if failure.get("retryable") else "FAIL",
+                "result": TRANSPORT_BLOCKED if failure.get("result") == TRANSPORT_BLOCKED else "FAIL",
                 "stage": "generate_candidate",
                 "failure": failure,
+                "run_state_path": str(run_state.path),
             })
             attempts.append(attempt_record)
+
+            if failure.get("result") == TRANSPORT_BLOCKED:
+                return {
+                    "result": TRANSPORT_BLOCKED,
+                    "reason": failure.get("failure_category") or "transport_retry_budget_exhausted",
+                    "target_rule_id": target_rule_id,
+                    "attempts": attempts,
+                    "prior_feedback": {"previous_attempts": feedback_items},
+                    "adoption_performed": False,
+                    "final_pdf_updated": False,
+                    "run_state_path": str(run_state.path),
+                }
+
             if failure.get("failure_category") == "llm_semantic_refusal" and attempt < max_attempts:
                 feedback_items.append(
                     build_generation_retry_feedback(attempt=attempt, failure=failure)
                 )
                 continue
+
             return {
                 "result": attempt_record["result"],
-                "reason": failure.get("failure_category") or str(exc),
+                "reason": failure.get("failure_category") or failure.get("reason"),
                 "target_rule_id": target_rule_id,
                 "attempts": attempts,
                 "prior_feedback": {"previous_attempts": feedback_items},
                 "adoption_performed": False,
                 "final_pdf_updated": False,
+                "run_state_path": str(run_state.path),
             }
 
         _write_json_atomic(generation_response_path, generation_response)
@@ -1144,6 +1190,7 @@ def run_residual_self_extension_attempts(
             profiles=profiles,
         )
         _write_json_atomic(paths.attempt_dir / "candidate_result.json", candidate_result)
+        run_state.record_candidate_attempt(candidate_result)
         attempt_record.update({
             "result": candidate_result.get("result", "UNKNOWN"),
             "stage": candidate_result.get("stage"),
