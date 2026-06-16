@@ -45,6 +45,20 @@ SUMMARY_LIST_KEYS = (
     "never_attempted_rules",
     "attempted_no_effect_rules",
     "persistent_rules",
+    "zero_count_rules",
+)
+
+SUMMARY_BUCKET_KEYS = (
+    "targetable_residual_rules",
+    "non_targetable_residual_rules",
+    "pending_review_rules",
+    "introduced_rules",
+    "escalation_rules",
+    "partially_resolved_rules",
+    "never_attempted_rules",
+    "attempted_no_effect_rules",
+    "persistent_rules",
+    "zero_count_rules",
 )
 
 
@@ -144,72 +158,47 @@ def _iter_rule_records(data: Mapping[str, Any]) -> Iterable[tuple[str, Mapping[s
                     yield str(rid), item
 
 
-def _classify_rule(rule_id: str, record: Mapping[str, Any]) -> tuple[str | None, list[str]]:
-    """Return primary bucket plus additional diagnostic buckets for a rule."""
+def _rule_metadata(record: Mapping[str, Any]) -> Dict[str, Any]:
     outcome = str(record.get("outcome", "") or "").strip().lower()
     resolvability = str(record.get("resolvability", "") or "").strip().lower()
     post_count = _as_int(record.get("post_count", record.get("failures", record.get("post_failures", 0))), 0)
     targetable_flag = _as_bool(record.get("targetable_by_self_extension"))
     if targetable_flag is None:
         targetable_flag = _as_bool(record.get("targetable"))
+    pending_review = bool(record.get("pending_review")) or "review" in outcome
+    partially_resolved = bool(record.get("partially_resolved")) or outcome == "partially_resolved"
+    zero_count = post_count == 0
+    resolved = outcome in RESOLVED_OUTCOMES
+    explicit_non_targetable = (
+        targetable_flag is False
+        or outcome in NON_TARGETABLE_OUTCOMES
+        or resolvability in NON_TARGETABLE_RESOLVABILITY
+    )
+    explicit_targetable = (
+        targetable_flag is True
+        or outcome in TARGETABLE_OUTCOMES
+        or resolvability in TARGETABLE_RESOLVABILITY
+    )
+    return {
+        "outcome": outcome,
+        "resolvability": resolvability,
+        "post_count": post_count,
+        "targetable_flag": targetable_flag,
+        "pending_review": pending_review,
+        "partially_resolved": partially_resolved,
+        "zero_count": zero_count,
+        "resolved": resolved,
+        "explicit_non_targetable": explicit_non_targetable,
+        "explicit_targetable": explicit_targetable,
+    }
 
-    diagnostics: list[str] = []
-    if bool(record.get("pending_review")) or "review" in outcome:
-        diagnostics.append("pending_review_rules")
-    if bool(record.get("partially_resolved")) or outcome == "partially_resolved":
-        diagnostics.append("partially_resolved_rules")
-    if outcome == "introduced":
-        diagnostics.append("introduced_rules")
-    if outcome == "never_attempted":
-        diagnostics.append("never_attempted_rules")
-    if outcome == "attempted_no_effect":
-        diagnostics.append("attempted_no_effect_rules")
-    if outcome == "persistent":
-        diagnostics.append("persistent_rules")
 
-    if not rule_id or outcome in RESOLVED_OUTCOMES or post_count == 0:
-        return None, diagnostics
-    if outcome == "introduced":
-        return "introduced_rules", diagnostics
-    if targetable_flag is True or outcome in TARGETABLE_OUTCOMES or resolvability in TARGETABLE_RESOLVABILITY:
-        return "targetable_residual_rules", diagnostics
-    if targetable_flag is False or outcome in NON_TARGETABLE_OUTCOMES or resolvability in NON_TARGETABLE_RESOLVABILITY:
-        return "non_targetable_residual_rules", diagnostics
-    if bool(record.get("pending_review")):
-        return "pending_review_rules", diagnostics
-    return None, diagnostics
-
-
-def summarize_residual_analysis(job_dir: str | Path) -> Dict[str, Any]:
-    job = Path(job_dir)
-    path = job / "audit" / "residual_analysis.json"
-    data = _load_json(path)
-    if not isinstance(data, dict):
-        return {
-            "available": False,
-            "residual_analysis_path": str(path),
-            "residual_analysis_sha256": "",
-            "counts_by_outcome": {},
-            "targetable_residual_rules": [],
-            "non_targetable_residual_rules": [],
-            "pending_review_rules": [],
-            "introduced_rules": [],
-            "escalation_rules": [],
-            "partially_resolved_rules": [],
-            "never_attempted_rules": [],
-            "attempted_no_effect_rules": [],
-            "persistent_rules": [],
-            "partially_resolved_softens_verdict": False,
-            "repair_script_promotion_performed": False,
-            "rule_map_mutation_performed": False,
-        }
-
-    summary = data.get("summary", {}) if isinstance(data.get("summary"), dict) else {}
-    counts = summary.get("counts_by_outcome", {}) if isinstance(summary.get("counts_by_outcome"), dict) else {}
-    if not counts and isinstance(data.get("counts_by_outcome"), dict):
-        counts = data.get("counts_by_outcome", {})
-
-    buckets: dict[str, list[str]] = {
+def _empty_residual_summary(path: Path) -> Dict[str, Any]:
+    return {
+        "available": False,
+        "residual_analysis_path": str(path),
+        "residual_analysis_sha256": "",
+        "counts_by_outcome": {},
         "targetable_residual_rules": [],
         "non_targetable_residual_rules": [],
         "pending_review_rules": [],
@@ -219,10 +208,30 @@ def summarize_residual_analysis(job_dir: str | Path) -> Dict[str, Any]:
         "never_attempted_rules": [],
         "attempted_no_effect_rules": [],
         "persistent_rules": [],
+        "zero_count_rules": [],
+        "partially_resolved_softens_verdict": False,
+        "repair_script_promotion_performed": False,
+        "rule_map_mutation_performed": False,
     }
 
+
+def summarize_residual_analysis(job_dir: str | Path) -> Dict[str, Any]:
+    job = Path(job_dir)
+    path = job / "audit" / "residual_analysis.json"
+    data = _load_json(path)
+    if not isinstance(data, dict):
+        return _empty_residual_summary(path)
+
+    summary = data.get("summary", {}) if isinstance(data.get("summary"), dict) else {}
+    counts = summary.get("counts_by_outcome", {}) if isinstance(summary.get("counts_by_outcome"), dict) else {}
+    if not counts and isinstance(data.get("counts_by_outcome"), dict):
+        counts = data.get("counts_by_outcome", {})
+
+    buckets: dict[str, list[str]] = {key: [] for key in SUMMARY_BUCKET_KEYS}
+
     # Current/legacy explicit lists. targetable_remaining_failures is an alias
-    # for targetable residuals exposed by the live smoke artifact.
+    # for targetable residuals exposed by the live smoke artifact, but it still
+    # must pass the same targetability precedence checks below.
     for key in SUMMARY_LIST_KEYS:
         values = _list_from_containers(data, summary, key)
         if key == "targetable_remaining_failures":
@@ -230,21 +239,90 @@ def summarize_residual_analysis(job_dir: str | Path) -> Dict[str, Any]:
         elif key in buckets:
             buckets[key].extend(values)
 
-    # Per-rule schemas, either dict or list. These are authoritative when list
-    # fields are missing or incomplete.
+    records: dict[str, Mapping[str, Any]] = {}
+    meta_by_rule: dict[str, Dict[str, Any]] = {}
     for rule_id, record in _iter_rule_records(data):
-        primary, diagnostics = _classify_rule(rule_id, record)
-        if primary:
-            buckets[primary].append(rule_id)
-        for diagnostic_key in diagnostics:
-            if diagnostic_key in buckets:
-                buckets[diagnostic_key].append(rule_id)
+        if not rule_id:
+            continue
+        records[rule_id] = record
+        meta = _rule_metadata(record)
+        meta_by_rule[rule_id] = meta
+
+        if meta["zero_count"]:
+            buckets["zero_count_rules"].append(rule_id)
+        if meta["pending_review"]:
+            buckets["pending_review_rules"].append(rule_id)
+        if meta["partially_resolved"]:
+            buckets["partially_resolved_rules"].append(rule_id)
+        if meta["outcome"] == "introduced":
+            buckets["introduced_rules"].append(rule_id)
+        if meta["outcome"] == "never_attempted":
+            buckets["never_attempted_rules"].append(rule_id)
+        if meta["outcome"] == "attempted_no_effect":
+            buckets["attempted_no_effect_rules"].append(rule_id)
+
+        # Explicit non-targetable classification is authoritative. It wins over
+        # attempted_no_effect, escalation, and explicit targetable list entries.
+        if meta["explicit_non_targetable"] and not meta["zero_count"] and not meta["resolved"]:
+            buckets["non_targetable_residual_rules"].append(rule_id)
+
+        # Targetability requires an unresolved, non-zero post-failure rule that
+        # is not pending review and has no explicit non-targetable marker.
+        if (
+            meta["explicit_targetable"]
+            and not meta["explicit_non_targetable"]
+            and not meta["zero_count"]
+            and not meta["resolved"]
+            and not meta["pending_review"]
+        ):
+            if meta["outcome"] == "introduced":
+                buckets["introduced_rules"].append(rule_id)
+            else:
+                buckets["targetable_residual_rules"].append(rule_id)
+
+        # Persistent is a diagnostic bucket for still-present residuals with a
+        # persistent outcome. Pending-review, zero-count, and resolved rules are
+        # not persistent blockers.
+        if meta["outcome"] == "persistent" and not meta["pending_review"] and not meta["zero_count"] and not meta["resolved"]:
+            buckets["persistent_rules"].append(rule_id)
+
+    explicit_non_targetable = set(_sorted_unique(buckets["non_targetable_residual_rules"]))
+    zero_count = set(_sorted_unique(buckets["zero_count_rules"]))
+    pending = set(_sorted_unique(buckets["pending_review_rules"]))
+    resolved = {rid for rid, meta in meta_by_rule.items() if meta["resolved"]}
+    targetable_false = {rid for rid, meta in meta_by_rule.items() if meta["targetable_flag"] is False}
+
+    # Clean all buckets with precedence. Explicit non-targetable, zero-count,
+    # resolved, pending-review, and targetable:false rules cannot be targetable.
+    not_targetable = explicit_non_targetable | zero_count | resolved | pending | targetable_false
+    buckets["targetable_residual_rules"] = [
+        rid for rid in buckets["targetable_residual_rules"] if rid not in not_targetable
+    ]
+
+    # Explicit targetable list entries with metadata targetable:false should be
+    # visible as non-targetable residuals when they still have post failures.
+    for rid in targetable_false:
+        meta = meta_by_rule.get(rid, {})
+        if not meta.get("zero_count") and not meta.get("resolved"):
+            buckets["non_targetable_residual_rules"].append(rid)
+
+    # Persistent rules must not include pending-review, zero-count, resolved, or
+    # explicit non-targetable rules. This preserves Patch 5B expectations while
+    # preventing pending-review diagnostics from becoming blockers.
+    persistent_exclusions = zero_count | resolved | pending | explicit_non_targetable
+    buckets["persistent_rules"] = [
+        rid for rid in buckets["persistent_rules"] if rid not in persistent_exclusions
+    ]
 
     # Escalation is at least the actionable targetable/introduced set unless the
-    # artifact provided a narrower explicit list.
+    # artifact provided a narrower explicit list. Escalation never promotes a
+    # rule into targetable_residual_rules.
     if not buckets["escalation_rules"]:
         buckets["escalation_rules"].extend(buckets["targetable_residual_rules"])
         buckets["escalation_rules"].extend(buckets["introduced_rules"])
+    buckets["escalation_rules"] = [
+        rid for rid in buckets["escalation_rules"] if rid not in zero_count and rid not in resolved
+    ]
 
     policy = data.get("policy", {}) if isinstance(data.get("policy"), dict) else {}
     return {
@@ -261,6 +339,7 @@ def summarize_residual_analysis(job_dir: str | Path) -> Dict[str, Any]:
         "never_attempted_rules": _sorted_unique(buckets["never_attempted_rules"]),
         "attempted_no_effect_rules": _sorted_unique(buckets["attempted_no_effect_rules"]),
         "persistent_rules": _sorted_unique(buckets["persistent_rules"]),
+        "zero_count_rules": _sorted_unique(buckets["zero_count_rules"]),
         "partially_resolved_softens_verdict": bool(policy.get("partially_resolved_softens_verdict", False)),
         "repair_script_promotion_performed": bool(policy.get("repair_script_promotion_performed", False)),
         "rule_map_mutation_performed": bool(policy.get("rule_map_mutation_performed", False)),
@@ -300,6 +379,10 @@ def summarize_strategy_indexing(job_dir: str | Path) -> Dict[str, Any]:
     }
 
 
+def _signal_rule_ids(signals: Sequence[Mapping[str, Any]]) -> List[str]:
+    return _sorted_unique(sig.get("rule_id") for sig in signals if isinstance(sig, Mapping))
+
+
 def reconcile_hermes_signals(
     raw_signals: Sequence[Mapping[str, Any]] | None,
     residual_summary: Mapping[str, Any] | None,
@@ -311,6 +394,8 @@ def reconcile_hermes_signals(
     pending = {str(v) for v in (summary.get("pending_review_rules", []) or [])}
     introduced = {str(v) for v in (summary.get("introduced_rules", []) or [])}
     persistent = {str(v) for v in (summary.get("persistent_rules", []) or [])}
+    zero_count_rules = {str(v) for v in (summary.get("zero_count_rules", []) or [])}
+    resolved_rules = {str(v) for v in (summary.get("resolved_rules", []) or [])} | zero_count_rules
     unresolved = targetable | non_targetable | pending | introduced | persistent
 
     raw = [dict(s) for s in (raw_signals or []) if isinstance(s, Mapping)]
@@ -329,21 +414,24 @@ def reconcile_hermes_signals(
         failures = _as_int(sig.get("failures"), 0)
         classified = dict(sig)
 
-        # Residual analysis is authoritative for targetable blockers. Even a
-        # zero-count raw Hermes signal can remain active when the residual
-        # artifact proves the rule is still a targetable residual.
-        if rid in targetable or rid in introduced:
-            classified["reconciliation"] = "active_actionable"
-            classified["active_blocker"] = True
-            active.append(classified)
-        elif failures == 0:
+        # Zero-failure Hermes emissions are audit evidence, not active blockers.
+        # This wins over broad targetable/escalation/attempted_no_effect lists.
+        if failures == 0:
             classified["reconciliation"] = "suppressed_zero_count"
             classified["active_blocker"] = False
             suppressed_zero.append(classified)
+        elif rid in resolved_rules:
+            classified["reconciliation"] = "resolved_incidental"
+            classified["active_blocker"] = False
+            resolved.append(classified)
         elif rid in non_targetable or rid in pending:
             classified["reconciliation"] = "non_targetable_residual" if rid in non_targetable else "review_required"
             classified["active_blocker"] = False
             non_targetable_signals.append(classified)
+        elif rid in targetable or rid in introduced:
+            classified["reconciliation"] = "active_actionable"
+            classified["active_blocker"] = True
+            active.append(classified)
         elif rid and rid not in unresolved:
             classified["reconciliation"] = "resolved_incidental"
             classified["active_blocker"] = False
@@ -366,4 +454,8 @@ def reconcile_hermes_signals(
         "resolved_incidental_signals": resolved,
         "non_targetable_residual_signals": non_targetable_signals,
         "suppressed_zero_count_signals": suppressed_zero,
+        "active_actionable_rules": _signal_rule_ids(active),
+        "resolved_incidental_rules": _signal_rule_ids(resolved),
+        "non_targetable_residual_rules": _signal_rule_ids(non_targetable_signals),
+        "suppressed_zero_count_rules": _signal_rule_ids(suppressed_zero),
     }

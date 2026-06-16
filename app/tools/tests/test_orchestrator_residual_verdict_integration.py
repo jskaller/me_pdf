@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.lib.residual_verdict import summarize_residual_analysis, summarize_strategy_indexing, reconcile_hermes_signals
+from tools.lib.residual_verdict import reconcile_hermes_signals, summarize_residual_analysis, summarize_strategy_indexing
 from tools.lib.verdict import VerdictInput, verdict
 
 
@@ -164,4 +164,93 @@ class Patch5BResidualSummaryNormalizationTests(unittest.TestCase):
         self.assertEqual(reconciled["active_actionable_count"], 0)
         self.assertEqual(reconciled["non_targetable_residual_count"], 1)
         self.assertEqual(reconciled["non_targetable_residual_signals"][0]["reconciliation"], "non_targetable_residual")
+
+# Patch 5C: targetability precedence and zero-count Hermes suppression.
+class Patch5CTargetabilityPrecedenceTests(unittest.TestCase):
+    def test_non_targetable_list_excludes_attempted_no_effect_from_targetable(self):
+        with tempfile.TemporaryDirectory() as td:
+            job = Path(td)
+            write_json(job / "audit" / "residual_analysis.json", {
+                "targetable_residual_rules": ["PDF/UA-1/7.18.1", "PDF/UA-1/7.18.4"],
+                "non_targetable_residual_rules": ["PDF/UA-1/7.18.1"],
+                "rules": [
+                    {"rule_id": "PDF/UA-1/7.18.1", "outcome": "attempted_no_effect", "post_count": 0},
+                    {"rule_id": "PDF/UA-1/7.18.4", "outcome": "attempted_no_effect", "targetable": True, "post_count": 2},
+                ],
+            })
+            summary = summarize_residual_analysis(job)
+            self.assertEqual(summary["targetable_residual_rules"], ["PDF/UA-1/7.18.4"])
+            self.assertEqual(summary["non_targetable_residual_rules"], ["PDF/UA-1/7.18.1"])
+
+    def test_post_count_zero_excluded_from_targetable_residuals(self):
+        with tempfile.TemporaryDirectory() as td:
+            job = Path(td)
+            write_json(job / "audit" / "residual_analysis.json", {
+                "targetable_remaining_failures": ["R-zero", "R-live"],
+                "rules": [
+                    {"rule_id": "R-zero", "outcome": "attempted_no_effect", "targetable": True, "post_count": 0},
+                    {"rule_id": "R-live", "outcome": "attempted_no_effect", "targetable": True, "post_count": 1},
+                ],
+            })
+            summary = summarize_residual_analysis(job)
+            self.assertEqual(summary["targetable_residual_rules"], ["R-live"])
+            self.assertEqual(summary["zero_count_rules"], ["R-zero"])
+
+    def test_targetable_false_excluded_from_targetable_residuals(self):
+        with tempfile.TemporaryDirectory() as td:
+            job = Path(td)
+            write_json(job / "audit" / "residual_analysis.json", {
+                "targetable_residual_rules": ["R-manual", "R-auto"],
+                "rules": [
+                    {"rule_id": "R-manual", "outcome": "attempted_no_effect", "targetable_by_self_extension": False, "post_count": 2},
+                    {"rule_id": "R-auto", "outcome": "attempted_no_effect", "targetable_by_self_extension": True, "post_count": 2},
+                ],
+            })
+            summary = summarize_residual_analysis(job)
+            self.assertEqual(summary["targetable_residual_rules"], ["R-auto"])
+            self.assertEqual(summary["non_targetable_residual_rules"], ["R-manual"])
+
+    def test_zero_failure_signal_suppressed_even_when_escalation_attempted_no_effect(self):
+        summary = {
+            "targetable_residual_rules": ["R1"],
+            "escalation_rules": ["R1"],
+            "attempted_no_effect_rules": ["R1"],
+        }
+        rec = reconcile_hermes_signals([
+            {"rule_id": "R1", "failures": 0, "reason": "all_strategies_exhausted"}
+        ], summary)
+        self.assertEqual(rec["active_actionable_count"], 0)
+        self.assertEqual(rec["suppressed_zero_count"], 1)
+        self.assertEqual(rec["suppressed_zero_count_rules"], ["R1"])
+
+    def test_non_targetable_hermes_residual_not_active(self):
+        summary = {
+            "targetable_residual_rules": ["R-auto"],
+            "non_targetable_residual_rules": ["R-manual"],
+        }
+        rec = reconcile_hermes_signals([
+            {"rule_id": "R-manual", "failures": 3, "reason": "manual_only"},
+            {"rule_id": "R-auto", "failures": 2, "reason": "gap"},
+        ], summary)
+        self.assertEqual(rec["active_actionable_count"], 1)
+        self.assertEqual(rec["active_actionable_rules"], ["R-auto"])
+        self.assertEqual(rec["non_targetable_residual_count"], 1)
+        self.assertEqual(rec["non_targetable_residual_rules"], ["R-manual"])
+
+    def test_smoke_shape_reconciles_three_active_one_suppressed(self):
+        summary = {
+            "targetable_residual_rules": ["PDF/UA-1/7.18.4", "PDF/UA-1/7.21.4.1", "PDF/UA-1/7.21.7"],
+            "non_targetable_residual_rules": ["PDF/UA-1/7.18.1"],
+        }
+        rec = reconcile_hermes_signals([
+            {"rule_id": "PDF/UA-1/7.18.1", "failures": 0, "reason": "all_strategies_exhausted"},
+            {"rule_id": "PDF/UA-1/7.18.4", "failures": 4, "reason": "all_strategies_exhausted"},
+            {"rule_id": "PDF/UA-1/7.21.7", "failures": 1, "reason": "all_strategies_exhausted"},
+            {"rule_id": "PDF/UA-1/7.21.4.1", "failures": 2, "reason": "all_strategies_exhausted"},
+        ], summary)
+        self.assertEqual(rec["active_actionable_count"], 3)
+        self.assertEqual(set(rec["active_actionable_rules"]), {"PDF/UA-1/7.18.4", "PDF/UA-1/7.21.4.1", "PDF/UA-1/7.21.7"})
+        self.assertEqual(rec["suppressed_zero_count"], 1)
+        self.assertEqual(rec["suppressed_zero_count_rules"], ["PDF/UA-1/7.18.1"])
+        self.assertEqual(rec["raw_emissions"], 4)
 
