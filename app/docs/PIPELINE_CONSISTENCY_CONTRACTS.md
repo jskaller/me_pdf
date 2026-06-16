@@ -91,3 +91,11 @@ From repo root (`/app`):
 - `PYTHONPATH=. python3 skills/pdf-remediation/scripts/verify_exp_failures_ordering.py`
   — regression probe: `experimental_profile_failures` preserved when a
   compliance gate also fails.
+
+## Patch 5: residual-aware verdict/status integration
+
+Residual analysis is now a first-class verdict input. `audit/verdict_input.json` records the residual artifact path/hash, outcome counts, targetable residuals, non-targetable residuals, pending-review rules, introduced rules, partially resolved rules, persistent/no-effect/never-attempted rules, and explicit policy flags stating that partial improvement does not soften the verdict and that rule-map mutation/script promotion were not performed.
+
+Hermes signals are preserved as raw evidence, deduplicated for review, and reconciled against residual outcomes. Zero-failure signals and rules with `post_count == 0` or resolved/resolved-incidental outcomes are suppressed or marked inactive. Targetable residuals remain active/actionable. Non-targetable residuals remain visible but are classified separately from strategy gaps.
+
+`orchestrator_outcome.json` remains authoritative. `STATUS.json` uses it when present and stores a recomputed fallback from `verdict_input.json`; mismatches are explicit via `orchestrator_status_mismatch` rather than silently corrected. Strategy indexing reports are referenced by path/hash/counts only. Generated repair promotion, final-PDF adoption, rule-map mutation, execution-log fidelity upgrades, and new repair strategies remain out of scope.

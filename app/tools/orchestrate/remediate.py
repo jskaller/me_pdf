@@ -50,6 +50,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 from tools.audit.execution_log import build_execution_log_from_repair_steps, write_execution_log
 from tools.audit.residual_analysis import analyze_residuals, targetable_failures_from_analysis
+from tools.lib.residual_verdict import summarize_residual_analysis, summarize_strategy_indexing, reconcile_hermes_signals
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 
@@ -2619,58 +2620,30 @@ strategy_gap = write_residual_strategy_gap_artifacts(
     post_failures_path,
 )
 
-# ── HERMES signal reconciliation against the residual (P7) ──────────────────
-# Signals accumulate from PLAN (manual_no_strategies / unknown_rule), the
-# validate cycle, and the residual gap phase -- the same rule can be emitted
-# more than once, and a rule flagged at plan time may have been cleared
-# incidentally by an earlier repair (e.g. the order-0 structural rebuild).
-# Before the verdict: (1) dedupe by (rule_id, reason), keeping the latest
-# emission (residual-phase entries carry artifact pointers); (2) mark signals
-# whose rule no longer appears in failures_post.json as resolved_incidental.
-# Every signal is preserved in hermes_signals.json with its reconciliation
-# flag for provenance; only ACTIVE signals count toward the outcome.
-# Safeguards: 'local/' signals are not veraPDF rules and are never marked
-# incidental; and if the hard veraPDF gates are FAIL while the parsed
-# residual is empty (parse inconsistency), reconciliation is skipped and all
-# signals stay active rather than blessing an unverifiable state.
-residual_rule_ids = {f.get('rule_id') for f in remaining_failures
-                     if isinstance(f, dict) and f.get('rule_id')}
-_raw_signal_count = len(hermes_signals)
-
-_deduped = {}
-for _sig in hermes_signals:
-    _deduped[(_sig.get('rule_id'), _sig.get('reason'))] = _sig
-
-_parse_inconsistent = (not residual_rule_ids) and not (
-    is_pass(gate_results.get('verapdf_pdfua1', 'FAIL'))
-    and is_pass(gate_results.get('verapdf_wcag', 'FAIL'))
+# ── HERMES signal reconciliation against residual analysis (Patch 5) ────────
+residual_verdict_summary = summarize_residual_analysis(JOB)
+strategy_indexing_summary = summarize_strategy_indexing(JOB)
+hermes_reconciliation = reconcile_hermes_signals(
+    hermes_signals,
+    residual_verdict_summary,
+    gate_results,
 )
-
-reconciled_signals = []
-active_hermes_signals = []
-for _sig in _deduped.values():
-    _rid = _sig.get('rule_id') or ''
-    if _parse_inconsistent or _rid.startswith('local/') or _rid in residual_rule_ids:
-        _sig = dict(_sig, reconciliation='active')
-        active_hermes_signals.append(_sig)
-    else:
-        _sig = dict(
-            _sig,
-            reconciliation='resolved_incidental',
-            reconciliation_note=('rule absent from failures_post.json; '
-                                 'cleared by an earlier repair in this run'),
-        )
-    reconciled_signals.append(_sig)
-
-hermes_signals = reconciled_signals
-emit('PACKAGE', 'hermes_signal_reconciliation', 'PASS',
-     data={'raw_emissions': _raw_signal_count,
-           'deduped': len(_deduped),
-           'active': len(active_hermes_signals),
-           'resolved_incidental': len(_deduped) - len(active_hermes_signals),
-           'parse_inconsistent_safeguard': _parse_inconsistent,
-           'residual_rules': sorted(residual_rule_ids)})
-
+hermes_signals_raw = hermes_reconciliation.get('raw_signals', [])
+active_hermes_signals = hermes_reconciliation.get('active_actionable_signals', [])
+hermes_signals = (
+    hermes_reconciliation.get('active_actionable_signals', [])
+    + hermes_reconciliation.get('resolved_incidental_signals', [])
+    + hermes_reconciliation.get('non_targetable_residual_signals', [])
+    + hermes_reconciliation.get('suppressed_zero_count_signals', [])
+)
+emit('PACKAGE', 'hermes_signal_reconciliation', 'PASS', data={
+    'raw_emissions': hermes_reconciliation.get('raw_emissions', 0),
+    'deduped': hermes_reconciliation.get('deduped_count', 0),
+    'active_actionable': hermes_reconciliation.get('active_actionable_count', 0),
+    'resolved_incidental': hermes_reconciliation.get('resolved_incidental_count', 0),
+    'non_targetable_residual': hermes_reconciliation.get('non_targetable_residual_count', 0),
+    'suppressed_zero_count': hermes_reconciliation.get('suppressed_zero_count', 0),
+})
 # M1B: the shared verdict module is the single source of truth for the
 # outcome; no inline gate-key lists. Pre-repair gates (*_pre, verapdf_baseline)
 # are excluded from the verdict input -- a failing baseline is the EXPECTED
@@ -2719,6 +2692,15 @@ try:
 except Exception:
     pass
 
+try:
+    _verdict_input_path = AUDIT_DIR / 'verdict_input.json'
+    _verdict_payload = load_json(_verdict_input_path) or {}
+    _verdict_payload['residual_analysis'] = residual_verdict_summary if 'residual_verdict_summary' in globals() else summarize_residual_analysis(JOB)
+    _verdict_payload['strategy_indexing'] = strategy_indexing_summary if 'strategy_indexing_summary' in globals() else summarize_strategy_indexing(JOB)
+    _verdict_payload['hermes_reconciliation'] = hermes_reconciliation if 'hermes_reconciliation' in globals() else {}
+    _verdict_input_path.write_text(json.dumps(_verdict_payload, indent=2, sort_keys=True))
+except Exception:
+    pass
 verdict_result = compute_shared_verdict(verdict_input)
 overall = verdict_result.overall
 critical_fails = [str(g) for g in verdict_result.critical_fails]
@@ -2762,7 +2744,7 @@ try:
             'total_iterations': total_iterations,
             'has_hermes':     len(active_hermes_signals) > 0,
             'escalation_upgrade': escalation_upgrade,
-            'verdict': verdict_result.as_dict(),
+            'verdict': verdict_result.as_dict(), 'residual_analysis': residual_verdict_summary if 'residual_verdict_summary' in globals() else summarize_residual_analysis(JOB), 'strategy_indexing': strategy_indexing_summary if 'strategy_indexing_summary' in globals() else summarize_strategy_indexing(JOB), 'hermes_reconciliation': hermes_reconciliation if 'hermes_reconciliation' in globals() else {},
         }, indent=2)
     )
 except Exception:

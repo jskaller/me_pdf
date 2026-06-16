@@ -1,85 +1,87 @@
 #!/usr/bin/env python3
-"""
-package_deliverables.py
-Assembles final deliverable package and places exactly two files in the
-output directory: the remediated PDF and an AUDIT_REPORT.md.
+"""package_deliverables.py
 
-M1 routing change:
-- Authoritative overall outcome is read from orchestrator_outcome.json first,
- then STATUS.json, then the shared verdict() on verdict_input.json.
-- FAIL / ESCALATION produce a report-only AUDIT_REPORT.md and checksums
- without handing off a remediated PDF unless --skip-pdf was passed.
+Assembles final deliverables. Authoritative routing is orchestrator_outcome.json
+first, then STATUS.json, then shared verdict_input.json. FAIL/ESCALATION are
+report-only; REVIEW_REQUIRED still passes through with PDF for human review.
 """
-import sys, json, shutil, argparse, hashlib, re
-from pathlib import Path
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import shutil
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
+
+if __name__ == "__main__" and str(Path(__file__).resolve().parents[2]) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tools.lib.verdict import VerdictInput, verdict
+from tools.lib.residual_verdict import summarize_residual_analysis, summarize_strategy_indexing
+
 
 parser = argparse.ArgumentParser()
-parser.add_argument('job_dir')
-parser.add_argument('remediated_pdf')
-parser.add_argument('--output-dir', default=None,
-    help='Final deliverables destination (output/{TICKET}_remediated/)')
-parser.add_argument('--source-pdf', default='')
-parser.add_argument('--skip-pdf', action='store_true',
-    help='Write audit report only, do not copy PDF (FAIL/ESCALATION)')
+parser.add_argument("job_dir")
+parser.add_argument("remediated_pdf")
+parser.add_argument("--output-dir", default=None, help="Final deliverables destination")
+parser.add_argument("--source-pdf", default="")
+parser.add_argument("--skip-pdf", action="store_true", help="Write audit report only, do not copy PDF")
 args = parser.parse_args()
 
 job_dir = Path(args.job_dir)
 pdf_src = Path(args.remediated_pdf)
-
 if not job_dir.exists():
-    print(json.dumps({'result': 'ERROR', 'error': f'Job dir not found: {job_dir}'}))
+    print(json.dumps({"result": "ERROR", "error": f"Job dir not found: {job_dir}"}))
     sys.exit(2)
 if not pdf_src.exists():
-    print(json.dumps({'result': 'ERROR', 'error': f'PDF not found: {pdf_src}'}))
+    print(json.dumps({"result": "ERROR", "error": f"PDF not found: {pdf_src}"}))
     sys.exit(2)
-
-# ── Resolve output directory ──────────────────────────────────────────────────
 
 if args.output_dir:
     output_dir = Path(args.output_dir)
 else:
-    # Fall back to sibling of jobs/ named output/{ticket}_remediated
-    ticket_part = job_dir.name.split('_')[0]
+    ticket_part = job_dir.name.split("_")[0]
     workspace = job_dir.parent.parent
-    output_dir = workspace / 'output' / f'{ticket_part}_remediated'
-
+    output_dir = workspace / "output" / f"{ticket_part}_remediated"
 output_dir.mkdir(parents=True, exist_ok=True)
 
-# ── Assemble internal package inside job_dir ──────────────────────────────────
-
-for sub in ('pdf', 'reports', 'qa', 'logs', 'audit'):
+for sub in ("pdf", "reports", "qa", "logs", "audit"):
     (job_dir / sub).mkdir(exist_ok=True)
 
-copied_internal = []
 
-# Copy remediated PDF into job/pdf/
-dest_pdf_internal = job_dir / 'pdf' / pdf_src.name
-shutil.copy2(pdf_src, dest_pdf_internal)
-copied_internal.append(str(dest_pdf_internal))
+def _load_json(path: Path):
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
 
-# Generate checksums over all job files
-def sha256(p):
+
+def sha256(path: Path) -> str:
     h = hashlib.sha256()
-    with open(p, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b''):
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
 
+
+# Keep the internal package complete; final handoff routing below decides whether
+# the PDF is copied to the deliverables directory.
+dest_pdf_internal = job_dir / "pdf" / pdf_src.name
+shutil.copy2(pdf_src, dest_pdf_internal)
+
 checksum_lines = []
-for p in sorted(job_dir.rglob("*")):
-    if p.is_file() and p.name not in ("SHA256SUMS.txt",):
+for file_path in sorted(job_dir.rglob("*")):
+    if file_path.is_file() and file_path.name != "SHA256SUMS.txt":
         try:
-            rel = p.relative_to(job_dir)
-            checksum_lines.append(f'{sha256(p)}  {rel}\n')
+            rel = file_path.relative_to(job_dir)
+            checksum_lines.append(f"{sha256(file_path)} {rel}\n")
         except Exception:
             pass
+(job_dir / "SHA256SUMS.txt").write_text("".join(checksum_lines))
 
-(job_dir / 'SHA256SUMS.txt').write_text(''.join(checksum_lines))
-
-# Write PACKAGE_CONTENTS.md
 contents = f"""# Package Contents
 
 **Job:** {job_dir.name}
@@ -99,89 +101,83 @@ contents = f"""# Package Contents
 | STATUS.json | Overall remediation status |
 | SHA256SUMS.txt | File integrity checksums |
 """
-(job_dir / 'PACKAGE_CONTENTS.md').write_text(contents)
+(job_dir / "PACKAGE_CONTENTS.md").write_text(contents)
 
-# ── Read STATUS.json for audit report ────────────────────────────────────────
-
-status_path = job_dir / 'STATUS.json'
-status = {}
-if status_path.exists():
-    try:
-        status = json.loads(status_path.read_text()) or {}
-    except Exception:
-        pass
-
-overall_raw = status.get('overall_result', 'UNKNOWN') if status else 'UNKNOWN'
-gates = status.get('gates', {})
-generated_at = status.get('generated_at', datetime.now(timezone.utc).isoformat())
-
-# ── Resolve authoritative overall outcome ─────────────────────────────────────
-# Priority: orchestrator_outcome.json > verdict_input.json > STATUS.json
-
-authoritative_overall = None
-
+status_path = job_dir / "STATUS.json"
+status = _load_json(status_path) or {}
+overall_raw = status.get("overall_result") or status.get("result") or "UNKNOWN"
+gates = status.get("gates", {}) if isinstance(status.get("gates", {}), dict) else {}
+generated_at = status.get("generated_at", datetime.now(timezone.utc).isoformat())
 
 audit_dir = job_dir / "audit"
 outcome_path = audit_dir / "orchestrator_outcome.json"
 verdict_input_path = audit_dir / "verdict_input.json"
+residual = summarize_residual_analysis(job_dir)
+strategy = summarize_strategy_indexing(job_dir)
 
+authoritative_overall = None
+routing_source = "none"
 if outcome_path.exists():
     try:
-        authoritative_overall = json.loads(outcome_path.read_text()).get('overall_result')
+        outcome = _load_json(outcome_path) or {}
+        authoritative_overall = outcome.get("overall_result")
+        routing_source = "orchestrator_outcome.json"
     except Exception:
         pass
-
+if authoritative_overall is None and status:
+    authoritative_overall = overall_raw
+    routing_source = "STATUS.json"
 if authoritative_overall is None and verdict_input_path.exists():
     try:
-        raw = json.loads(verdict_input_path.read_text()) or {}
+        raw = _load_json(verdict_input_path) or {}
+        residual = raw.get("residual_analysis") or residual
+        strategy = raw.get("strategy_indexing") or strategy
         vi = VerdictInput.from_gate_dict(
-            raw.get('gates', {}),
-            hermes_signals_count=raw.get('hermes_signals_count', 0),
-            deviations_count=raw.get('deviations_count', 0),
-            total_iterations=raw.get('total_iterations', 0),
-            job_hard_cap=raw.get('job_hard_cap', 50),
-            experimental_profile_failures=raw.get('experimental_profile_failures', []),
+            raw.get("gates", {}),
+            hermes_signals_count=raw.get("hermes_signals_count", 0),
+            deviations_count=raw.get("deviations_count", 0),
+            total_iterations=raw.get("total_iterations", 0),
+            job_hard_cap=raw.get("job_hard_cap", 50),
+            has_hard_cap_exceeded=raw.get("has_hard_cap_exceeded", False),
+            experimental_profile_failures=raw.get("experimental_profile_failures", []),
+            pending_review_rules=raw.get("pending_review_rules", residual.get("pending_review_rules", [])),
+            residual_analysis=residual,
+            strategy_indexing=strategy,
+            targetable_residual_rules=raw.get("targetable_residual_rules", residual.get("targetable_residual_rules", [])),
+            non_targetable_residual_rules=raw.get("non_targetable_residual_rules", residual.get("non_targetable_residual_rules", [])),
+            introduced_rules=raw.get("introduced_rules", residual.get("introduced_rules", [])),
+            partially_resolved_rules=raw.get("partially_resolved_rules", residual.get("partially_resolved_rules", [])),
+            transport_blocked=bool(raw.get("transport_blocked", False)),
         )
         authoritative_overall = verdict(vi).overall
+        routing_source = "verdict_input.json"
     except Exception:
         pass
 
-if authoritative_overall is None:
-    authoritative_overall = overall_raw
-
-overall = authoritative_overall or 'UNKNOWN'
-
-# ── Report-only mode for FAIL / ESCALATION ────────────────────────────────────
-# effective_skip_pdf suppresses PDF copy but the audit report and checksums
-# are always produced regardless of outcome.
-effective_skip_pdf = args.skip_pdf or overall in ('FAIL', 'ESCALATION')
-
-if overall in ('FAIL', 'ESCALATION') and not args.skip_pdf:
+overall = authoritative_overall or "UNKNOWN"
+effective_skip_pdf = args.skip_pdf or overall in ("FAIL", "ESCALATION")
+if overall in ("FAIL", "ESCALATION") and not args.skip_pdf:
     print(json.dumps({
-    'result': 'WARN',
-    'warning': f'overall={overall}; producing report-only output (PDF not copied).',
-    'overall_result': overall,
-    'job_dir': str(job_dir),
+        "result": "WARN",
+        "warning": f"overall={overall}; producing report-only output (PDF not copied).",
+        "overall_result": overall,
+        "job_dir": str(job_dir),
     }, indent=2), file=sys.stderr)
 
-# ── Generate AUDIT_REPORT.md ──────────────────────────────────────────────────
-
-# Derive clean basename from source PDF if provided, otherwise from remediated PDF
 if args.source_pdf:
     basename = Path(args.source_pdf).stem
 else:
     basename = pdf_src.stem
-    basename = re.sub(r'^pass\d+_', '', basename)
-    basename = basename.replace('_remediated', '').replace('-remediated', '')
+basename = re.sub(r"^pass\d+_", "", basename)
+basename = basename.replace("_remediated", "").replace("-remediated", "")
 
-def gate_row(name, display):
-    g = gates.get(name, {})
-    result = g.get('result', 'NOT_RUN')
-    icon = '✅' if result in ('PASS', 'FIXED', 'ALREADY_CORRECT',
-    'PASS_WITH_MIXED_PAGES', 'SKIPPED') else \
-    '⚠️' if result in ('REVIEW_REQUIRED', 'WARN', 'NEEDS_REVIEW') else \
-    '❌' if result == 'FAIL' else '—'
-    return f'| {display} | {icon} {result} |\n'
+
+def gate_row(name: str, display: str) -> str:
+    gate = gates.get(name, {})
+    result = gate.get("result", "NOT_RUN") if isinstance(gate, dict) else "NOT_RUN"
+    icon = "PASS" if result in ("PASS", "FIXED", "ALREADY_CORRECT", "PASS_WITH_MIXED_PAGES", "SKIPPED") else "WARN" if result in ("REVIEW_REQUIRED", "WARN", "NEEDS_REVIEW") else "FAIL" if result == "FAIL" else "-"
+    return f"| {display} | {icon} {result} |\n"
+
 
 audit_report = f"""# Montefiore PDF/UA Remediation Audit Report
 
@@ -190,6 +186,7 @@ audit_report = f"""# Montefiore PDF/UA Remediation Audit Report
 **Job:** {job_dir.name}
 **Generated:** {generated_at}
 **Overall Result:** {overall}
+**Routing Source:** {routing_source}
 
 ---
 
@@ -197,29 +194,23 @@ audit_report = f"""# Montefiore PDF/UA Remediation Audit Report
 
 | Gate | Result |
 |------|--------|
-{gate_row('qpdf', 'Structural integrity (qpdf)')}
-{gate_row('verapdf_pdfua1', 'veraPDF PDF/UA-1 + WCAG 2.2')}
-{gate_row('metadata_parity','Metadata XMP parity')}
-{gate_row('preservation', 'Native text preservation')}
-{gate_row('table_semantics','Table semantics')}
-{gate_row('contrast', 'Contrast (WCAG 1.4.3)')}
-{gate_row('alt_text', 'Figure alt text')}
-{gate_row('ocr_detection', 'OCR pre-flight')}
-{gate_row('render_compare', 'Visual render comparison')}
-{gate_row('visual_qa', 'Visual QA')}
-
+{gate_row('qpdf', 'Structural integrity (qpdf)')}{gate_row('verapdf_pdfua1', 'veraPDF PDF/UA-1 + WCAG 2.2')}{gate_row('metadata_parity', 'Metadata XMP parity')}{gate_row('preservation', 'Native text preservation')}{gate_row('table_semantics', 'Table semantics')}{gate_row('contrast', 'Contrast (WCAG 1.4.3)')}{gate_row('alt_text', 'Figure alt text')}{gate_row('ocr_detection', 'OCR pre-flight')}{gate_row('render_compare', 'Visual render comparison')}{gate_row('visual_qa', 'Visual QA')}
 ---
 
-## Repairs Applied
+## Patch 5 Residual-Aware Verdict Data
 
-*(See STATUS.json and job directory for full repair log.)*
+- Residual analysis available: {residual.get('available')}
+- Targetable residual rules: {len(residual.get('targetable_residual_rules', []))}
+- Non-targetable residual rules: {len(residual.get('non_targetable_residual_rules', []))}
+- Pending review rules: {len(residual.get('pending_review_rules', []))}
+- Strategy indexing available: {strategy.get('available')}
+- Proposed rule-map changes referenced only: {strategy.get('proposed_rule_map_changes_count', 0)}
 
 ---
 
 ## External Validators
 
-axesCheck and PAC 2024 are not run in this container. The receiving party
-should run these before final sign-off.
+axesCheck and PAC 2024 are not run in this container. The receiving party should run these before final sign-off.
 
 ---
 
@@ -228,50 +219,41 @@ should run these before final sign-off.
 - This document and associated files are provided for review.
 - Source files are preserved in the job directory.
 - SHA-256 checksums are in SHA256SUMS.txt in the job directory.
-
-**Do not consider this PDF fully compliant until external validators
-(axesCheck, PAC 2024) have been run.**
+- Do not consider this PDF fully compliant until external validators have been run.
 """
 
-# ── Write final deliverables to output_dir ───────────────────────────────────
-
-# Determine output PDF name
-out_pdf_name = f'{basename}_remediated.pdf'
-out_report_name = f'{basename}_AUDIT_REPORT.md'
-
+out_pdf_name = f"{basename}_remediated.pdf"
+out_report_name = f"{basename}_AUDIT_REPORT.md"
 out_report = output_dir / out_report_name
 out_report.write_text(audit_report)
 
-deliverables = {
-    'audit_report': str(out_report),
-}
-
+deliverables = {"audit_report": str(out_report)}
 if not effective_skip_pdf:
     out_pdf = output_dir / out_pdf_name
     shutil.copy2(pdf_src, out_pdf)
-    deliverables['pdf'] = str(out_pdf)
-    # Checksum both output files (two spaces between hash and path)
-    out_checksum = f'{sha256(out_pdf)}  {out_pdf_name}\n'
-    out_checksum += f'{sha256(out_report)}  {out_report_name}\n'
+    deliverables["pdf"] = str(out_pdf)
+    out_checksum = f"{sha256(out_pdf)} {out_pdf_name}\n{sha256(out_report)} {out_report_name}\n"
 else:
-    # Audit report only — no PDF handed off for FAIL/ESCALATION
-    out_checksum = f'{sha256(out_report)}  {out_report_name}\n'
+    out_checksum = f"{sha256(out_report)} {out_report_name}\n"
 
-(output_dir / 'SHA256SUMS.txt').write_text(out_checksum)
-deliverables['checksums'] = str(output_dir / 'SHA256SUMS.txt')
+(output_dir / "SHA256SUMS.txt").write_text(out_checksum)
+deliverables["checksums"] = str(output_dir / "SHA256SUMS.txt")
 
 print(json.dumps({
-    'result': 'OK',
-    'job_dir': str(job_dir),
-    'output_dir': str(output_dir),
-    'skip_pdf': args.skip_pdf,
-    'effective_skip_pdf': effective_skip_pdf,
-    'deliverables': deliverables,
-    'internal_package': {
-        'pdf': str(dest_pdf_internal),
-        'checksums': str(job_dir / 'SHA256SUMS.txt'),
-        'manifest': str(job_dir / 'PACKAGE_CONTENTS.md'),
+    "result": "OK",
+    "job_dir": str(job_dir),
+    "output_dir": str(output_dir),
+    "skip_pdf": args.skip_pdf,
+    "effective_skip_pdf": effective_skip_pdf,
+    "deliverables": deliverables,
+    "internal_package": {
+        "pdf": str(dest_pdf_internal),
+        "checksums": str(job_dir / "SHA256SUMS.txt"),
+        "manifest": str(job_dir / "PACKAGE_CONTENTS.md"),
     },
-    'overall_result': overall,
-}, indent=2))
+    "overall_result": overall,
+    "routing_source": routing_source,
+    "residual_analysis": residual,
+    "strategy_indexing": strategy,
+}, indent=2, sort_keys=True))
 sys.exit(0)
