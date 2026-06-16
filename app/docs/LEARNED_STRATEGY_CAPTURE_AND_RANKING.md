@@ -125,3 +125,128 @@ Patch 3 does not mutate `app/tools/audit/rule_repair_map.json`, does not write i
 ## Later ranking/indexing patch
 
 A future patch can consume `learned_strategies.json`, rank clean strategies by rule, inspect blockers and failure patterns, and propose controlled promotion into an index or rule-map workflow. That future patch must still perform its own review, compatibility checks, and canonical mutation controls.
+
+## Patch 4: Learned Strategy Indexing Contract
+
+Patch 4 replaces the old post-job indexing input model with learned-strategy-driven dry-run indexing.
+
+### Inputs
+
+The indexer consumes:
+
+```text
+JOB/audit/learned_strategies.json
+JOB/audit/residual_analysis.json
+app/tools/audit/rule_repair_map.json
+```
+
+`learned_strategies.json` is the primary indexing input. `residual_analysis.json` is preserved as evidence context when present. The canonical rule map is read to classify each proposed change, but dry-run mode does not mutate it.
+
+### Output
+
+The indexer writes:
+
+```text
+JOB/audit/strategy_indexing_report.json
+```
+
+The report includes:
+
+- `schema_version`
+- `created_at`
+- `job_dir`
+- `rule_map_path`
+- `learned_strategies_path`
+- `residual_analysis_path`
+- `mode`
+- `eligible_records`
+- `indexed_records`
+- `rejected_records`
+- `proposed_rule_map_changes`
+- `rejected_experiments`
+- `warnings`
+- `policy`
+
+### Dry-run default
+
+Patch 4 is dry-run only. It does not mutate `rule_repair_map.json`. It does not promote generated scripts into canonical repair folders. It does not adopt generated candidate PDFs. It does not rewrite verdict/status behavior.
+
+### Eligibility
+
+A learned strategy can produce a proposed rule-map change only when all of the following are true:
+
+- `outcome == "clean_success"`
+- `clean is true`
+- `indexing_eligible is true`
+- `indexing_blockers` is empty
+- `rule_id` is present
+- `script_path` is present
+- `target_rule_resolved is true`
+- `introduced_rules` is empty
+- `worsened_rules` is empty
+- gate results do not indicate failure
+
+All other records are retained in `rejected_experiments` with explicit rejection reasons.
+
+### Rule absent behavior
+
+When the learned clean rule is absent from the map, the report proposes an `add_rule` change with a v2-shaped entry containing `strategies[]`, evidence counters, and review-required state. The canonical map is not changed in dry-run mode.
+
+### `repairable_unbuilt` behavior
+
+When a rule exists with `resolvability == "repairable_unbuilt"`, the report proposes attaching the clean generated strategy and marks the proposed resolvability as `effective_if_policy_allows`. Dry-run does not promote the rule.
+
+### `repairable_review` behavior
+
+When a rule exists with `resolvability == "repairable_review"`, the report proposes attaching the clean generated strategy while preserving review semantics. It does not silently mark the rule effective.
+
+### Existing effective strategy behavior
+
+When a rule already has an effective primary strategy, the report does not overwrite it. The clean generated strategy is proposed as an alternate, edge-case, or lower-ranked strategy.
+
+### Ranking and evidence fields
+
+Each proposed strategy includes:
+
+- `source: "learned_strategy_capture"`
+- `repair_script`
+- `script_path`
+- `script_sha256`
+- `strategy`
+- `args_pattern`
+- `repair_order`
+- `run_last`
+- `repair_order_validated_by_isolated_evidence`
+- `run_last_validated_by_isolated_evidence`
+- `clean_pass_count`
+- `pass_count`
+- `fail_count`
+- `pass_rate`
+- `doc_type_stats`
+- `introduced_rules`
+- `worsened_rules`
+- `gate_results`
+- `known_failure_modes`
+- `review_required`
+- `last_observed_at`
+- `evidence`
+
+The indexer preserves LLM-proposed `repair_order` and `run_last` as proposed fields only. They are not treated as validated by isolated evidence.
+
+### Rejected experiments
+
+Dirty successes, partial improvements, validation failures, transport-blocked events, semantic refusals, needs-more-evidence events, and malformed/non-eligible records are retained as rejected experiments. They are not proposed as canonical repair strategies.
+
+### Non-goals
+
+Patch 4 does not implement:
+
+- final-PDF adoption of generated candidates
+- moving generated scripts into canonical `tools/repair/`
+- broad verdict/status rewrite
+- Hermes signal reconciliation rewrite
+- execution-log subprocess fidelity upgrade
+- new PDF repair strategies
+- live gateway behavior changes
+- mandatory indexing on `ESCALATION` jobs
+- automatic rule-map mutation by default
