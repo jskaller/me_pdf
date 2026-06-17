@@ -88,3 +88,8 @@ A later reviewed patch may adopt staged scripts into the rule map, but Patch 9 n
 ## Out of scope
 
 Patch 9 does not implement production repair activation, automatic promotion, final PDF adoption, rule-map apply mode, live orchestrator behavior changes, or new production repair strategies.
+## Patch 10 interaction
+
+Script staging and rule-map adoption remain separate reviewed steps. A staged script is only eligible for rule-map dry-run/apply when `script_promotion_result.json` records the staged path, static-check status, reviewer, and staged script SHA-256.
+
+The canonical rule map may reference only the staged path under `tools/repair_staging/learned/`; it must not reference the original job quarantine path. Staging does not imply production activation.

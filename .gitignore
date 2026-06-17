@@ -41,3 +41,7 @@ workspace/assets/validation_profiles/veraPDF-validation-profiles-integration/
 # git must never track or try to remove it (breaks stash/clean with EPERM).
 app/workspace/
 *.log
+
+# Patch 10 rule-map apply backups
+app/tools/audit/backups/*.json
+app/tools/audit/backups/

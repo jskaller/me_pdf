@@ -218,3 +218,13 @@ Patch 9 extends this review boundary with a separate script-staging workflow. Th
 Staging does not mutate `app/tools/audit/rule_repair_map.json`, does not copy into `app/tools/repair/*`, does not activate production repair behavior, and does not adopt generated PDFs. `--apply-rule-map` remains fail-closed because rule-map adoption is a separate reviewed step.
 
 See `app/docs/LEARNED_SCRIPT_STAGING_POLICY.md` for the staging contract, static checks, manifest behavior, idempotency rules, and out-of-scope items.
+## Patch 10: reviewed rule-map adoption
+
+Patch 10 extends promotion after the Patch 8 review packet and Patch 9 script staging boundary. Rule-map adoption is now split into:
+
+1. `--rule-map-dry-run`, which writes `JOB/audit/rule_map_adoption_review.json` and never mutates the canonical map.
+2. `--apply-rule-map --reviewed-by <operator>`, which writes only non-active staged metadata to `rule_repair_map.json` after verifying the staged script and hash.
+
+Apply creates a timestamped backup under `app/tools/audit/backups/`. Learned entries are written under `reviewed_learned_strategies` and marked `production_active: false`, `activation_status: staged_review`, and `review_required: true`.
+
+Patch 10 still does not adopt final PDFs, copy scripts into `app/tools/repair/*`, run remediation, or make learned strategies production-active.
