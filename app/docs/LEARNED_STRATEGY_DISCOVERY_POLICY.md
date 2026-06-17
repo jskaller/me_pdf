@@ -82,3 +82,9 @@ Patch 12A is the discovery contract only. A future Patch 12B may define a separa
 ## Production behavior
 
 Patch 12A does not modify `remediate.py`, does not merge learned strategies into executable built-in `strategies`, and does not change normal smoke outcomes. The existing `app/tools/repair/*` directory remains untouched.
+
+## Patch 12B harness-only next step
+
+Patch 12B defines a separate learned strategy execution harness in `app/tools/audit/learned_strategy_execution.py`. This is still not production runtime integration. The harness can execute one explicitly selected discovered active learned strategy against a controlled input PDF inside `JOB/audit/learned_strategy_execution/<attempt_id>/`, with stdout/stderr sidecars, `execution_result.json`, and a `learned_strategy_execution` record in `JOB/audit/execution_log.json`.
+
+The Patch 12B harness preserves the discovery boundary for normal remediation: it does not modify `remediate.py`, does not mutate `rule_repair_map.json`, does not mutate `app/tools/repair/*`, does not adopt final PDFs, and does not change normal smoke behavior. Orchestrator integration remains intentionally paused for a future reviewed patch.
