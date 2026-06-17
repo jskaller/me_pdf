@@ -271,6 +271,9 @@ def _readiness_decision(checks: Iterable[Dict[str, Any]]) -> Tuple[str, List[str
                     "render_compare_error",
                     "verapdf_delta_unavailable",
                     "verapdf_delta_error",
+                "verapdf_output_missing",
+                "verapdf_process_failed",
+        "verapdf_runner_unavailable",
             "verapdf_delta_timeout",
             "verapdf_delta_parse_failed",
                 "verapdf_delta_timeout",
@@ -322,6 +325,9 @@ def _is_helper_unavailable_or_error_check(check: dict) -> bool:
         "render_compare_error",
         "verapdf_delta_unavailable",
         "verapdf_delta_error",
+                "verapdf_output_missing",
+                "verapdf_process_failed",
+        "verapdf_runner_unavailable",
     }
 
     if any(blocker in helper_blockers for blocker in blockers):

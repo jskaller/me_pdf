@@ -57,13 +57,13 @@ class LearnedStrategyProductionReadinessPolicyTests(unittest.TestCase):
             "check_name": "verapdf_delta",
             "performed": False,
             "result": "SKIPPED",
-            "readiness_blocker": "verapdf_delta_unavailable",
-            "blockers": ["verapdf_delta_unavailable"],
+            "readiness_blocker": "verapdf_runner_unavailable",
+            "blockers": ["verapdf_runner_unavailable"],
         }
         payload = evaluate_learned_strategy_production_testing_readiness(trial, deeper, job)
         result = payload["results"][0]
         self.assertEqual(result["readiness_decision"], "production_testing_needs_manual_review")
-        self.assertIn("verapdf_delta_unavailable", result["readiness_blockers"])
+        self.assertIn("verapdf_runner_unavailable", result["readiness_blockers"])
         self.assertFalse(result["candidate_is_adoptable"])
 
     @mock.patch("tools.audit.learned_strategy_production_readiness.evaluate_verapdf_delta_check")
@@ -181,7 +181,7 @@ class Patch18BProductionReadinessVeraPDFDeltaTests(unittest.TestCase):
     @mock.patch("tools.audit.learned_strategy_production_readiness.evaluate_form_field_preservation_check")
     @mock.patch("tools.audit.learned_strategy_production_readiness.evaluate_metadata_check")
     def test_verapdf_delta_skipped_or_error_maps_to_manual_review(self, meta, form, render, verapdf):
-        for result_name, blocker in (("SKIPPED", "verapdf_delta_unavailable"), ("ERROR", "verapdf_delta_timeout"), ("ERROR", "verapdf_delta_parse_failed")):
+        for result_name, blocker in (("SKIPPED", "verapdf_runner_unavailable"), ("ERROR", "verapdf_delta_timeout"), ("ERROR", "verapdf_delta_parse_failed")):
             tmp, job, trial, deeper = self.make_job()
             self.addCleanup(tmp.cleanup)
             verapdf.return_value = self.patch_required_helpers(meta, form, render, {"check_name": "verapdf_delta", "performed": result_name != "SKIPPED", "result": result_name, "readiness_blocker": blocker, "blockers": []})
@@ -189,3 +189,32 @@ class Patch18BProductionReadinessVeraPDFDeltaTests(unittest.TestCase):
             self.assertEqual(payload["results"][0]["readiness_decision"], "production_testing_needs_manual_review")
             self.assertIn(blocker, payload["results"][0]["readiness_blockers"])
             self.assertFalse(payload["policy"]["production_repair_replacement_performed"])
+
+
+class Patch18B0ProductionReadinessRunnerUnavailableTests(unittest.TestCase):
+    @mock.patch("tools.audit.learned_strategy_production_readiness.evaluate_verapdf_delta_check")
+    @mock.patch("tools.audit.learned_strategy_production_readiness.evaluate_render_compare_check")
+    @mock.patch("tools.audit.learned_strategy_production_readiness.evaluate_form_field_preservation_check")
+    @mock.patch("tools.audit.learned_strategy_production_readiness.evaluate_metadata_check")
+    def test_verapdf_runner_unavailable_maps_to_manual_review(self, meta, form, render, verapdf):
+        tmp, job, trial, deeper = LearnedStrategyProductionReadinessPolicyTests().make_job()
+        self.addCleanup(tmp.cleanup)
+        meta.return_value = {"check_name": "metadata", "performed": True, "result": "PASS", "blockers": []}
+        form.return_value = {"check_name": "form_field_preservation", "performed": True, "result": "PASS", "blockers": []}
+        render.return_value = {"check_name": "render_compare", "performed": True, "result": "PASS", "blockers": []}
+        verapdf.return_value = {
+            "check_name": "verapdf_delta",
+            "performed": False,
+            "result": "SKIPPED",
+            "readiness_blocker": "verapdf_runner_unavailable",
+            "runner_discovery_artifact": str(job / "audit" / "learned_strategy_replacement_trial" / "verapdf_runner_discovery.json"),
+            "runner_discovery": {"available": False, "checked": []},
+            "blockers": ["verapdf_runner_unavailable"],
+        }
+        payload = evaluate_learned_strategy_production_testing_readiness(trial, deeper, job)
+        result = payload["results"][0]
+        self.assertEqual(result["readiness_decision"], "production_testing_needs_manual_review")
+        self.assertIn("verapdf_runner_unavailable", result["readiness_blockers"])
+        self.assertFalse(result["candidate_is_adoptable"])
+        self.assertFalse(payload["policy"]["final_pdf_adoption_performed"])
+        self.assertFalse(payload["policy"]["production_repair_replacement_performed"])

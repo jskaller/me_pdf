@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 SCHEMA_VERSION = "learned-strategy-verapdf-delta.v1"
 CHECK_NAME = "verapdf_delta"
@@ -160,11 +160,87 @@ def compute_verapdf_delta(normal_records: List[Dict[str, Any]], learned_records:
     }
 
 
-def _find_verapdf() -> Optional[str]:
-    env_value = os.environ.get("VERAPDF_BIN")
-    if env_value:
-        return env_value if Path(env_value).exists() or shutil.which(env_value) else None
-    return shutil.which("verapdf")
+def _candidate_record(source: str, value: Any) -> Dict[str, Any]:
+    raw_value = str(value or "").strip() if value is not None else ""
+    record: Dict[str, Any] = {
+        "source": source,
+        "value": raw_value or None,
+        "exists": False,
+        "is_file": False,
+        "executable": False,
+    }
+    if not raw_value:
+        return record
+    path = Path(raw_value)
+    try:
+        record["exists"] = path.exists()
+        record["is_file"] = path.is_file()
+        record["executable"] = path.is_file() and os.access(path, os.X_OK)
+    except OSError:
+        pass
+    return record
+
+
+S6_ENV_DIR = Path("/run/s6/container_environment")
+FALLBACK_VERAPDF_PATHS = (
+    Path("/opt/verapdf-greenfield/verapdf"),
+    Path("/opt/verapdf/verapdf"),
+)
+
+
+def _read_s6_env_value(name: str) -> Optional[str]:
+    path = S6_ENV_DIR / name
+    try:
+        if path.exists() and path.is_file():
+            value = path.read_text(encoding="utf-8", errors="replace").strip()
+            return value or None
+    except OSError:
+        return None
+    return None
+
+
+def _first_available(checked: Iterable[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    for record in checked:
+        if record.get("exists") and record.get("is_file") and record.get("executable"):
+            return record
+    return None
+
+
+def resolve_verapdf_runner(env: Mapping[str, str] | None = None) -> Dict[str, Any]:
+    """Resolve the canonical veraPDF runner with auditable diagnostics.
+
+    Docker may expose veraPDF through container environment files or fixed paths
+    rather than PATH. This resolver records every candidate it considered and
+    only returns available=True for an existing executable file.
+    """
+    env_map: Mapping[str, str] = os.environ if env is None else env
+    checked: List[Dict[str, Any]] = []
+
+    for name in ("VERAPDF_GREENFIELD_BIN", "VERAPDF_ARLINGTON_BIN"):
+        checked.append(_candidate_record(name, env_map.get(name)))
+
+    for name in ("VERAPDF_GREENFIELD_BIN", "VERAPDF_ARLINGTON_BIN"):
+        checked.append(_candidate_record(f"s6:{name}", _read_s6_env_value(name)))
+
+    for path in FALLBACK_VERAPDF_PATHS:
+        checked.append(_candidate_record(f"fallback:{path}", str(path)))
+
+    for binary in ("verapdf", "veraPDF"):
+        checked.append(_candidate_record(f"PATH:{binary}", shutil.which(binary)))
+
+    selected = _first_available(checked)
+    if selected:
+        return {
+            "available": True,
+            "runner_path": selected.get("value"),
+            "runner_source": selected.get("source"),
+            "checked": checked,
+        }
+    return {
+        "available": False,
+        "readiness_blocker": "verapdf_runner_unavailable",
+        "checked": checked,
+    }
 
 
 def _run_verapdf(verapdf_bin: str, pdf: Path, stem: str, trial_dir: Path, timeout_seconds: int) -> Tuple[str, Dict[str, str]]:
@@ -235,31 +311,46 @@ def run_verapdf_delta_for_trial(
     trial_dir.mkdir(parents=True, exist_ok=True)
     payload = _base_payload(trial_dir, normal_final_pdf, learned_trial_pdf)
 
+    runner_discovery = resolve_verapdf_runner()
+    runner_discovery_path = trial_dir / "verapdf_runner_discovery.json"
+    write_json_atomic(runner_discovery_path, runner_discovery)
+    payload["runner_discovery"] = runner_discovery
+    payload["runner_discovery_artifact"] = str(runner_discovery_path)
+    payload.setdefault("artifacts", {})["runner_discovery"] = str(runner_discovery_path)
+    if runner_discovery.get("available"):
+        payload["runner_path"] = runner_discovery.get("runner_path")
+        payload["runner_source"] = runner_discovery.get("runner_source")
+
     if not normal_final_pdf.exists() or not learned_trial_pdf.exists():
         payload.update(
             {
                 "result": "SKIPPED",
                 "reason": "input_pdf_unavailable",
-                "readiness_blocker": "verapdf_delta_unavailable",
+                "readiness_blocker": "verapdf_input_pdf_unavailable",
             }
         )
         return _finish(trial_dir, payload)
 
-    verapdf_bin = _find_verapdf()
-    if not verapdf_bin:
+    if not runner_discovery.get("available"):
         payload.update(
             {
                 "result": "SKIPPED",
-                "reason": "verapdf_binary_unavailable",
-                "readiness_blocker": "verapdf_delta_unavailable",
+                "reason": "verapdf_runner_unavailable",
+                "readiness_blocker": "verapdf_runner_unavailable",
+                "blockers": ["verapdf_runner_unavailable"],
             }
         )
         return _finish(trial_dir, payload)
 
-    artifacts: Dict[str, Any] = {}
+    verapdf_bin = str(runner_discovery.get("runner_path") or "")
+    artifacts: Dict[str, Any] = dict(payload.get("artifacts") or {})
     try:
-        normal_xml, normal_artifacts = _run_verapdf(verapdf_bin, normal_final_pdf, "verapdf_normal_final", trial_dir, timeout_seconds)
-        learned_xml, learned_artifacts = _run_verapdf(verapdf_bin, learned_trial_pdf, "verapdf_learned_trial", trial_dir, timeout_seconds)
+        normal_xml, normal_artifacts = _run_verapdf(
+            verapdf_bin, normal_final_pdf, "verapdf_normal_final", trial_dir, timeout_seconds
+        )
+        learned_xml, learned_artifacts = _run_verapdf(
+            verapdf_bin, learned_trial_pdf, "verapdf_learned_trial", trial_dir, timeout_seconds
+        )
         artifacts["normal_verapdf"] = normal_artifacts
         artifacts["learned_verapdf"] = learned_artifacts
     except subprocess.TimeoutExpired as exc:
@@ -279,9 +370,21 @@ def run_verapdf_delta_for_trial(
             {
                 "performed": True,
                 "result": "ERROR",
-                "reason": "verapdf_command_error",
-                "readiness_blocker": "verapdf_delta_unavailable",
+                "reason": "verapdf_process_failed",
+                "readiness_blocker": "verapdf_process_failed",
                 "error": f"{type(exc).__name__}: {exc}",
+                "artifacts": artifacts,
+            }
+        )
+        return _finish(trial_dir, payload)
+
+    if not normal_xml or not learned_xml:
+        payload.update(
+            {
+                "performed": True,
+                "result": "ERROR",
+                "reason": "verapdf_output_missing",
+                "readiness_blocker": "verapdf_output_missing",
                 "artifacts": artifacts,
             }
         )
