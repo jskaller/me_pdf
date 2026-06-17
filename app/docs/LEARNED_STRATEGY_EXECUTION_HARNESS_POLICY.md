@@ -156,3 +156,8 @@ Real validation and any production handoff must be reviewed in a later patch.
 ## Future integration pause
 
 Patch 12B intentionally stops at harness execution. Before any Patch 12C/13 orchestrator integration, run a thorough end-to-end pipeline validation and separately review ordering, rollback, status/verdict effects, preservation gates, and final-PDF adoption semantics.
+
+## Patch 13B learned execution dry-run boundary
+
+Patch 13B adds `--learned-execution-dry-run`, which automatically performs discovery for residual rules and then delegates diagnostic execution to the Patch 12B harness. This remains opt-in only. It writes `learned_strategy_execution_diagnostics.json` and may append `record_type: learned_strategy_execution` only when a candidate actually runs. It does not adopt learned outputs, soften verdicts, mutate the rule map, mutate `app/tools/repair/*`, or replace built-in repair execution.
+

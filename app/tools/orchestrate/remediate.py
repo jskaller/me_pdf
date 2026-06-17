@@ -67,6 +67,8 @@ parser.add_argument('--subject',  default='')
 parser.add_argument('--keywords', default='')
 parser.add_argument('--language', default='en-US')
 parser.add_argument('--dry-run',  action='store_true')
+parser.add_argument('--learned-execution-dry-run', action='store_true', help='Patch 13B: opt-in diagnostic execution of discovered active learned strategies; never adopted')
+parser.add_argument('--learned-execution-limit', type=int, default=1, help='Patch 13B: max learned strategies to execute diagnostically; default 1')
 parser.add_argument('--learned-discovery', action='store_true', help='Write discovery-only active learned strategy diagnostics; never executes learned strategies')
 args = parser.parse_args()
 
@@ -2623,6 +2625,66 @@ except Exception as e:
         pass
     emit('AUDIT', 'residual_analysis', 'WARN', note=f'falling back to raw failures_post routing: {type(e).__name__}: {e}')
 
+# Patch 13B: optional learned execution diagnostic sidecar.
+# This block is explicit opt-in only and intentionally runs after normal known
+# repairs/residual analysis but before outcome packaging. It delegates all learned
+# execution to the Patch 12B harness and never adopts learned output PDFs or
+# softens final verdict/status/package behavior.
+learned_execution_diagnostics = None
+if getattr(args, 'learned_execution_dry_run', False):
+    try:
+        from tools.audit.learned_strategy_orchestrator_execution_dry_run import run_orchestrator_learned_execution_dry_run
+        learned_execution_diagnostics = run_orchestrator_learned_execution_dry_run(
+            rule_map_path=RULE_MAP,
+            audit_dir=AUDIT_DIR,
+            job_dir=JOB,
+            repo_root=Path('/'),
+            input_pdf=FINAL_PDF,
+            residual_failures=remaining_failures,
+            limit=max(0, int(getattr(args, 'learned_execution_limit', 1) or 0)),
+        )
+        emit('AUDIT', 'learned_execution_dry_run', 'PASS', data={
+            'artifact': str(AUDIT_DIR / 'learned_strategy_execution_diagnostics.json'),
+            'candidate_count': learned_execution_diagnostics.get('candidate_count'),
+            'executed_count': learned_execution_diagnostics.get('executed_count'),
+            'skipped_count': learned_execution_diagnostics.get('skipped_count'),
+            'failed_count': learned_execution_diagnostics.get('failed_count'),
+            'blocked_count': learned_execution_diagnostics.get('blocked_count'),
+            'final_pdf_adoption_performed': False,
+            'verdict_softening_performed': False,
+        })
+    except Exception as e:
+        # Diagnostic machinery failure is recorded but does not alter the normal
+        # remediation verdict path.
+        try:
+            (AUDIT_DIR / 'learned_strategy_execution_diagnostics.json').write_text(json.dumps({
+                'schema_version': 'learned-strategy-orchestrator-execution-dry-run.v1',
+                'created_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'),
+                'mode': 'learned_execution_dry_run',
+                'enabled': True,
+                'result': 'WARN',
+                'error': f'{type(e).__name__}: {e}',
+                'candidate_count': 0,
+                'executed_count': 0,
+                'skipped_count': 0,
+                'failed_count': 0,
+                'blocked_count': 1,
+                'executions': [],
+                'skipped_candidates': [],
+                'blockers': ['learned_execution_diagnostic_integration_error'],
+                'policy': {
+                    'learned_execution_default_enabled': False,
+                    'requires_explicit_flag': True,
+                    'final_pdf_adoption_performed': False,
+                    'verdict_softening_performed': False,
+                    'rule_map_mutation_performed': False,
+                    'app_tools_repair_mutation_performed': False,
+                    'production_repair_replacement_performed': False,
+                },
+            }, indent=2, sort_keys=True))
+        except Exception:
+            pass
+        emit('AUDIT', 'learned_execution_dry_run', 'WARN', note=f'diagnostic integration unavailable: {type(e).__name__}: {e}')
 hard_pass = is_pass(gate_results['verapdf_pdfua1']) and is_pass(gate_results['verapdf_wcag'])
 emit('VALIDATE', 'final_verapdf', 'PASS' if hard_pass else 'FAIL',
      data={'remaining_failures': len(remaining_failures)})
