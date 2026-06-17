@@ -177,16 +177,38 @@ def planned_entries_for_rule(repair_plan: Dict[str, Any], rule_id: str) -> List[
 
 def execution_entries_for_rule(execution_log: Dict[str, Any], rule_id: str) -> List[Dict[str, Any]]:
     entries: List[Dict[str, Any]] = []
-    for entry in execution_log.get("repair_steps", []) or []:
-        if not isinstance(entry, dict):
-            continue
-        rules = entry.get("rule_ids") or entry.get("rules_addressed") or []
-        if isinstance(rules, str):
-            rules = [rules]
-        if rule_id in rules:
+    seen_attempts = set()
+    for collection_name in ("records", "repair_steps"):
+        for entry in execution_log.get(collection_name, []) or []:
+            if not isinstance(entry, dict):
+                continue
+            rules = (
+                entry.get("rules_targeted")
+                or entry.get("rule_ids")
+                or entry.get("rules_addressed")
+                or []
+            )
+            if isinstance(rules, str):
+                rules = [rules]
+            if rule_id not in rules:
+                continue
+            attempt_id = entry.get("attempt_id")
+            if attempt_id and attempt_id in seen_attempts:
+                continue
+            if attempt_id:
+                seen_attempts.add(attempt_id)
             entries.append(entry)
     return entries
 
+def execution_attempt_ids(entries: Iterable[Dict[str, Any]]) -> List[str]:
+    ids: List[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        attempt_id = entry.get("attempt_id") or entry.get("execution_attempt_id")
+        if attempt_id and attempt_id not in ids:
+            ids.append(str(attempt_id))
+    return ids
 
 def effective_repair_ran(entries: Iterable[Dict[str, Any]]) -> bool:
     for entry in entries:
@@ -292,7 +314,7 @@ def classify_rule(
         "present_in_baseline": present_in_baseline,
         "present_in_post": present_in_post,
         "repair_plan_entries": plan_entries,
-        "execution_log_entries": exec_entries,
+        "execution_log_entries": exec_entries, "execution_attempt_ids": execution_attempt_ids(exec_entries),
         "resolvability": resolvability,
         "resolvability_source": norm.get("source"),
         "outcome": outcome,

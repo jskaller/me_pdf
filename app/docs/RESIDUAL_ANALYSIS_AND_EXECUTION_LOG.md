@@ -102,3 +102,74 @@ Compatibility normalization:
 - `manual:true` with no strategies becomes `legacy_manual_review`
 - non-manual empty strategies become `repairable_unbuilt`
 - strategies with repair scripts become `effective`
+
+## Patch 6: execution-log v2 fidelity contract
+
+`audit/execution_log.json` now uses the v2 top-level compatibility shape:
+
+```json
+{
+  "schema_version": "execution-log.v2",
+  "artifact": "execution_log",
+  "created_at": "...",
+  "updated_at": "...",
+  "job_dir": "...",
+  "run_id": "...",
+  "records": [],
+  "repair_steps": []
+}
+```
+
+`records` is the authoritative ledger. `repair_steps` remains as a derived
+compatibility view for older residual-analysis and status consumers.
+
+Record types are:
+
+- `repair_step`
+- `validation_step`
+- `self_extension_generation`
+- `self_extension_candidate`
+- `transport_event`
+- `semantic_refusal`
+- `needs_more_evidence`
+- `boundary_violation`
+
+Repair-step records may include: `attempt_id`, `run_id`, `iteration`,
+`step_name`, `strategy`, `script`, `callable`, `rules_targeted`, `input_pdf`,
+`input_pdf_sha256`, `output_pdf`, `output_pdf_sha256`, `output_exists`,
+`output_size`, `started_at`, `finished_at`, `duration_ms`, `exit_code`,
+`exception_type`, `exception_message`, `stdout_path`, `stderr_path`,
+`stdout_sha256`, `stderr_sha256`, `command`, `argv`, `cwd`,
+`environment_summary`, `validation_artifacts`, pre/post rule counts, target-rule
+progress fields, QA results, and notes.
+
+Subprocess executions write stdout/stderr sidecars under:
+
+- `JOB/audit/execution/stdout/<attempt_id>.txt`
+- `JOB/audit/execution/stderr/<attempt_id>.txt`
+
+The JSON stores paths and SHA-256 hashes only; it does not inline large output.
+Callable repair steps use the same record shape but set `callable` rather than
+requiring `argv`/`exit_code`.
+
+Failures are persisted as first-class evidence. A failed subprocess or callable
+record still includes timestamps, duration, input hash, exception or exit code,
+stdout/stderr sidecar paths when applicable, and `result: FAIL`.
+
+Residual analysis now reads both `records` and the compatibility `repair_steps`
+view. Per-rule records expose `execution_attempt_ids`, allowing unresolved and
+resolved residuals to point back to the concrete attempts that affected them.
+
+Learned-strategy capture preserves execution evidence references when a
+self-extension candidate result supplies them: `execution_attempt_id`,
+`execution_log_path`, `stdout_path`, `stderr_path`, and validation artifacts.
+
+What may remain inferred: if an old caller only provides `strategy_attempts`,
+`build_execution_log_from_repair_steps()` still emits v2 records but marks them
+with `inferred: true` and `inferred_from_strategy_attempts: true`. Patch 6 callers
+should append real execution records during execution instead.
+
+Patch 6 remains intentionally non-promotional: it does not mutate the canonical
+rule map, does not move generated scripts into `app/tools/repair/`, and does not
+adopt generated candidate PDFs as final output.
+

@@ -48,7 +48,7 @@ import sys, json, subprocess, shutil, argparse, os
 from pathlib import Path
 from datetime import datetime, timezone
 from collections import defaultdict
-from tools.audit.execution_log import build_execution_log_from_repair_steps, write_execution_log
+from tools.audit.execution_log import build_execution_log_from_repair_steps, new_execution_log, record_subprocess_execution, write_execution_log
 from tools.audit.residual_analysis import analyze_residuals, targetable_failures_from_analysis
 from tools.lib.residual_verdict import summarize_residual_analysis, summarize_strategy_indexing, reconcile_hermes_signals
 
@@ -166,7 +166,11 @@ def emit_hermes_required(rule_id, description, failures, reason, attempts=None, 
         'data': signal
     }), flush=True)
 
-def run(cmd, label, capture=True, env=None):
+def run(cmd, label, capture=True, env=None, record_type=None, step=None, input_pdf=None,
+        output_pdf=None, rules_targeted=None, iteration=None, strategy=None, script=None,
+        validation_artifacts=None, notes=None):
+    global last_execution_attempt_id
+    last_execution_attempt_id = None
     if args.dry_run:
         emit('DRY_RUN', label, 'SKIPPED', note=' '.join(str(c) for c in cmd))
         return 0, '{"result":"PASS"}', ''
@@ -175,6 +179,29 @@ def run(cmd, label, capture=True, env=None):
         if env:
             run_env = os.environ.copy()
             run_env.update({str(k): str(v) for k, v in env.items()})
+        if record_type and 'execution_log_runtime' in globals():
+            proc, exec_record = record_subprocess_execution(
+                execution_log_runtime,
+                argv=[str(c) for c in cmd],
+                record_type=record_type,
+                job_dir=JOB if 'JOB' in globals() else JOB_DIR,
+                iteration=iteration,
+                step_name=label,
+                step=step,
+                strategy=strategy,
+                script=script,
+                rules_targeted=rules_targeted,
+                input_pdf=input_pdf,
+                output_pdf=output_pdf,
+                env=run_env,
+                capture_output=capture,
+                text=True,
+                notes=notes,
+            )
+            if validation_artifacts:
+                exec_record.setdefault('validation_artifacts', {}).update(validation_artifacts)
+            last_execution_attempt_id = exec_record.get('attempt_id')
+            return proc.returncode, proc.stdout, proc.stderr
         r = subprocess.run(
             [str(c) for c in cmd],
             capture_output=capture,
@@ -2223,7 +2250,7 @@ while unresolved_scripts and total_iterations < JOB_HARD_CAP:
                            f'exit_code={rc}, result={this_result}',
                            step_data.get('error', err[:300]) if step_data else err[:300],
                            layer=1)
-            script_results[script] = {'step': step, 'result': this_result, 'executed': False}
+            script_results[script] = {'step': step, 'result': this_result, 'executed': False, 'execution_attempt_id': globals().get('last_execution_attempt_id')}
             continue
 
         if not output_pdf.exists():
@@ -2232,13 +2259,13 @@ while unresolved_scripts and total_iterations < JOB_HARD_CAP:
                            'output_pdf missing',
                            f'Script exited {rc} but did not produce output file',
                            layer=1)
-            script_results[script] = {'step': step, 'result': this_result, 'executed': False}
+            script_results[script] = {'step': step, 'result': this_result, 'executed': False, 'execution_attempt_id': globals().get('last_execution_attempt_id')}
             continue
 
         emit('REPAIR', script_label, this_result,
              data={'iteration': iteration, 'output': str(output_pdf)})
 
-        script_results[script] = {'step': step, 'result': this_result, 'executed': True}
+        script_results[script] = {'step': step, 'result': this_result, 'executed': True, 'execution_attempt_id': globals().get('last_execution_attempt_id')}
         # Advance PDF for this iteration
         iteration_pdf = output_pdf
 

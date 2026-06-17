@@ -430,3 +430,52 @@ def capture_generation_event(
         attempt_number=attempt_number,
     )
     return append_or_replace_record(Path(job_dir), record)
+
+
+# Patch 6 execution evidence wrapper.
+# The original capture implementation remains authoritative; this narrow wrapper
+# enriches the just-captured candidate record when candidate_result already
+# carries execution-log references.
+_capture_candidate_result_patch6_inner = capture_candidate_result
+
+def capture_candidate_result(*args, **kwargs):
+    result = _capture_candidate_result_patch6_inner(*args, **kwargs)
+    try:
+        job_dir = kwargs.get("job_dir")
+        if job_dir is None and args:
+            job_dir = args[0]
+        candidate_result = kwargs.get("candidate_result")
+        rule_id = kwargs.get("rule_id")
+        attempt_number = kwargs.get("attempt_number")
+        if candidate_result is None:
+            return result
+        refs = {
+            "execution_attempt_id": candidate_result.get("execution_attempt_id")
+                or candidate_result.get("execution", {}).get("attempt_id"),
+            "execution_log_path": candidate_result.get("execution_log_path")
+                or candidate_result.get("execution", {}).get("execution_log_path"),
+            "stdout_path": candidate_result.get("stdout_path")
+                or candidate_result.get("execution", {}).get("stdout_path"),
+            "stderr_path": candidate_result.get("stderr_path")
+                or candidate_result.get("execution", {}).get("stderr_path"),
+        }
+        refs = {k: v for k, v in refs.items() if v}
+        if not refs:
+            return result
+        path = learned_strategies_path(job_dir)
+        data = json.loads(path.read_text())
+        for record in data.get("records", []):
+            if rule_id is not None and record.get("rule_id") != rule_id:
+                continue
+            if attempt_number is not None and record.get("attempt_number") != attempt_number:
+                continue
+            record.update(refs)
+            validation = candidate_result.get("validation", {}) if isinstance(candidate_result, dict) else {}
+            artifacts = validation.get("artifacts", {}) if isinstance(validation, dict) else {}
+            if artifacts:
+                record.setdefault("validation_artifacts", {}).update(artifacts)
+            break
+        path.write_text(json.dumps(data, indent=2, sort_keys=True))
+    except Exception:
+        pass
+    return result
