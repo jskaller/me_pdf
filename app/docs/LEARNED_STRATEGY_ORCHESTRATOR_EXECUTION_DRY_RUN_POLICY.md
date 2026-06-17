@@ -210,3 +210,9 @@ The setup artifact records `script_mode`, `expected_comparison_classification`, 
 ## Patch 17A replacement trial flags
 
 The learned execution dry-run can optionally run the isolated replacement trial with `--learned-replacement-trial`. This flag is valid only with `--learned-execution-dry-run`; otherwise the orchestrator fails closed with `requires_learned_execution_dry_run`. The smoke-only `--learned-replacement-trial-allow-manual-review` flag permits `needs_manual_review` candidates to exercise the isolated trial path without changing final PDF authority, status, package routing, verdict semantics, rule-map state, or `app/tools/repair/*`.
+
+## Patch 18A production-testing readiness diagnostic
+
+Patch 18A adds an explicit `--learned-production-readiness` sidecar after learned execution dry-run and isolated replacement trial evidence. The artifact is `JOB/audit/learned_strategy_production_testing_readiness_report.json`. It records metadata, form-field preservation, render-compare, and veraPDF-delta helper outcomes or governed helper-unavailable blockers. Readiness decisions are `production_testing_blocked`, `production_testing_needs_manual_review`, and `production_testing_evidence_complete`.
+
+This readiness layer is not adoption approval. The normal final PDF remains authoritative; learned candidates remain non-adoptable; final PDF adoption, production replacement, verdict softening, rule-map mutation, and `app/tools/repair/*` mutation remain prohibited.

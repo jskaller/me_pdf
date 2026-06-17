@@ -70,6 +70,7 @@ parser.add_argument('--dry-run',  action='store_true')
 parser.add_argument('--learned-execution-dry-run', action='store_true', help='Patch 13B: opt-in diagnostic execution of discovered active learned strategies; never adopted')
 parser.add_argument('--learned-execution-limit', type=int, default=1, help='Patch 13B: max learned strategies to execute diagnostically; default 1')
 parser.add_argument('--learned-discovery', action='store_true', help='Write discovery-only active learned strategy diagnostics; never executes learned strategies')
+parser.add_argument('--learned-production-readiness', action='store_true', help='Patch 18A: opt-in production-testing readiness diagnostics after replacement trial; never adopted')
 parser.add_argument('--learned-replacement-trial', action='store_true', help='Patch 17A: opt-in isolated learned replacement trial; requires --learned-execution-dry-run')
 parser.add_argument('--learned-replacement-trial-allow-manual-review', action='store_true', help='Patch 17A smoke-only diagnostic bypass for needs_manual_review candidates')
 args = parser.parse_args()
@@ -2656,7 +2657,9 @@ if getattr(args, 'learned_execution_dry_run', False):
             input_pdf=FINAL_PDF,
             residual_failures=remaining_failures,
             limit=max(0, int(getattr(args, 'learned_execution_limit', 1) or 0)),
-        replacement_trial_enabled=getattr(args, 'learned_replacement_trial', False), replacement_trial_allow_manual_review=getattr(args, 'learned_replacement_trial_allow_manual_review', False), )
+        replacement_trial_enabled=getattr(args, 'learned_replacement_trial', False), replacement_trial_allow_manual_review=getattr(args, 'learned_replacement_trial_allow_manual_review', False),                     timeout_seconds=30,
+                    production_readiness_enabled=bool(getattr(args, 'learned_production_readiness', False)),
+)
         emit('AUDIT', 'learned_execution_dry_run', 'PASS', data={
             'artifact': str(AUDIT_DIR / 'learned_strategy_execution_diagnostics.json'),
             'candidate_count': learned_execution_diagnostics.get('candidate_count'),
@@ -2666,6 +2669,9 @@ if getattr(args, 'learned_execution_dry_run', False):
             'blocked_count': learned_execution_diagnostics.get('blocked_count'),
             'final_pdf_adoption_performed': False,
             'verdict_softening_performed': False,
+                    'production_readiness_performed': learned_execution_diagnostics.get('production_readiness_performed', False),
+                    'production_readiness_artifact': learned_execution_diagnostics.get('production_readiness_artifact'),
+                    'production_readiness_summary': learned_execution_diagnostics.get('production_readiness_summary', {}),
         })
     except Exception as e:
         # Diagnostic machinery failure is recorded but does not alter the normal

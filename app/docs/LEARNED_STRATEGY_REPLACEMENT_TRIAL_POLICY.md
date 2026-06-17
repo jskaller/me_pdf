@@ -95,3 +95,9 @@ Every report must preserve these boundaries:
 ## Next boundary
 
 The next step is a production-testing readiness review or wiring the missing validation helpers. Production replacement, final PDF adoption, verdict softening, learned promotion, and `app/tools/repair/*` mutation remain out of scope.
+
+## Patch 18A production-testing readiness diagnostic
+
+Patch 18A adds an explicit `--learned-production-readiness` sidecar after learned execution dry-run and isolated replacement trial evidence. The artifact is `JOB/audit/learned_strategy_production_testing_readiness_report.json`. It records metadata, form-field preservation, render-compare, and veraPDF-delta helper outcomes or governed helper-unavailable blockers. Readiness decisions are `production_testing_blocked`, `production_testing_needs_manual_review`, and `production_testing_evidence_complete`.
+
+This readiness layer is not adoption approval. The normal final PDF remains authoritative; learned candidates remain non-adoptable; final PDF adoption, production replacement, verdict softening, rule-map mutation, and `app/tools/repair/*` mutation remain prohibited.

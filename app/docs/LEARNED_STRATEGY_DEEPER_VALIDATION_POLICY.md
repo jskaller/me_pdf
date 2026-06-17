@@ -109,3 +109,9 @@ Cleanup is mandatory after the smoke run. `setup_learned_execution_smoke_candida
 ## Patch 17A isolated replacement trial
 
 A candidate that passes deeper validation may proceed only to an explicit isolated replacement trial. Manual-review candidates may enter that trial only through the smoke-only diagnostic bypass. The trial writes `JOB/audit/learned_strategy_replacement_trial_report.json`, keeps `candidate_is_adoptable: false`, and still performs no final PDF adoption, verdict softening, rule-map mutation, `app/tools/repair/*` mutation, or production repair replacement.
+
+## Patch 18A production-testing readiness diagnostic
+
+Patch 18A adds an explicit `--learned-production-readiness` sidecar after learned execution dry-run and isolated replacement trial evidence. The artifact is `JOB/audit/learned_strategy_production_testing_readiness_report.json`. It records metadata, form-field preservation, render-compare, and veraPDF-delta helper outcomes or governed helper-unavailable blockers. Readiness decisions are `production_testing_blocked`, `production_testing_needs_manual_review`, and `production_testing_evidence_complete`.
+
+This readiness layer is not adoption approval. The normal final PDF remains authoritative; learned candidates remain non-adoptable; final PDF adoption, production replacement, verdict softening, rule-map mutation, and `app/tools/repair/*` mutation remain prohibited.
