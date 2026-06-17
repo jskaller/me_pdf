@@ -90,4 +90,6 @@ A `no_effect` comparison is rejected as `rejected_no_effect`; a
 `quality_passed: false` pending deeper validation. The comparison layer still
 performs no final PDF adoption, no verdict softening, no rule-map mutation, and
 no `app/tools/repair/*` mutation.
+## Patch 16B synthetic changed-valid comparison note
 
+A changed-valid smoke candidate is expected to produce `input_output_hash_equal=false` and `classification=changed_valid_pdf` when the output exists, has a PDF header, and qpdf reports `PASS`. This classification is still diagnostic-only and must not trigger final PDF adoption or verdict softening.

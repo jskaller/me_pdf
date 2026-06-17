@@ -192,3 +192,17 @@ JOB/audit/learned_strategy_deeper_validation_report.json
 This gate may produce `deeper_validation_passed`, but that is not adoption approval. Required policy flags remain false: `candidate_is_adoptable`, `final_pdf_adoption_performed`, `verdict_softening_performed`, `rule_map_mutation_performed`, `app_tools_repair_mutation_performed`, and `production_repair_replacement_performed`.
 
 The next possible phase after this patch is an isolated replacement trial, still opt-in and still without final package adoption.
+## Patch 16B changed-valid smoke mode
+
+The smoke setup helper now accepts:
+
+```bash
+--script-mode copy
+--script-mode changed-valid
+```
+
+`copy` preserves the existing no-op smoke behavior and should continue to classify as `no_effect`, map to `rejected_no_effect`, and skip deeper validation as `skipped_not_eligible`.
+
+`changed-valid` creates a synthetic diagnostic candidate that changes only the isolated learned harness output. It is expected to classify as `changed_valid_pdf` when qpdf/header checks pass, then map to `candidate_valid_changed`, then enter deeper validation. This mode is only a pre-production diagnostic bridge. It must not replace the final PDF, soften the orchestrator verdict, mutate `app/tools/repair/*`, promote the learned script, or mark the candidate adoptable/approved/production-ready.
+
+The setup artifact records `script_mode`, `expected_comparison_classification`, `final_pdf_adoption_performed=false`, and `verdict_softening_performed=false` so smoke diagnostics can reconcile intent with observed artifacts.

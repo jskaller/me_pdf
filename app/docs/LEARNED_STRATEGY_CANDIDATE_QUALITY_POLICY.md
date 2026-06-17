@@ -65,3 +65,6 @@ JOB/audit/learned_strategy_deeper_validation_report.json
 This gate may produce `deeper_validation_passed`, but that is not adoption approval. Required policy flags remain false: `candidate_is_adoptable`, `final_pdf_adoption_performed`, `verdict_softening_performed`, `rule_map_mutation_performed`, `app_tools_repair_mutation_performed`, and `production_repair_replacement_performed`.
 
 The next possible phase after this patch is an isolated replacement trial, still opt-in and still without final package adoption.
+## Patch 16B synthetic changed-valid quality note
+
+For the changed-output smoke, `changed_valid_pdf` maps to `candidate_valid_changed`, but `quality_passed` remains `false`. The quality gate is evidence-routing only; it is not approval, adoption, promotion, or production readiness.

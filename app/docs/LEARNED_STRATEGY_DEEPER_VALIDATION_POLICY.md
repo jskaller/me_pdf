@@ -88,3 +88,20 @@ Required policy fields remain false:
 ## Next step boundary
 
 A candidate that passes deeper validation may proceed only to a future isolated replacement trial. That future trial must remain opt-in and must still not adopt the learned output into the final package without a separate reviewed policy patch.
+## Patch 16B synthetic changed-output diagnostic smoke
+
+Patch 16B adds a smoke-only changed-output path for learned strategy diagnostics. The setup helper supports `--script-mode changed-valid`, which stages a temporary learned script under `app/tools/repair_staging/learned/`. The staged script writes only the learned execution harness output and is expected to produce a hash-different PDF artifact that passes basic PDF header and qpdf checks.
+
+Expected diagnostic flow:
+
+```text
+execution dry-run
+-> output comparison: changed_valid_pdf, or needs_deeper_validation when checks are unavailable
+-> quality gate: candidate_valid_changed, with quality_passed=false
+-> deeper validation: deeper_validation_passed or needs_manual_review
+-> candidate_is_adoptable=false
+```
+
+`deeper_validation_passed` is not production approval. It only means the synthetic sidecar artifact passed the available diagnostic checks and may proceed to later trial review. Patch 16B still forbids final PDF adoption, verdict softening, production repair replacement, learned-script promotion, and persistent rule-map mutation.
+
+Cleanup is mandatory after the smoke run. `setup_learned_execution_smoke_candidate.py --cleanup` restores the backed-up rule map and removes `smoke_*.py` staged scripts.
