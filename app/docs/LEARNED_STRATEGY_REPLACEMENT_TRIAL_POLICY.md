@@ -101,3 +101,9 @@ The next step is a production-testing readiness review or wiring the missing val
 Patch 18A adds an explicit `--learned-production-readiness` sidecar after learned execution dry-run and isolated replacement trial evidence. The artifact is `JOB/audit/learned_strategy_production_testing_readiness_report.json`. It records metadata, form-field preservation, render-compare, and veraPDF-delta helper outcomes or governed helper-unavailable blockers. Readiness decisions are `production_testing_blocked`, `production_testing_needs_manual_review`, and `production_testing_evidence_complete`.
 
 This readiness layer is not adoption approval. The normal final PDF remains authoritative; learned candidates remain non-adoptable; final PDF adoption, production replacement, verdict softening, rule-map mutation, and `app/tools/repair/*` mutation remain prohibited.
+
+## Patch 18B veraPDF delta sidecars
+
+Patch 18B keeps the replacement trial schema diagnostic-only. Production-readiness owns the veraPDF delta decision, while the trial directory owns the sidecar evidence. When `--learned-production-readiness` is used, the readiness helper may add veraPDF sidecars beside `normal_final.pdf` and `learned_trial.pdf` under the isolated trial directory.
+
+These sidecars do not make the candidate adoptable. They only answer whether the learned trial output introduced, worsened, resolved, improved, or preserved veraPDF rule-level failures compared with the authoritative normal final PDF. The normal final PDF remains authoritative in every outcome.

@@ -224,12 +224,17 @@ def evaluate_render_compare_check(normal_pdf: Path, learned_pdf: Path, job_dir: 
 
 
 def evaluate_verapdf_delta_check(normal_pdf: Path, learned_pdf: Path, job_dir: Path, timeout_seconds: int) -> Dict[str, Any]:
-    # Patch 18A records a governed blocker instead of invoking a full veraPDF
-    # profile run from this sidecar. Existing orchestrator veraPDF artifacts are
-    # for the normal final PDF, not the isolated learned-trial copy, so using them
-    # as a delta would be misleading.
-    return skipped_check("verapdf_delta", "verapdf_delta_unavailable")
+    from tools.audit.learned_strategy_verapdf_delta import run_verapdf_delta_for_trial
 
+    learned_pdf = Path(learned_pdf)
+    normal_pdf = Path(normal_pdf)
+    trial_dir = learned_pdf.parent if learned_pdf.parent.exists() else Path(job_dir) / "audit" / "learned_strategy_replacement_trial"
+    return run_verapdf_delta_for_trial(
+        normal_final_pdf=normal_pdf,
+        learned_trial_pdf=learned_pdf,
+        trial_dir=trial_dir,
+        timeout_seconds=timeout_seconds,
+    )
 
 def _records(payload: Dict[str, Any], *names: str) -> List[Dict[str, Any]]:
     for name in names:
@@ -266,6 +271,10 @@ def _readiness_decision(checks: Iterable[Dict[str, Any]]) -> Tuple[str, List[str
                     "render_compare_error",
                     "verapdf_delta_unavailable",
                     "verapdf_delta_error",
+            "verapdf_delta_timeout",
+            "verapdf_delta_parse_failed",
+                "verapdf_delta_timeout",
+                "verapdf_delta_parse_failed",
                 }
                 for b in check_blockers
             )

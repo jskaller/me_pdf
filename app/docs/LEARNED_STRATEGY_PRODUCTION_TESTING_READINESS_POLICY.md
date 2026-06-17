@@ -91,3 +91,36 @@ Production testing remains blocked or manual-review-only until each required hel
 ### Patch 18A decision-mapping repair
 
 Helper invocation errors are treated as governed helper-unavailable blockers, not as hard production-testing failures. This keeps unavailable, unsafe, or non-JSON helper execution in `production_testing_needs_manual_review`. A readiness result becomes `production_testing_blocked` only when a check actually performs and returns `result: FAIL`, such as a metadata difference, form-field preservation difference, render regression, or veraPDF delta failure.
+
+## Patch 18B veraPDF delta evidence
+
+Patch 18B replaces the governed `verapdf_delta_unavailable` placeholder when veraPDF is available. The readiness layer now runs a bounded helper against both PDFs from the isolated replacement-trial directory:
+
+```text
+JOB/audit/learned_strategy_replacement_trial/.../normal_final.pdf
+JOB/audit/learned_strategy_replacement_trial/.../learned_trial.pdf
+```
+
+The helper writes sidecars in that same trial directory:
+
+```text
+verapdf_normal_final.xml
+verapdf_normal_final.stdout.txt
+verapdf_normal_final.stderr.txt
+verapdf_learned_trial.xml
+verapdf_learned_trial.stdout.txt
+verapdf_learned_trial.stderr.txt
+verapdf_delta.json
+```
+
+veraPDF validation failures are evidence, not operational command failure. A nonzero veraPDF exit caused by compliance failures is parsed and compared. Operational failures remain conservative readiness blockers:
+
+```text
+verapdf missing       -> SKIPPED, verapdf_delta_unavailable
+verapdf timeout       -> ERROR,   verapdf_delta_timeout
+XML parse failure     -> ERROR,   verapdf_delta_parse_failed
+introduced/worsened   -> FAIL,    verapdf_delta_regression_detected
+no introduced/worsened failures -> PASS
+```
+
+The delta is rule-level and records introduced, resolved, worsened, improved, and unchanged rule buckets. `production_testing_evidence_complete` means evidence is complete for review only. It still does not approve adoption, does not replace the normal final PDF, does not soften status, and does not mutate the rule map or `app/tools/repair/*`.
