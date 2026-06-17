@@ -206,3 +206,7 @@ The smoke setup helper now accepts:
 `changed-valid` creates a synthetic diagnostic candidate that changes only the isolated learned harness output. It is expected to classify as `changed_valid_pdf` when qpdf/header checks pass, then map to `candidate_valid_changed`, then enter deeper validation. This mode is only a pre-production diagnostic bridge. It must not replace the final PDF, soften the orchestrator verdict, mutate `app/tools/repair/*`, promote the learned script, or mark the candidate adoptable/approved/production-ready.
 
 The setup artifact records `script_mode`, `expected_comparison_classification`, `final_pdf_adoption_performed=false`, and `verdict_softening_performed=false` so smoke diagnostics can reconcile intent with observed artifacts.
+
+## Patch 17A replacement trial flags
+
+The learned execution dry-run can optionally run the isolated replacement trial with `--learned-replacement-trial`. This flag is valid only with `--learned-execution-dry-run`; otherwise the orchestrator fails closed with `requires_learned_execution_dry_run`. The smoke-only `--learned-replacement-trial-allow-manual-review` flag permits `needs_manual_review` candidates to exercise the isolated trial path without changing final PDF authority, status, package routing, verdict semantics, rule-map state, or `app/tools/repair/*`.

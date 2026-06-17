@@ -411,3 +411,103 @@ def run_orchestrator_learned_execution_dry_run(
     diagnostics["production_repair_replacement_performed"] = False
     write_json_atomic(artifact_path, diagnostics)
     return diagnostics
+
+# PATCH17A_REPLACEMENT_TRIAL_WRAPPER
+# Patch 17A wrapper: optional isolated replacement trial after deeper validation.
+# Diagnostic-only: never adopts learned output PDFs, never softens verdicts,
+# never mutates the canonical rule map, and never mutates app/tools/repair/*.
+_patch17a_previous_run_orchestrator_learned_execution_dry_run = run_orchestrator_learned_execution_dry_run
+
+def run_orchestrator_learned_execution_dry_run(
+    *,
+    rule_map_path,
+    audit_dir,
+    job_dir,
+    repo_root,
+    input_pdf,
+    residual_failures=None,
+    limit=1,
+    timeout_seconds=30,
+    replacement_trial_enabled=False,
+    replacement_trial_allow_manual_review=False,
+):
+    from pathlib import Path as _Path
+
+    diagnostics = _patch17a_previous_run_orchestrator_learned_execution_dry_run(
+        rule_map_path=rule_map_path,
+        audit_dir=audit_dir,
+        job_dir=job_dir,
+        repo_root=repo_root,
+        input_pdf=input_pdf,
+        residual_failures=residual_failures,
+        limit=limit,
+        timeout_seconds=timeout_seconds,
+    )
+    audit_dir = _Path(audit_dir)
+    job_dir = _Path(job_dir)
+    artifact_path = audit_dir / ARTIFACT_NAME
+    diagnostics.setdefault("replacement_trial_performed", False)
+    diagnostics.setdefault("replacement_trial_artifact", None)
+    diagnostics.setdefault("replacement_trial_summary", {})
+    diagnostics.setdefault("replacement_trial_policy", {
+        "normal_final_pdf_remains_authoritative": True,
+        "final_pdf_adoption_performed": False,
+        "verdict_softening_performed": False,
+        "production_repair_replacement_performed": False,
+    })
+    diagnostics["final_pdf_adoption_performed"] = False
+    diagnostics["verdict_softening_performed"] = False
+    diagnostics["rule_map_mutation_performed"] = False
+    diagnostics["app_tools_repair_mutation_performed"] = False
+    diagnostics["production_repair_replacement_performed"] = False
+
+    if not replacement_trial_enabled:
+        write_json_atomic(artifact_path, diagnostics)
+        return diagnostics
+
+    comparison_path = audit_dir / "learned_strategy_output_comparisons.json"
+    quality_path = audit_dir / "learned_strategy_candidate_quality_report.json"
+    deeper_path = audit_dir / "learned_strategy_deeper_validation_report.json"
+    missing = [str(p) for p in (comparison_path, quality_path, deeper_path) if not p.exists()]
+    if missing:
+        diagnostics.setdefault("blockers", []).append("learned_replacement_trial_missing_prerequisite_artifact")
+        diagnostics["replacement_trial_performed"] = False
+        diagnostics["replacement_trial_missing_artifacts"] = missing
+        write_json_atomic(artifact_path, diagnostics)
+        return diagnostics
+
+    try:
+        from tools.audit.learned_strategy_replacement_trial import run_learned_strategy_replacement_trial
+
+        trial_payload = run_learned_strategy_replacement_trial(
+            deeper_validation_report_path=deeper_path,
+            comparison_artifact_path=comparison_path,
+            quality_report_path=quality_path,
+            job_dir=job_dir,
+            normal_final_pdf=_Path(input_pdf),
+            allow_manual_review_candidates=bool(replacement_trial_allow_manual_review),
+            timeout_seconds=timeout_seconds,
+        )
+        diagnostics["replacement_trial_performed"] = True
+        diagnostics["replacement_trial_artifact"] = trial_payload.get("artifact_path")
+        diagnostics["replacement_trial_summary"] = trial_payload.get("summary", {})
+        diagnostics["replacement_trial_candidate_count"] = trial_payload.get("candidate_count", 0)
+        diagnostics["replacement_trial_policy"] = {
+            "normal_final_pdf_remains_authoritative": True,
+            "final_pdf_adoption_performed": False,
+            "verdict_softening_performed": False,
+            "production_repair_replacement_performed": False,
+        }
+    except Exception as exc:
+        diagnostics["replacement_trial_performed"] = False
+        diagnostics["replacement_trial_error"] = f"{type(exc).__name__}: {exc}"
+        diagnostics.setdefault("blockers", []).append("learned_replacement_trial_diagnostic_error")
+
+    diagnostics["final_pdf_adoption_performed"] = False
+    diagnostics["verdict_softening_performed"] = False
+    diagnostics["rule_map_mutation_performed"] = False
+    diagnostics["app_tools_repair_mutation_performed"] = False
+    diagnostics["production_repair_replacement_performed"] = False
+    write_json_atomic(artifact_path, diagnostics)
+    return diagnostics
+

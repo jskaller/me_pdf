@@ -105,3 +105,7 @@ execution dry-run
 `deeper_validation_passed` is not production approval. It only means the synthetic sidecar artifact passed the available diagnostic checks and may proceed to later trial review. Patch 16B still forbids final PDF adoption, verdict softening, production repair replacement, learned-script promotion, and persistent rule-map mutation.
 
 Cleanup is mandatory after the smoke run. `setup_learned_execution_smoke_candidate.py --cleanup` restores the backed-up rule map and removes `smoke_*.py` staged scripts.
+
+## Patch 17A isolated replacement trial
+
+A candidate that passes deeper validation may proceed only to an explicit isolated replacement trial. Manual-review candidates may enter that trial only through the smoke-only diagnostic bypass. The trial writes `JOB/audit/learned_strategy_replacement_trial_report.json`, keeps `candidate_is_adoptable: false`, and still performs no final PDF adoption, verdict softening, rule-map mutation, `app/tools/repair/*` mutation, or production repair replacement.
