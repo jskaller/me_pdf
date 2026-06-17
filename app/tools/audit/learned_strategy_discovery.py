@@ -167,7 +167,7 @@ def discovery_policy() -> Dict[str, Any]:
         "final_pdf_adoption_performed": False,
         "production_execution_enabled_by_patch_12a": False,
         "rule_map_mutation_performed": False,
-        "app_tools_repair_mutation_performed": False,
+        "app_tools_repair_mutation_performed": False, "orchestrator_execution_integration_performed": False,
     }
 
 
@@ -448,7 +448,7 @@ def discover_active_learned_strategies(
         "final_pdf_adoption_performed": False,
         "production_execution_enabled_by_patch_12a": False,
         "rule_map_mutation_performed": False,
-        "app_tools_repair_mutation_performed": False,
+        "app_tools_repair_mutation_performed": False, "orchestrator_execution_integration_performed": False,
     }
     if audit_dir:
         write_json_atomic(Path(audit_dir) / ARTIFACT_NAME, result)

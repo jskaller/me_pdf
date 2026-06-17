@@ -50,6 +50,10 @@ from datetime import datetime, timezone
 from collections import defaultdict
 from tools.audit.execution_log import build_execution_log_from_repair_steps, new_execution_log, record_subprocess_execution, write_execution_log, sha256_file as execution_log_sha256_file
 from tools.audit.residual_analysis import analyze_residuals, targetable_failures_from_analysis
+from tools.audit.learned_strategy_repair_plan import (
+    augment_repair_plan_with_learned_discovery,
+    collect_rule_ids_from_repair_plan,
+)
 from tools.lib.residual_verdict import summarize_residual_analysis, summarize_strategy_indexing, reconcile_hermes_signals
 
 # ── Args ──────────────────────────────────────────────────────────────────────
@@ -63,6 +67,7 @@ parser.add_argument('--subject',  default='')
 parser.add_argument('--keywords', default='')
 parser.add_argument('--language', default='en-US')
 parser.add_argument('--dry-run',  action='store_true')
+parser.add_argument('--learned-discovery', action='store_true', help='Write discovery-only active learned strategy diagnostics; never executes learned strategies')
 args = parser.parse_args()
 
 WORKSPACE  = Path(args.workspace)
@@ -1892,6 +1897,31 @@ try:
 except Exception:
     plan_data = {'result': 'NO_FAILURES', 'repair_steps': [], 'hermes_required': [], 'unknown_rules': []}
     plan_path.write_text(json.dumps(plan_data, indent=2))
+
+if args.learned_discovery:
+    try:
+        plan_data = augment_repair_plan_with_learned_discovery(
+            plan_data,
+            rule_map_path=RULE_MAP,
+            repo_root=APP.parent,
+            audit_dir=AUDIT_DIR,
+            rule_ids=collect_rule_ids_from_repair_plan(plan_data),
+        )
+        plan_path.write_text(json.dumps(plan_data, indent=2))
+        emit('PLAN', 'learned_strategy_discovery', 'PASS', data={
+            'mode': 'discovery_only',
+            'artifact': str(AUDIT_DIR / 'learned_strategy_discovery.json'),
+            'candidates': len(plan_data.get('active_learned_strategy_candidates', [])),
+            'execution_performed': False,
+            'final_pdf_adoption_performed': False,
+            'rule_map_mutation_performed': False,
+            'app_tools_repair_mutation_performed': False,
+            'orchestrator_execution_integration_performed': False,
+        })
+    except Exception as e:
+        emit('PLAN', 'learned_strategy_discovery', 'WARN', note=f'discovery-only diagnostics unavailable: {type(e).__name__}: {e}')
+else:
+    emit('PLAN', 'learned_strategy_discovery', 'SKIPPED', note='disabled; pass --learned-discovery to write discovery-only diagnostics')
 
 repair_steps       = plan_data.get('repair_steps', [])
 hermes_required  = plan_data.get('hermes_required', [])
