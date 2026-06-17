@@ -148,3 +148,8 @@ git diff -- app/tools/audit/rule_repair_map.json app/tools/repair
 ## Out of scope
 
 Future patches may define a separate, explicit production activation workflow. Patch 10 only records reviewed staged strategy metadata and does not make it executable by the production repair runtime.
+
+
+## Patch 11 activation policy cross-reference
+
+Reviewed staged learned strategies are not runtime-active merely because they are present in the canonical rule map. Patch 11 adds a separate dry-run/apply/deactivate activation policy documented in `app/docs/LEARNED_STRATEGY_ACTIVATION_POLICY.md`. Activation requires explicit `--rule-id`, `--candidate-id`, and `--reviewed-by`, verifies the staged script path and SHA-256, backs up the rule map before mutation, never moves scripts into `app/tools/repair/*`, and never adopts final PDFs.

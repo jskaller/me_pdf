@@ -93,3 +93,8 @@ Patch 9 does not implement production repair activation, automatic promotion, fi
 Script staging and rule-map adoption remain separate reviewed steps. A staged script is only eligible for rule-map dry-run/apply when `script_promotion_result.json` records the staged path, static-check status, reviewer, and staged script SHA-256.
 
 The canonical rule map may reference only the staged path under `tools/repair_staging/learned/`; it must not reference the original job quarantine path. Staging does not imply production activation.
+
+
+## Patch 11 activation policy cross-reference
+
+Reviewed staged learned strategies are not runtime-active merely because they are present in the canonical rule map. Patch 11 adds a separate dry-run/apply/deactivate activation policy documented in `app/docs/LEARNED_STRATEGY_ACTIVATION_POLICY.md`. Activation requires explicit `--rule-id`, `--candidate-id`, and `--reviewed-by`, verifies the staged script path and SHA-256, backs up the rule map before mutation, never moves scripts into `app/tools/repair/*`, and never adopts final PDFs.
