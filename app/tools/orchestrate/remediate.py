@@ -48,7 +48,7 @@ import sys, json, subprocess, shutil, argparse, os
 from pathlib import Path
 from datetime import datetime, timezone
 from collections import defaultdict
-from tools.audit.execution_log import build_execution_log_from_repair_steps, new_execution_log, record_subprocess_execution, write_execution_log
+from tools.audit.execution_log import build_execution_log_from_repair_steps, new_execution_log, record_subprocess_execution, write_execution_log, sha256_file as execution_log_sha256_file
 from tools.audit.residual_analysis import analyze_residuals, targetable_failures_from_analysis
 from tools.lib.residual_verdict import summarize_residual_analysis, summarize_strategy_indexing, reconcile_hermes_signals
 
@@ -174,6 +174,22 @@ def run(cmd, label, capture=True, env=None, record_type=None, step=None, input_p
     if args.dry_run:
         emit('DRY_RUN', label, 'SKIPPED', note=' '.join(str(c) for c in cmd))
         return 0, '{"result":"PASS"}', ''
+    # Patch 6B4: repair-loop calls often use bare run(..., script_label).
+    # When the active repair-loop context label matches the current command
+    # label, promote that call into a high-fidelity execution-log record.
+    if not record_type:
+        runtime_ctx = globals().get('_CURRENT_REPAIR_EXECUTION_KWARGS')
+        if runtime_ctx and label == runtime_ctx.get('label'):
+            record_type = runtime_ctx.get('record_type')
+            step = runtime_ctx.get('step')
+            input_pdf = runtime_ctx.get('input_pdf')
+            output_pdf = runtime_ctx.get('output_pdf')
+            rules_targeted = runtime_ctx.get('rules_targeted')
+            iteration = runtime_ctx.get('iteration')
+            strategy = runtime_ctx.get('strategy')
+            script = runtime_ctx.get('script')
+            validation_artifacts = runtime_ctx.get('validation_artifacts')
+            notes = runtime_ctx.get('notes')
     try:
         run_env = None
         if env:
@@ -1385,6 +1401,9 @@ REPAIR_DIR  = JOB / 'repair'
 AUDIT_DIR   = JOB / 'audit'
 QA_DIR      = JOB / 'qa'
 REPORTS_DIR = JOB / 'reports'
+# Patch 6B2: high-fidelity runtime execution log for real repair subprocesses.
+execution_log_runtime = new_execution_log(job_dir=JOB, source_pdf=SOURCE_PDF, current_pdf=None, run_id=JOB_NAME)
+last_execution_attempt_id = None
 
 # Copy source PDF
 PASS0 = REPAIR_DIR / 'pass0_source.pdf'
@@ -2059,6 +2078,29 @@ while unresolved_scripts and total_iterations < JOB_HARD_CAP:
                    'strategy':  step.get('strategy', ''),
                    'rules':     rule_ids})
 
+        # Patch 6B4: establish runtime execution context for the primary
+        # known-repair subprocess. The run() wrapper consumes this context
+        # when the label equals script_label, so auxiliary commands such as
+        # validation, draft generation, and review reports are not captured
+        # as repair_step records by accident.
+        globals()['_CURRENT_REPAIR_EXECUTION_KWARGS'] = {
+            'label': script_label,
+            'record_type': 'repair_step',
+            'step': step,
+            'input_pdf': iteration_pdf,
+            'output_pdf': output_pdf,
+            'rules_targeted': rule_ids,
+            'iteration': iteration,
+            'strategy': step.get('strategy', ''),
+            'script': script,
+            'validation_artifacts': None,
+            'notes': {
+                'description': step.get('description', ''),
+                'confidence': step.get('confidence', ''),
+                'args_pattern': step.get('args_pattern', ''),
+            },
+        }
+
         # ── Special handling: fix_figure_alt_text ────────────────────────────
         if 'fix_figure_alt_text' in script:
             if alt_branch in ('A_LOCAL', 'A_ASSET'):
@@ -2495,13 +2537,19 @@ residual_analysis_path = AUDIT_DIR / 'residual_analysis.json'
 residual_analysis = None
 targetable_remaining_failures = remaining_failures
 try:
-    execution_log = build_execution_log_from_repair_steps(
-        job_dir=JOB,
-        source_pdf=SOURCE_PDF,
-        current_pdf=FINAL_PDF,
-        repair_steps=repair_steps,
-        strategy_attempts=strategy_attempts,
-    )
+    execution_log = globals().get('execution_log_runtime') or {}
+    if not execution_log.get('records'):
+        execution_log = build_execution_log_from_repair_steps(
+            job_dir=JOB,
+            source_pdf=SOURCE_PDF,
+            current_pdf=FINAL_PDF,
+            repair_steps=repair_steps,
+            strategy_attempts=strategy_attempts,
+        )
+    else:
+        execution_log['current_pdf'] = str(FINAL_PDF)
+        execution_log['current_pdf_sha256'] = execution_log_sha256_file(FINAL_PDF)
+        execution_log['current_pdf_hash'] = execution_log.get('current_pdf_sha256')
     write_execution_log(execution_log, execution_log_path)
 except Exception as e:
     execution_log = {'repair_steps': []}
