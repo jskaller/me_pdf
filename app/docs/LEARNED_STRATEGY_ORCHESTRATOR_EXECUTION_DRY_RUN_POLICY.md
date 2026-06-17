@@ -147,3 +147,21 @@ find app/tools/repair_staging/learned -maxdepth 1 -type f \( -name "smoke_*" -o 
 The only expected smoke artifacts are job-local audit evidence under `workspace/jobs/.../audit/`. The canonical rule map must be restored, `app/tools/repair/*` must remain untouched, and no smoke staged script may remain in `app/tools/repair_staging/learned/`.
 
 This smoke is still not final adoption because the orchestrator passes the learned candidate through the isolated Patch 12B harness only, records the result as diagnostics, leaves the final PDF path untouched, and preserves normal PASS/FAIL/ESCALATION semantics. It is still not production replacement because learned execution remains opt-in, limited, audit-only, and disabled by default.
+
+## Patch 14A output comparison sidecar hotfix note
+
+Patch 14A adds learned output comparison as a diagnostic sidecar after learned execution dry-run records are produced. The integration is intentionally wrapped around the existing dry-run runner rather than changing verdict, status, package, rule-map, or production-repair behavior.
+
+The wrapper writes or updates `JOB/audit/learned_strategy_execution_diagnostics.json` with:
+
+```json
+{
+  "output_comparison_performed": true,
+  "output_comparison_artifact": "JOB/audit/learned_strategy_output_comparisons.json",
+  "output_comparison_count": 1,
+  "output_comparison_summary": {"no_effect": 1}
+}
+```
+
+The sidecar artifact remains diagnostic-only. It does not make learned output adoptable, does not soften PASS/FAIL/ESCALATION, and does not mutate `app/tools/audit/rule_repair_map.json` or `app/tools/repair/*`.
+

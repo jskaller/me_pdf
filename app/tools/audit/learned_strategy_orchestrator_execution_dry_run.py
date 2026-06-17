@@ -121,7 +121,7 @@ def execution_summary(result: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def run_orchestrator_learned_execution_dry_run(
+def _patch14a_original_run_orchestrator_learned_execution_dry_run(
     *,
     rule_map_path: Path,
     audit_dir: Path,
@@ -221,5 +221,69 @@ def run_orchestrator_learned_execution_dry_run(
     diagnostics["failed_count"] = sum(1 for e in diagnostics["executions"] if e.get("result") == "FAIL")
     diagnostics["blocked_count"] = sum(1 for e in diagnostics["executions"] if e.get("result") == "BLOCKED")
     diagnostics["skipped_count"] = len(diagnostics["skipped_candidates"])
+    write_json_atomic(artifact_path, diagnostics)
+    return diagnostics
+
+
+# Patch 14A wrapper: learned output comparison remains diagnostic-only.
+def run_orchestrator_learned_execution_dry_run(
+    *,
+    rule_map_path: Path,
+    audit_dir: Path,
+    job_dir: Path,
+    repo_root: Path,
+    input_pdf: Path,
+    residual_failures: Optional[Iterable[Dict[str, Any]]] = None,
+    limit: int = 1,
+    timeout_seconds: int = 30,
+) -> Dict[str, Any]:
+    """Run the original learned execution dry-run, then add comparison sidecar evidence.
+
+    The comparison is diagnostic-only. It does not adopt learned PDFs, soften
+    verdicts, mutate the rule map, mutate app/tools/repair/*, or replace any
+    production repair output.
+    """
+    diagnostics = _patch14a_original_run_orchestrator_learned_execution_dry_run(
+        rule_map_path=rule_map_path,
+        audit_dir=audit_dir,
+        job_dir=job_dir,
+        repo_root=repo_root,
+        input_pdf=input_pdf,
+        residual_failures=residual_failures,
+        limit=limit,
+        timeout_seconds=timeout_seconds,
+    )
+
+    audit_dir = Path(audit_dir)
+    job_dir = Path(job_dir)
+    input_pdf = Path(input_pdf) if input_pdf else None
+    artifact_path = audit_dir / ARTIFACT_NAME
+
+    if not diagnostics.get("executions"):
+        diagnostics.setdefault("output_comparison_performed", False)
+        diagnostics.setdefault("output_comparison_count", 0)
+        diagnostics.setdefault("output_comparison_summary", {})
+        write_json_atomic(artifact_path, diagnostics)
+        return diagnostics
+
+    try:
+        from tools.audit.learned_strategy_output_comparison import write_learned_strategy_output_comparisons
+
+        comparison_payload = write_learned_strategy_output_comparisons(
+            execution_summaries=diagnostics.get("executions", []),
+            job_dir=job_dir,
+            audit_dir=audit_dir,
+            normal_final_pdf=input_pdf,
+            timeout_seconds=timeout_seconds,
+        )
+        diagnostics["output_comparison_performed"] = True
+        diagnostics["output_comparison_artifact"] = comparison_payload.get("artifact_path")
+        diagnostics["output_comparison_count"] = comparison_payload.get("comparison_count", 0)
+        diagnostics["output_comparison_summary"] = comparison_payload.get("summary", {})
+    except Exception as exc:
+        diagnostics["output_comparison_performed"] = False
+        diagnostics["output_comparison_error"] = f"{type(exc).__name__}: {exc}"
+        diagnostics.setdefault("blockers", []).append("learned_output_comparison_diagnostic_error")
+
     write_json_atomic(artifact_path, diagnostics)
     return diagnostics
