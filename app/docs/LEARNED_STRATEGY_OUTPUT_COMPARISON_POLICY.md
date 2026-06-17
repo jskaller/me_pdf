@@ -79,3 +79,15 @@ Comparison failure is diagnostic-only. A malformed execution artifact, missing o
 ## Next step
 
 Patch 14B can add deeper validation and candidate quality gates. That future patch must still be separate from final PDF adoption and must define review, rollback, preservation, and verdict semantics before any learned output can replace production repair output.
+
+## Patch 14B candidate quality gate
+
+Output comparison is evidence, not adoption. Patch 14B feeds
+`learned_strategy_output_comparisons.json` into the diagnostic-only candidate
+quality gate, which writes `learned_strategy_candidate_quality_report.json`.
+A `no_effect` comparison is rejected as `rejected_no_effect`; a
+`changed_valid_pdf` comparison becomes `candidate_valid_changed` with
+`quality_passed: false` pending deeper validation. The comparison layer still
+performs no final PDF adoption, no verdict softening, no rule-map mutation, and
+no `app/tools/repair/*` mutation.
+

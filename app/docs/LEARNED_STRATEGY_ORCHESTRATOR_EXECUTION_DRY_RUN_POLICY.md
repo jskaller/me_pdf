@@ -165,3 +165,15 @@ The wrapper writes or updates `JOB/audit/learned_strategy_execution_diagnostics.
 
 The sidecar artifact remains diagnostic-only. It does not make learned output adoptable, does not soften PASS/FAIL/ESCALATION, and does not mutate `app/tools/audit/rule_repair_map.json` or `app/tools/repair/*`.
 
+## Patch 14B candidate quality reference
+
+When learned execution dry-run produces output comparisons, the orchestrator
+also writes `JOB/audit/learned_strategy_candidate_quality_report.json` and
+records `candidate_quality_performed`, `candidate_quality_artifact`, and
+`candidate_quality_summary` in
+`JOB/audit/learned_strategy_execution_diagnostics.json`.
+
+The quality gate is diagnostic-only. It must not change the final PDF path,
+normal verdict, STATUS/package behavior, Hermes reconciliation, canonical rule
+map, or `app/tools/repair/*`.
+

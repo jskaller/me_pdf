@@ -20,6 +20,8 @@ from typing import Any, Dict, Iterable, List, Optional
 from tools.audit.learned_strategy_discovery import discover_active_learned_strategies, sha256_file
 from tools.audit.learned_strategy_execution import execute_discovered_learned_strategy
 
+from tools.audit.learned_strategy_output_comparison import write_learned_strategy_output_comparisons
+from tools.audit.learned_strategy_candidate_quality import write_learned_strategy_candidate_quality_report
 SCHEMA_VERSION = "learned-strategy-orchestrator-execution-dry-run.v1"
 ARTIFACT_NAME = "learned_strategy_execution_diagnostics.json"
 MODE = "learned_execution_dry_run"
@@ -221,10 +223,46 @@ def _patch14a_original_run_orchestrator_learned_execution_dry_run(
     diagnostics["failed_count"] = sum(1 for e in diagnostics["executions"] if e.get("result") == "FAIL")
     diagnostics["blocked_count"] = sum(1 for e in diagnostics["executions"] if e.get("result") == "BLOCKED")
     diagnostics["skipped_count"] = len(diagnostics["skipped_candidates"])
+
+    if diagnostics.get("executions"):
+        try:
+            comparison_payload = write_learned_strategy_output_comparisons(
+                execution_summaries=diagnostics.get("executions") or [],
+                job_dir=job_dir,
+                audit_dir=audit_dir,
+                normal_final_pdf=input_pdf,
+                timeout_seconds=timeout_seconds,
+            )
+            diagnostics["output_comparison_performed"] = True
+            diagnostics["output_comparison_artifact"] = str(audit_dir / "learned_strategy_output_comparisons.json")
+            diagnostics["output_comparison_count"] = comparison_payload.get("comparison_count", 0)
+            diagnostics["output_comparison_summary"] = comparison_payload.get("summary", {})
+        except Exception as exc:
+            comparison_payload = None
+            diagnostics["output_comparison_performed"] = False
+            diagnostics["candidate_quality_performed"] = False
+            diagnostics.setdefault("blockers", []).append("learned_output_comparison_diagnostic_error")
+            diagnostics["output_comparison_error"] = f"{type(exc).__name__}: {exc}"
+        else:
+            try:
+                quality_payload = write_learned_strategy_candidate_quality_report(
+                    comparison_artifact_path=audit_dir / "learned_strategy_output_comparisons.json",
+                    audit_dir=audit_dir,
+                    job_dir=job_dir,
+                )
+                diagnostics["candidate_quality_performed"] = True
+                diagnostics["candidate_quality_artifact"] = str(audit_dir / "learned_strategy_candidate_quality_report.json")
+                diagnostics["candidate_quality_summary"] = quality_payload.get("summary", {})
+                diagnostics["candidate_quality_policy"] = quality_payload.get("policy", {})
+            except Exception as exc:
+                diagnostics["candidate_quality_performed"] = False
+                diagnostics.setdefault("blockers", []).append("learned_candidate_quality_diagnostic_error")
+                diagnostics["candidate_quality_error"] = f"{type(exc).__name__}: {exc}"
+    else:
+        diagnostics["output_comparison_performed"] = False
+        diagnostics["candidate_quality_performed"] = False
     write_json_atomic(artifact_path, diagnostics)
     return diagnostics
-
-
 # Patch 14A wrapper: learned output comparison remains diagnostic-only.
 def run_orchestrator_learned_execution_dry_run(
     *,
