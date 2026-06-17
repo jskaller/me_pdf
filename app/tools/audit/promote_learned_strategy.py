@@ -955,6 +955,375 @@ def apply_rule_map(job_dir: Path, rule_map_path: Path, candidate_id: str, review
     return artifact
 
 
+
+# PATCH11A_ACTIVATION_METADATA_START
+ACTIVATION_SCHEMA_VERSION = "learned-strategy-activation-metadata.v1"
+ACTIVATION_REVIEW_FILENAME = "activation_review.json"
+ACTIVATION_APPLY_FILENAME = "activation_apply_result.json"
+ACTIVATION_DEACTIVATE_FILENAME = "activation_deactivate_result.json"
+APPROVED_STAGING_SUFFIX = Path("app/tools/repair_staging/learned")
+ALT_APPROVED_STAGING_SUFFIX = Path("tools/repair_staging/learned")
+
+
+def activation_artifact_path(job_dir: Optional[Path], rule_map_path: Path, filename: str) -> Path:
+    if job_dir:
+        return Path(job_dir) / "audit" / filename
+    return Path(rule_map_path).parent / "activation_artifacts" / filename
+
+
+def activation_repo_root(rule_map_path: Path) -> Path:
+    resolved = Path(rule_map_path).resolve()
+    parts = list(resolved.parts)
+    tail = ["app", "tools", "audit", "rule_repair_map.json"]
+    for idx in range(0, max(0, len(parts) - len(tail) + 1)):
+        if parts[idx : idx + len(tail)] == tail:
+            return Path(*parts[:idx]) if idx else Path(resolved.anchor)
+    return repo_root_from_rule_map(rule_map_path)
+
+
+def activation_candidate_value(strategy: Dict[str, Any]) -> str:
+    for key in ("candidate_id", "promotion_candidate_id", "learned_candidate_id", "strategy_id", "id"):
+        value = clean_str(strategy.get(key))
+        if value:
+            return value
+    evidence = as_dict(strategy.get("evidence"))
+    for key in ("candidate_id", "promotion_candidate_id", "learned_strategy_record_id"):
+        value = clean_str(evidence.get(key))
+        if value:
+            return value
+    return ""
+
+
+def reviewed_strategy_lists(entry: Dict[str, Any]) -> List[Tuple[str, List[Any]]]:
+    out: List[Tuple[str, List[Any]]] = []
+    for key in ("reviewed_learned_strategies", "staged_scripts", "staged_learned_strategies", "learned_strategies"):
+        value = entry.get(key)
+        if isinstance(value, list):
+            out.append((key, value))
+    return out
+
+
+def find_reviewed_strategy(rule_map: Dict[str, Any], rule_id: str, candidate_id: str) -> Tuple[Dict[str, Any], str, int, Dict[str, Any]]:
+    entry = as_dict(as_dict(rule_map.get("rules")).get(rule_id))
+    if not entry:
+        raise PromotionError(f"rule_id_not_found: {rule_id}")
+    for list_key, items in reviewed_strategy_lists(entry):
+        for idx, item in enumerate(items):
+            if isinstance(item, dict) and activation_candidate_value(item) == candidate_id:
+                return entry, list_key, idx, item
+    raise PromotionError(f"candidate_id_not_found_in_rule_map: {candidate_id}")
+
+
+def staged_script_value(strategy: Dict[str, Any]) -> str:
+    for key in ("staged_script_path", "script_path", "repair_script", "generated_script_path", "learned_script_path"):
+        value = clean_str(strategy.get(key))
+        if value:
+            return value
+    evidence = as_dict(strategy.get("evidence"))
+    for key in ("staged_script_path", "script_path", "repair_script"):
+        value = clean_str(evidence.get(key))
+        if value:
+            return value
+    return ""
+
+
+def staged_script_hash_value(strategy: Dict[str, Any]) -> str:
+    for key in ("staged_script_sha256", "script_sha256", "sha256", "generated_script_sha256"):
+        value = clean_str(strategy.get(key))
+        if value:
+            return value
+    evidence = as_dict(strategy.get("evidence"))
+    for key in ("staged_script_sha256", "script_sha256", "sha256"):
+        value = clean_str(evidence.get(key))
+        if value:
+            return value
+    return ""
+
+
+def resolve_activation_staged_script(rule_map_path: Path, raw_value: str) -> Optional[Path]:
+    if not raw_value:
+        return None
+    path = Path(raw_value)
+    root = activation_repo_root(rule_map_path)
+    candidates: List[Path] = []
+    if path.is_absolute():
+        candidates.append(path)
+    else:
+        candidates.extend([root / path, root / "app" / path, Path.cwd() / path])
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0] if candidates else None
+
+
+def approved_activation_staging_roots(rule_map_path: Path) -> List[Path]:
+    root = activation_repo_root(rule_map_path)
+    return [
+        (root / APPROVED_STAGING_SUFFIX).resolve(),
+        (root / ALT_APPROVED_STAGING_SUFFIX).resolve(),
+        Path("/app/tools/repair_staging/learned").resolve(),
+    ]
+
+
+def activation_path_under_approved_staging(path: Optional[Path], rule_map_path: Path) -> bool:
+    if path is None:
+        return False
+    try:
+        resolved = path.resolve()
+    except Exception:
+        return False
+    for root in approved_activation_staging_roots(rule_map_path):
+        try:
+            resolved.relative_to(root)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def activation_static_checks(path: Optional[Path]) -> Dict[str, Any]:
+    checks: Dict[str, Any] = {
+        "script_exists": False,
+        "python_ast_parse": False,
+        "forbidden_constructs_absent": False,
+        "compile_check": False,
+        "blockers": [],
+    }
+    if path is None or not path.exists():
+        checks["blockers"].append("staged_script_missing")
+        return checks
+    checks["script_exists"] = True
+    try:
+        source = path.read_text()
+    except Exception as exc:
+        checks["blockers"].append(f"staged_script_unreadable:{exc}")
+        return checks
+    try:
+        tree = ast.parse(source, filename=str(path))
+        checks["python_ast_parse"] = True
+    except Exception as exc:
+        checks["blockers"].append(f"python_ast_parse_failed:{exc}")
+        return checks
+
+    forbidden: List[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".")[0]
+                if root in {"subprocess", "socket", "requests"}:
+                    forbidden.append(f"forbidden_import:{alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".")[0]
+            if root in {"subprocess", "socket", "requests"}:
+                forbidden.append(f"forbidden_import:{node.module}")
+        elif isinstance(node, ast.Call):
+            func = node.func
+            name = getattr(func, "id", None) or getattr(func, "attr", None)
+            if name in {"eval", "exec", "compile", "__import__"}:
+                forbidden.append(f"forbidden_call:{name}")
+    if forbidden:
+        checks["blockers"].extend(sorted(set(forbidden)))
+    else:
+        checks["forbidden_constructs_absent"] = True
+
+    try:
+        compile(source, str(path), "exec")
+        checks["compile_check"] = True
+    except Exception as exc:
+        checks["blockers"].append(f"compile_failed:{exc}")
+    return checks
+
+
+def activation_blockers(strategy: Dict[str, Any], rule_map_path: Path, *, require_staged_review: bool) -> Tuple[List[str], Dict[str, Any], Optional[Path], str, str]:
+    blockers: List[str] = []
+    raw_script = staged_script_value(strategy)
+    staged_path = resolve_activation_staged_script(rule_map_path, raw_script)
+    expected_sha = staged_script_hash_value(strategy)
+    actual_sha = sha256_file(staged_path) if staged_path else None
+
+    if require_staged_review:
+        if strategy.get("production_active") is not False:
+            blockers.append("production_active_must_be_false_before_activation")
+        if clean_str(strategy.get("activation_status") or strategy.get("status")) not in {"staged_review", "staged_reviewed"}:
+            blockers.append("activation_status_must_be_staged_review")
+        if strategy.get("review_required") is not True and strategy.get("activation_review_required") is not True:
+            blockers.append("review_required_metadata_missing")
+
+    dirty_markers: List[str] = []
+    if strategy.get("dirty") is True:
+        dirty_markers.append("dirty")
+    if strategy.get("failed") is True:
+        dirty_markers.append("failed")
+    if strategy.get("refusal") is True or strategy.get("refused") is True:
+        dirty_markers.append("refusal")
+    outcome = clean_str(strategy.get("outcome")).lower()
+    if outcome in {"dirty", "failed", "refusal", "refused"}:
+        dirty_markers.append(f"outcome:{outcome}")
+    blockers.extend(sorted(set(dirty_markers)))
+
+    if not raw_script:
+        blockers.append("missing_staged_script_path")
+    if staged_path is None or not staged_path.exists():
+        blockers.append("staged_script_missing")
+    if staged_path is not None and not activation_path_under_approved_staging(staged_path, rule_map_path):
+        blockers.append("staged_script_not_under_approved_staging_dir")
+    if not expected_sha:
+        blockers.append("missing_staged_script_sha256")
+    elif actual_sha is None:
+        blockers.append("staged_script_hash_unverifiable")
+    elif expected_sha != actual_sha:
+        blockers.append("staged_script_hash_mismatch")
+
+    evidence = as_dict(strategy.get("evidence"))
+    if not evidence and not any(clean_str(strategy.get(k)) for k in ("learned_strategy_record_id", "script_promotion_result_path", "rule_map_adoption_review_path")):
+        blockers.append("missing_patch10_evidence_metadata")
+
+    static_checks = activation_static_checks(staged_path)
+    blockers.extend(as_list(static_checks.get("blockers")))
+    return sorted(set(clean_str(b) for b in blockers if clean_str(b))), static_checks, staged_path, expected_sha, actual_sha or ""
+
+
+def activation_common_packet(mode: str, rule_id: str, candidate_id: str, rule_map_path: Path, strategy: Dict[str, Any], blockers: List[str], checks: Dict[str, Any], staged_path: Optional[Path], expected_sha: str, actual_sha: str) -> Dict[str, Any]:
+    return {
+        "schema_version": ACTIVATION_SCHEMA_VERSION,
+        "created_at": utc_now_iso(),
+        "mode": mode,
+        "rule_id": rule_id,
+        "candidate_id": candidate_id,
+        "rule_map_path": str(rule_map_path),
+        "staged_script_path": str(staged_path) if staged_path else staged_script_value(strategy),
+        "staged_script_sha256": expected_sha,
+        "actual_staged_script_sha256": actual_sha,
+        "activation_checks": checks,
+        "activation_blockers": blockers,
+        "safe_to_activate": not blockers,
+        "requires_reviewed_by_for_apply": True,
+        "canonical_rule_map_mutation_performed": False,
+        "production_activation_performed": False,
+        "production_deactivation_performed": False,
+        "runtime_discovery_performed": False,
+        "runtime_use_performed": False,
+        "repair_directory_mutation_performed": False,
+        "final_pdf_adoption_performed": False,
+        "generated_script_promotion_performed": False,
+    }
+
+
+def create_activation_dry_run(*, rule_map_path: Path, rule_id: str, candidate_id: str, job_dir: Optional[Path] = None, output_path: Optional[Path] = None) -> Dict[str, Any]:
+    if not rule_id:
+        raise PromotionError("--rule-id is required for activation dry-run")
+    if not candidate_id:
+        raise PromotionError("--candidate-id is required for activation dry-run")
+    rule_map = load_rule_map(rule_map_path)
+    _entry, _list_key, _idx, strategy = find_reviewed_strategy(rule_map, rule_id, candidate_id)
+    blockers, checks, staged_path, expected_sha, actual_sha = activation_blockers(strategy, rule_map_path, require_staged_review=True)
+    packet = activation_common_packet("activation_dry_run", rule_id, candidate_id, rule_map_path, strategy, blockers, checks, staged_path, expected_sha, actual_sha)
+    out = Path(output_path) if output_path else activation_artifact_path(job_dir, rule_map_path, ACTIVATION_REVIEW_FILENAME)
+    write_json_atomic(out, packet)
+    return packet
+
+
+def backup_rule_map_before_activation(rule_map_path: Path) -> Path:
+    backup_dir = Path(rule_map_path).parent / "rule_map_activation_backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = backup_dir / f"{Path(rule_map_path).name}.{stamp}.bak"
+    shutil.copy2(rule_map_path, backup_path)
+    return backup_path
+
+
+def apply_activation(*, rule_map_path: Path, rule_id: str, candidate_id: str, reviewed_by: str, job_dir: Optional[Path] = None, output_path: Optional[Path] = None) -> Dict[str, Any]:
+    if not rule_id:
+        raise PromotionError("--rule-id is required for activation apply")
+    if not candidate_id:
+        raise PromotionError("--candidate-id is required for activation apply")
+    if not reviewed_by:
+        raise PromotionError("--reviewed-by is required for activation apply")
+    rule_map = load_rule_map(rule_map_path)
+    _entry, list_key, idx, strategy = find_reviewed_strategy(rule_map, rule_id, candidate_id)
+    before = copy.deepcopy(strategy)
+    blockers, checks, staged_path, expected_sha, actual_sha = activation_blockers(strategy, rule_map_path, require_staged_review=True)
+    packet = activation_common_packet("activation_apply", rule_id, candidate_id, rule_map_path, strategy, blockers, checks, staged_path, expected_sha, actual_sha)
+    if blockers:
+        packet["result"] = "BLOCKED"
+        out = Path(output_path) if output_path else activation_artifact_path(job_dir, rule_map_path, ACTIVATION_APPLY_FILENAME)
+        write_json_atomic(out, packet)
+        return packet
+
+    backup_path = backup_rule_map_before_activation(rule_map_path)
+    selected = rule_map["rules"][rule_id][list_key][idx]
+    selected["production_active"] = True
+    selected["activation_status"] = "active"
+    selected["activated_by"] = reviewed_by
+    selected["activated_at"] = utc_now_iso()
+    selected["activation_review_required"] = False
+    if selected.get("review_required") is True:
+        selected["review_required"] = False
+
+    write_json_atomic(rule_map_path, rule_map)
+    packet.update({
+        "result": "ACTIVATED",
+        "backup_path": str(backup_path),
+        "canonical_rule_map_mutation_performed": True,
+        "production_activation_performed": True,
+        "selected_strategy_before": before,
+        "selected_strategy_after": selected,
+        "mutated_list_key": list_key,
+        "mutated_index": idx,
+    })
+    out = Path(output_path) if output_path else activation_artifact_path(job_dir, rule_map_path, ACTIVATION_APPLY_FILENAME)
+    write_json_atomic(out, packet)
+    return packet
+
+
+def deactivate_strategy(*, rule_map_path: Path, rule_id: str, candidate_id: str, reviewed_by: str, job_dir: Optional[Path] = None, output_path: Optional[Path] = None) -> Dict[str, Any]:
+    if not rule_id:
+        raise PromotionError("--rule-id is required for deactivation")
+    if not candidate_id:
+        raise PromotionError("--candidate-id is required for deactivation")
+    if not reviewed_by:
+        raise PromotionError("--reviewed-by is required for deactivation")
+    rule_map = load_rule_map(rule_map_path)
+    _entry, list_key, idx, strategy = find_reviewed_strategy(rule_map, rule_id, candidate_id)
+    before = copy.deepcopy(strategy)
+    backup_path = backup_rule_map_before_activation(rule_map_path)
+    selected = rule_map["rules"][rule_id][list_key][idx]
+    selected["production_active"] = False
+    selected["activation_status"] = "deactivated"
+    selected["deactivated_by"] = reviewed_by
+    selected["deactivated_at"] = utc_now_iso()
+
+    write_json_atomic(rule_map_path, rule_map)
+    packet = {
+        "schema_version": ACTIVATION_SCHEMA_VERSION,
+        "created_at": utc_now_iso(),
+        "mode": "deactivate",
+        "result": "DEACTIVATED",
+        "rule_id": rule_id,
+        "candidate_id": candidate_id,
+        "rule_map_path": str(rule_map_path),
+        "backup_path": str(backup_path),
+        "staged_script_path": staged_script_value(strategy),
+        "canonical_rule_map_mutation_performed": True,
+        "production_activation_performed": False,
+        "production_deactivation_performed": True,
+        "runtime_discovery_performed": False,
+        "runtime_use_performed": False,
+        "repair_directory_mutation_performed": False,
+        "final_pdf_adoption_performed": False,
+        "generated_script_promotion_performed": False,
+        "staged_script_deleted": False,
+        "selected_strategy_before": before,
+        "selected_strategy_after": selected,
+        "mutated_list_key": list_key,
+        "mutated_index": idx,
+    }
+    out = Path(output_path) if output_path else activation_artifact_path(job_dir, rule_map_path, ACTIVATION_DEACTIVATE_FILENAME)
+    write_json_atomic(out, packet)
+    return packet
+# PATCH11A_ACTIVATION_METADATA_END
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Review, stage, and adopt learned strategies conservatively.")
     parser.add_argument("--job-dir", required=True, help="Path to the job directory")
@@ -967,6 +1336,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rule-map-dry-run", action="store_true", help="Create rule_map_adoption_review.json without mutating the rule map")
     parser.add_argument("--apply-rule-map", action="store_true", help="Apply reviewed non-active staged metadata to rule_repair_map.json")
     parser.add_argument("--reviewed-by", default=None, help="Operator identity required for stage/apply")
+    parser.add_argument("--activation-dry-run", action="store_true", help="Review whether a staged learned strategy is safe to activate without mutating runtime behavior")
+    parser.add_argument("--activate", action="store_true", help="Activate reviewed learned strategy metadata only")
+    parser.add_argument("--deactivate", action="store_true", help="Deactivate reviewed learned strategy metadata only")
     return parser
 
 
@@ -974,11 +1346,46 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     rule_map = Path(args.rule_map) if args.rule_map else resolve_default_rule_map()
-    selected_modes = sum(1 for v in [args.stage_script, args.rule_map_dry_run, args.apply_rule_map] if v)
+    selected_modes = sum(1 for v in [args.stage_script, args.rule_map_dry_run, args.apply_rule_map, args.activation_dry_run, args.activate, args.deactivate] if v)
     if selected_modes > 1:
-        print(json.dumps({"result": "ERROR", "reason": "select only one of --stage-script, --rule-map-dry-run, or --apply-rule-map"}, indent=2), file=sys.stderr)
+        print(json.dumps({"result": "ERROR", "reason": "select only one mutating/review mode"}, indent=2), file=sys.stderr)
         return 2
     try:
+        if args.activation_dry_run:
+            result = create_activation_dry_run(
+                rule_map_path=rule_map,
+                rule_id=clean_str(args.rule_id),
+                candidate_id=clean_str(args.candidate_id),
+                job_dir=Path(args.job_dir) if args.job_dir else None,
+                output_path=Path(args.output) if args.output else None,
+            )
+            print(json.dumps(result, indent=2, sort_keys=True, default=json_default))
+            return 0 if result.get("safe_to_activate") else 3
+
+        if args.activate:
+            result = apply_activation(
+                rule_map_path=rule_map,
+                rule_id=clean_str(args.rule_id),
+                candidate_id=clean_str(args.candidate_id),
+                reviewed_by=clean_str(args.reviewed_by),
+                job_dir=Path(args.job_dir) if args.job_dir else None,
+                output_path=Path(args.output) if args.output else None,
+            )
+            print(json.dumps(result, indent=2, sort_keys=True, default=json_default))
+            return 0 if result.get("result") == "ACTIVATED" else 3
+
+        if args.deactivate:
+            result = deactivate_strategy(
+                rule_map_path=rule_map,
+                rule_id=clean_str(args.rule_id),
+                candidate_id=clean_str(args.candidate_id),
+                reviewed_by=clean_str(args.reviewed_by),
+                job_dir=Path(args.job_dir) if args.job_dir else None,
+                output_path=Path(args.output) if args.output else None,
+            )
+            print(json.dumps(result, indent=2, sort_keys=True, default=json_default))
+            return 0
+
         if args.apply_rule_map and not clean_str(args.candidate_id):
             print(
                 json.dumps(
