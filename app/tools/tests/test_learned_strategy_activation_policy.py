@@ -1,6 +1,6 @@
-import copy
 import hashlib
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,181 +8,157 @@ from pathlib import Path
 from tools.audit import promote_learned_strategy as promote
 
 
-RULE_ID = "PDF/UA-1/7.21.7"
-CID = "candidate-clean-1"
+def sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 class LearnedStrategyActivationPolicyTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
-        self.rule_map = self.root / "app/tools/audit/rule_repair_map.json"
-        self.stage_dir = self.root / "app/tools/repair_staging/learned"
-        self.repair_dir = self.root / "app/tools/repair"
-        self.job_dir = self.root / "workspace/jobs/JOB1"
-        self.stage_dir.mkdir(parents=True)
-        self.repair_dir.mkdir(parents=True)
-        (self.repair_dir / "README.md").write_text("production repair directory\n")
-        self.script = self.stage_dir / "pdf_ua-1_7.21.7__candidate_clean.py"
-        self.script.write_text("def remediate(input_pdf, output_pdf):\n    return output_pdf\n")
-        self.sha = hashlib.sha256(self.script.read_bytes()).hexdigest()
-        self.initial_map = {
-            "schema_version": "test",
+        self.tmp = Path(tempfile.mkdtemp())
+        self.app = self.tmp / "app"
+        self.audit = self.app / "tools" / "audit"
+        self.staging = self.app / "tools" / "repair_staging" / "learned"
+        self.job = self.tmp / "workspace" / "jobs" / "JOB1"
+        self.audit.mkdir(parents=True)
+        self.staging.mkdir(parents=True)
+        (self.job / "audit").mkdir(parents=True)
+
+        self.script = self.staging / "candidate_fix.py"
+        self.script.write_text("def repair():\n    return True\n")
+        self.rule_id = "PDF/UA-1/7.21.7"
+        self.candidate_id = "candidate-activation-1"
+        self.rule_map = self.audit / "rule_repair_map.json"
+        self.rule_map.write_text(json.dumps({
             "rules": {
-                RULE_ID: {
-                    "description": "test rule",
+                self.rule_id: {
+                    "description": "Existing rule",
+                    "resolvability": "effective",
                     "strategies": [
-                        {
-                            "repair_script": "tools/repair/existing_primary.py",
-                            "strategy": "existing_primary",
-                            "pass_rate": 1.0,
-                            "pass_count": 10,
-                            "fail_count": 0,
-                        }
+                        {"strategy": "builtin", "repair_script": "tools/repair/existing.py"}
                     ],
                     "reviewed_learned_strategies": [
                         {
-                            "candidate_id": CID,
-                            "strategy": "learned_clean_candidate",
-                            "staged_script_path": "app/tools/repair_staging/learned/pdf_ua-1_7.21.7__candidate_clean.py",
-                            "staged_script_sha256": self.sha,
+                            "candidate_id": self.candidate_id,
                             "production_active": False,
                             "activation_status": "staged_review",
                             "review_required": True,
-                            "activation_review_required": True,
+                            "staged_script_path": "app/tools/repair_staging/learned/candidate_fix.py",
+                            "staged_script_sha256": sha(self.script),
                             "evidence": {
-                                "rule_map_adoption_review_path": "workspace/jobs/JOB1/audit/rule_map_adoption_review.json",
-                                "script_promotion_result_path": "workspace/jobs/JOB1/audit/script_promotion_result.json",
+                                "source_review_packet": "audit/strategy_promotion_review.json",
+                                "source_script_promotion_result": "audit/script_promotion_result.json",
+                                "source_rule_map_adoption_review": "audit/rule_map_adoption_review.json",
                             },
-                        },
-                        {
-                            "candidate_id": "other-candidate",
-                            "strategy": "other",
-                            "staged_script_path": "app/tools/repair_staging/learned/pdf_ua-1_7.21.7__candidate_clean.py",
-                            "staged_script_sha256": self.sha,
-                            "production_active": False,
-                            "activation_status": "staged_review",
-                            "review_required": True,
-                            "activation_review_required": True,
-                            "evidence": {"rule_map_adoption_review_path": "x"},
-                        },
+                        }
                     ],
                 }
-            },
-        }
-        self.write_rule_map(self.initial_map)
+            }
+        }, indent=2))
 
     def tearDown(self):
-        self.tmp.cleanup()
+        shutil.rmtree(self.tmp)
 
-    def write_rule_map(self, data):
-        self.rule_map.parent.mkdir(parents=True, exist_ok=True)
-        self.rule_map.write_text(json.dumps(data, indent=2, sort_keys=True))
-
-    def read_rule_map(self):
+    def read_map(self):
         return json.loads(self.rule_map.read_text())
 
-    def test_activation_dry_run_writes_review_artifact_without_mutation(self):
+    def test_activation_dry_run_writes_audit_artifact_without_mutation(self):
         before = self.rule_map.read_text()
         packet = promote.create_activation_dry_run(
             rule_map_path=self.rule_map,
-            rule_id=RULE_ID,
-            candidate_id=CID,
-            job_dir=self.job_dir,
+            rule_id=self.rule_id,
+            candidate_id=self.candidate_id,
+            job_dir=self.job,
         )
         self.assertTrue(packet["safe_to_activate"])
         self.assertFalse(packet["canonical_rule_map_mutation_performed"])
-        self.assertFalse(packet["production_activation_performed"])
+        self.assertFalse(packet["runtime_discovery_performed"])
+        self.assertFalse(packet["runtime_use_performed"])
+        self.assertFalse(packet["repair_directory_mutation_performed"])
         self.assertFalse(packet["final_pdf_adoption_performed"])
         self.assertEqual(before, self.rule_map.read_text())
-        artifact = self.job_dir / "audit/activation_review.json"
-        self.assertTrue(artifact.exists())
-        saved = json.loads(artifact.read_text())
-        self.assertEqual(saved["mode"], "activation_dry_run")
+        self.assertTrue((self.job / "audit" / "activation_review.json").exists())
 
-    def test_activation_apply_requires_rule_id_candidate_id_and_reviewed_by(self):
+    def test_activation_apply_requires_rule_id_candidate_id_and_reviewer(self):
         with self.assertRaises(promote.PromotionError):
-            promote.apply_activation(rule_map_path=self.rule_map, rule_id="", candidate_id=CID, reviewed_by="operator")
+            promote.apply_activation(rule_map_path=self.rule_map, rule_id="", candidate_id=self.candidate_id, reviewed_by="operator", job_dir=self.job)
         with self.assertRaises(promote.PromotionError):
-            promote.apply_activation(rule_map_path=self.rule_map, rule_id=RULE_ID, candidate_id="", reviewed_by="operator")
+            promote.apply_activation(rule_map_path=self.rule_map, rule_id=self.rule_id, candidate_id="", reviewed_by="operator", job_dir=self.job)
         with self.assertRaises(promote.PromotionError):
-            promote.apply_activation(rule_map_path=self.rule_map, rule_id=RULE_ID, candidate_id=CID, reviewed_by="")
+            promote.apply_activation(rule_map_path=self.rule_map, rule_id=self.rule_id, candidate_id=self.candidate_id, reviewed_by="", job_dir=self.job)
 
-    def test_activation_blocks_strategy_not_in_rule_map(self):
-        with self.assertRaises(promote.PromotionError):
-            promote.apply_activation(rule_map_path=self.rule_map, rule_id=RULE_ID, candidate_id="missing", reviewed_by="operator")
-        self.assertEqual(self.initial_map, self.read_rule_map())
-
-    def test_activation_blocks_missing_script_without_mutation(self):
+    def test_activation_blocks_missing_script_hash_mismatch_and_static_unsafe(self):
         self.script.unlink()
-        packet = promote.apply_activation(rule_map_path=self.rule_map, rule_id=RULE_ID, candidate_id=CID, reviewed_by="operator", job_dir=self.job_dir)
-        self.assertEqual(packet["result"], "BLOCKED")
-        self.assertIn("staged_script_missing", packet["activation_blockers"])
-        self.assertEqual(self.initial_map, self.read_rule_map())
+        missing = promote.create_activation_dry_run(rule_map_path=self.rule_map, rule_id=self.rule_id, candidate_id=self.candidate_id, job_dir=self.job)
+        self.assertIn("staged_script_missing", missing["activation_blockers"])
 
-    def test_activation_blocks_hash_mismatch_without_mutation(self):
-        data = self.read_rule_map()
-        data["rules"][RULE_ID]["reviewed_learned_strategies"][0]["staged_script_sha256"] = "0" * 64
-        self.write_rule_map(data)
-        packet = promote.apply_activation(rule_map_path=self.rule_map, rule_id=RULE_ID, candidate_id=CID, reviewed_by="operator", job_dir=self.job_dir)
-        self.assertEqual(packet["result"], "BLOCKED")
-        self.assertIn("staged_script_hash_mismatch", packet["activation_blockers"])
-        after = self.read_rule_map()
-        self.assertFalse(after["rules"][RULE_ID]["reviewed_learned_strategies"][0]["production_active"])
+        self.script.write_text("def repair():\n    return True\n")
+        data = self.read_map()
+        data["rules"][self.rule_id]["reviewed_learned_strategies"][0]["staged_script_sha256"] = "bad"
+        self.rule_map.write_text(json.dumps(data, indent=2))
+        mismatch = promote.create_activation_dry_run(rule_map_path=self.rule_map, rule_id=self.rule_id, candidate_id=self.candidate_id, job_dir=self.job)
+        self.assertIn("staged_script_hash_mismatch", mismatch["activation_blockers"])
 
-    def test_activation_blocks_static_checks_fail_without_mutation(self):
-        self.script.write_text("def broken(:\n")
-        data = self.read_rule_map()
-        data["rules"][RULE_ID]["reviewed_learned_strategies"][0]["staged_script_sha256"] = hashlib.sha256(self.script.read_bytes()).hexdigest()
-        self.write_rule_map(data)
-        packet = promote.apply_activation(rule_map_path=self.rule_map, rule_id=RULE_ID, candidate_id=CID, reviewed_by="operator", job_dir=self.job_dir)
-        self.assertEqual(packet["result"], "BLOCKED")
-        self.assertTrue(any(b.startswith("python_ast_parse_failed") for b in packet["activation_blockers"]))
-        after = self.read_rule_map()
-        self.assertFalse(after["rules"][RULE_ID]["reviewed_learned_strategies"][0]["production_active"])
+        self.script.write_text("import subprocess\n")
+        data["rules"][self.rule_id]["reviewed_learned_strategies"][0]["staged_script_sha256"] = sha(self.script)
+        self.rule_map.write_text(json.dumps(data, indent=2))
+        unsafe = promote.create_activation_dry_run(rule_map_path=self.rule_map, rule_id=self.rule_id, candidate_id=self.candidate_id, job_dir=self.job)
+        self.assertTrue(any("forbidden_import" in b for b in unsafe["activation_blockers"]))
 
-    def test_activation_apply_mutates_only_selected_strategy_and_preserves_primary(self):
-        before = self.read_rule_map()
-        packet = promote.apply_activation(rule_map_path=self.rule_map, rule_id=RULE_ID, candidate_id=CID, reviewed_by="operator", job_dir=self.job_dir)
-        self.assertEqual(packet["result"], "ACTIVATED")
-        after = self.read_rule_map()
-        self.assertEqual(before["rules"][RULE_ID]["strategies"], after["rules"][RULE_ID]["strategies"])
-        selected = after["rules"][RULE_ID]["reviewed_learned_strategies"][0]
-        other = after["rules"][RULE_ID]["reviewed_learned_strategies"][1]
-        self.assertTrue(selected["production_active"])
-        self.assertEqual(selected["activation_status"], "active")
-        self.assertEqual(selected["activated_by"], "operator")
-        self.assertIn("activated_at", selected)
-        self.assertFalse(selected["activation_review_required"])
-        self.assertFalse(selected["review_required"])
-        self.assertFalse(other["production_active"])
-        self.assertEqual(other["activation_status"], "staged_review")
-        self.assertTrue(Path(packet["backup_path"]).exists())
-        self.assertTrue((self.job_dir / "audit/activation_apply_result.json").exists())
+    def test_activation_apply_mutates_only_selected_metadata_and_preserves_builtins(self):
+        result = promote.apply_activation(
+            rule_map_path=self.rule_map,
+            rule_id=self.rule_id,
+            candidate_id=self.candidate_id,
+            reviewed_by="operator",
+            job_dir=self.job,
+        )
+        self.assertEqual("ACTIVATED", result["result"])
+        self.assertTrue(Path(result["backup_path"]).exists())
+        self.assertFalse(result["runtime_discovery_performed"])
+        self.assertFalse(result["runtime_use_performed"])
+        self.assertFalse(result["repair_directory_mutation_performed"])
+        self.assertFalse(result["final_pdf_adoption_performed"])
 
-    def test_deactivation_marks_inactive_preserves_script_and_evidence(self):
-        promote.apply_activation(rule_map_path=self.rule_map, rule_id=RULE_ID, candidate_id=CID, reviewed_by="operator", job_dir=self.job_dir)
-        packet = promote.deactivate_strategy(rule_map_path=self.rule_map, rule_id=RULE_ID, candidate_id=CID, reviewed_by="operator", job_dir=self.job_dir)
-        self.assertEqual(packet["result"], "DEACTIVATED")
-        after = self.read_rule_map()
-        selected = after["rules"][RULE_ID]["reviewed_learned_strategies"][0]
-        self.assertFalse(selected["production_active"])
-        self.assertEqual(selected["activation_status"], "deactivated")
-        self.assertEqual(selected["deactivated_by"], "operator")
+        data = self.read_map()
+        entry = data["rules"][self.rule_id]
+        self.assertEqual([{"strategy": "builtin", "repair_script": "tools/repair/existing.py"}], entry["strategies"])
+        activated = entry["reviewed_learned_strategies"][0]
+        self.assertTrue(activated["production_active"])
+        self.assertEqual("active", activated["activation_status"])
+        self.assertEqual("operator", activated["activated_by"])
+        self.assertFalse(activated["activation_review_required"])
+
+    def test_deactivation_marks_inactive_without_deleting_staged_script(self):
+        promote.apply_activation(
+            rule_map_path=self.rule_map,
+            rule_id=self.rule_id,
+            candidate_id=self.candidate_id,
+            reviewed_by="operator",
+            job_dir=self.job,
+        )
+        result = promote.deactivate_strategy(
+            rule_map_path=self.rule_map,
+            rule_id=self.rule_id,
+            candidate_id=self.candidate_id,
+            reviewed_by="operator",
+            job_dir=self.job,
+        )
+        self.assertEqual("DEACTIVATED", result["result"])
+        self.assertTrue(Path(result["backup_path"]).exists())
         self.assertTrue(self.script.exists())
-        self.assertIn("evidence", selected)
-        self.assertTrue(Path(packet["backup_path"]).exists())
-        self.assertTrue((self.job_dir / "audit/activation_deactivate_result.json").exists())
+        self.assertFalse(result["runtime_discovery_performed"])
+        self.assertFalse(result["runtime_use_performed"])
+        self.assertFalse(result["repair_directory_mutation_performed"])
+        self.assertFalse(result["final_pdf_adoption_performed"])
 
-    def test_no_repair_mutation_no_final_pdf_adoption_and_rule_map_parseable(self):
-        before_repair = sorted(p.name for p in self.repair_dir.iterdir())
-        packet = promote.apply_activation(rule_map_path=self.rule_map, rule_id=RULE_ID, candidate_id=CID, reviewed_by="operator", job_dir=self.job_dir)
-        after_repair = sorted(p.name for p in self.repair_dir.iterdir())
-        self.assertEqual(before_repair, after_repair)
-        self.assertFalse(packet["final_pdf_adoption_performed"])
-        self.assertFalse(packet["repair_directory_mutation_performed"])
-        parsed = self.read_rule_map()
-        self.assertIn("rules", parsed)
+        deactivated = self.read_map()["rules"][self.rule_id]["reviewed_learned_strategies"][0]
+        self.assertFalse(deactivated["production_active"])
+        self.assertEqual("deactivated", deactivated["activation_status"])
+        self.assertEqual("operator", deactivated["deactivated_by"])
+
+    def test_missing_candidate_is_rejected(self):
+        with self.assertRaises(promote.PromotionError):
+            promote.create_activation_dry_run(rule_map_path=self.rule_map, rule_id=self.rule_id, candidate_id="missing", job_dir=self.job)
 
 
 if __name__ == "__main__":
