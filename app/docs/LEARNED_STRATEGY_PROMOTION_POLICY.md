@@ -209,3 +209,12 @@ git diff -- app/tools/audit/rule_repair_map.json app/tools/repair
 Patch 8 adds only the promotion CLI, tests, and this policy document. It does not
 write rule-map backups because apply mode is not implemented. Rollback is a
 normal git revert of the Patch 8 commit.
+
+
+## Patch 9 learned script staging
+
+Patch 9 extends this review boundary with a separate script-staging workflow. The review packet remains the source of candidate evidence. A reviewed operator may run `--stage-script-dry-run` to check staging readiness, or `--stage-script --reviewed-by <operator>` to copy a candidate script into `app/tools/repair_staging/learned/` only.
+
+Staging does not mutate `app/tools/audit/rule_repair_map.json`, does not copy into `app/tools/repair/*`, does not activate production repair behavior, and does not adopt generated PDFs. `--apply-rule-map` remains fail-closed because rule-map adoption is a separate reviewed step.
+
+See `app/docs/LEARNED_SCRIPT_STAGING_POLICY.md` for the staging contract, static checks, manifest behavior, idempotency rules, and out-of-scope items.

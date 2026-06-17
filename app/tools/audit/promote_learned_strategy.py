@@ -16,9 +16,12 @@ closed with a clear message.
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import hashlib
 import json
+import re
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -589,16 +592,400 @@ def create_review_packet(
     return packet
 
 
+
+STAGING_SCHEMA_VERSION = "learned-script-staging-result.v1"
+STAGING_MANIFEST_SCHEMA_VERSION = "learned-script-staging-manifest.v1"
+SCRIPT_PROMOTION_RESULT_FILENAME = "script_promotion_result.json"
+STAGING_MANIFEST_FILENAME = "manifest.json"
+PATCH8_RULE_MAP_BLOCKERS = {
+    "apply_mode_not_implemented_in_patch_8",
+    "script_promotion_required_before_production_rule_map_adoption",
+}
+DANGEROUS_IMPORT_ROOTS = {
+    "subprocess",
+    "socket",
+    "requests",
+    "urllib",
+    "http",
+    "ftplib",
+    "paramiko",
+}
+DANGEROUS_CALL_NAMES = {"eval", "exec", "compile", "__import__"}
+DANGEROUS_ATTR_CALLS = {
+    ("os", "system"),
+    ("os", "popen"),
+    ("os", "remove"),
+    ("os", "unlink"),
+    ("os", "rmdir"),
+    ("shutil", "rmtree"),
+}
+
+
+def resolve_default_staging_dir() -> Path:
+    """Return a repo-local, non-production staging directory."""
+    if Path("app/tools").exists():
+        return Path("app/tools/repair_staging/learned")
+    return Path("tools/repair_staging/learned")
+
+
+def safe_filename_component(value: Any) -> str:
+    text = clean_str(value).lower()
+    text = re.sub(r"[^a-z0-9._-]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("._-")
+    return text or "unknown"
+
+
+def staged_script_path_for(candidate: Dict[str, Any], staging_dir: Path) -> Path:
+    rule_part = safe_filename_component(candidate.get("rule_id"))
+    candidate_part = safe_filename_component(candidate.get("candidate_id"))
+    return Path(staging_dir) / f"{rule_part}__{candidate_part}.py"
+
+
+def ast_static_check(script_path: Path) -> Dict[str, Any]:
+    checks: Dict[str, Any] = {
+        "source_script_exists": script_path.exists(),
+        "python_compiles": False,
+        "ast_safety_passed": False,
+        "blocked_constructs": [],
+        "checked_path": str(script_path),
+    }
+    if not script_path.exists():
+        checks["blocked_constructs"].append("source_script_missing")
+        return checks
+    try:
+        source = script_path.read_text()
+        tree = ast.parse(source, filename=str(script_path))
+        compile(source, str(script_path), "exec")
+        checks["python_compiles"] = True
+    except SyntaxError as exc:
+        checks["blocked_constructs"].append(f"syntax_error:{exc.lineno}:{exc.msg}")
+        return checks
+    except Exception as exc:
+        checks["blocked_constructs"].append(f"compile_error:{type(exc).__name__}:{exc}")
+        return checks
+
+    blocked: List[str] = []
+    imported_names: Dict[str, str] = {}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".", 1)[0]
+                asname = alias.asname or root
+                imported_names[asname] = root
+                if root in DANGEROUS_IMPORT_ROOTS:
+                    blocked.append(f"dangerous_import:{alias.name}")
+                if root == "shutil":
+                    imported_names[asname] = "shutil"
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            root = module.split(".", 1)[0]
+            if root in DANGEROUS_IMPORT_ROOTS:
+                blocked.append(f"dangerous_import_from:{module}")
+            for alias in node.names:
+                imported_names[alias.asname or alias.name] = root or alias.name
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id in DANGEROUS_CALL_NAMES:
+                blocked.append(f"dangerous_call:{func.id}")
+            elif isinstance(func, ast.Attribute):
+                base_name = None
+                if isinstance(func.value, ast.Name):
+                    base_name = imported_names.get(func.value.id, func.value.id)
+                if (base_name, func.attr) in DANGEROUS_ATTR_CALLS:
+                    blocked.append(f"dangerous_call:{base_name}.{func.attr}")
+        elif isinstance(node, ast.Attribute):
+            if isinstance(node.value, ast.Name) and node.value.id == "os" and node.attr == "environ":
+                blocked.append("environment_access:os.environ")
+
+    checks["blocked_constructs"] = sorted(set(blocked))
+    checks["ast_safety_passed"] = checks["python_compiles"] and not checks["blocked_constructs"]
+    return checks
+
+
+def active_stage_blockers(candidate: Dict[str, Any]) -> List[str]:
+    blockers = [clean_str(b) for b in as_list(candidate.get("promotion_blockers"))]
+    return sorted({b for b in blockers if b and b not in PATCH8_RULE_MAP_BLOCKERS})
+
+
+def validate_script_staging_candidate(
+    *,
+    job_dir: Path,
+    candidate: Dict[str, Any],
+    reviewed_by: Optional[str],
+    require_reviewer: bool,
+    staging_dir: Path,
+) -> Dict[str, Any]:
+    blockers: List[str] = active_stage_blockers(candidate)
+    candidate_id = clean_str(candidate.get("candidate_id"))
+    if not candidate_id:
+        blockers.append("missing_candidate_id")
+    if require_reviewer and not clean_str(reviewed_by):
+        blockers.append("missing_reviewed_by")
+    if candidate.get("review_required") is not True:
+        blockers.append("candidate_review_required_not_true")
+    if clean_str(candidate.get("script_location_status")) != "quarantine_only":
+        blockers.append("candidate_script_not_quarantine_only")
+    if as_list(candidate.get("introduced_rules")):
+        blockers.append("introduced_rules_present")
+    if as_list(candidate.get("worsened_rules")):
+        blockers.append("worsened_rules_present")
+    if not clean_str(candidate.get("execution_attempt_id")):
+        blockers.append("missing_execution_attempt_id")
+    if not clean_str(candidate.get("execution_log_path")):
+        blockers.append("missing_execution_log_reference")
+    if not clean_str(candidate.get("stdout_path")):
+        blockers.append("missing_stdout_path")
+    if not clean_str(candidate.get("stderr_path")):
+        blockers.append("missing_stderr_path")
+
+    source_script = path_from_record(job_dir, candidate.get("script_path"))
+    if source_script is None:
+        blockers.append("candidate_script_missing")
+        source_script = Path("__missing__")
+    if source_script.exists() and not is_relative_to(source_script, job_dir):
+        blockers.append("candidate_script_outside_job_quarantine")
+    expected_sha = clean_str(candidate.get("script_sha256"))
+    actual_sha = sha256_file(source_script)
+    if not actual_sha:
+        blockers.append("candidate_script_hash_unverifiable")
+    elif expected_sha and expected_sha != actual_sha:
+        blockers.append("candidate_script_hash_mismatch")
+
+    static_checks = ast_static_check(source_script)
+    if not static_checks.get("source_script_exists"):
+        blockers.append("candidate_script_missing")
+    if not static_checks.get("python_compiles"):
+        blockers.append("script_python_compile_failed")
+    if not static_checks.get("ast_safety_passed"):
+        blockers.append("script_ast_safety_failed")
+
+    proposed_path = staged_script_path_for(candidate, staging_dir)
+    blockers = sorted(set(blockers))
+    return {
+        "script_staging_ready": not blockers,
+        "script_staging_blockers": blockers,
+        "staged_script_proposed_path": str(proposed_path),
+        "source_script_path": str(source_script),
+        "source_script_sha256": actual_sha,
+        "expected_source_script_sha256": expected_sha,
+        "static_checks": static_checks,
+    }
+
+
+def load_or_create_staging_manifest(path: Path) -> Dict[str, Any]:
+    if path.exists():
+        data = read_json(path, "staging manifest", required=True)
+        if isinstance(data, dict):
+            data.setdefault("schema_version", STAGING_MANIFEST_SCHEMA_VERSION)
+            data.setdefault("staged_scripts", [])
+            return data
+    return {
+        "schema_version": STAGING_MANIFEST_SCHEMA_VERSION,
+        "created_at": utc_now_iso(),
+        "updated_at": utc_now_iso(),
+        "staged_scripts": [],
+    }
+
+
+def update_staging_manifest(manifest_path: Path, entry: Dict[str, Any]) -> None:
+    manifest = load_or_create_staging_manifest(manifest_path)
+    entries = [e for e in as_list(manifest.get("staged_scripts")) if isinstance(e, dict)]
+    key = (entry.get("script_id"), entry.get("staged_script_path"))
+    replaced = False
+    for idx, existing in enumerate(entries):
+        existing_key = (existing.get("script_id"), existing.get("staged_script_path"))
+        if existing_key == key:
+            entries[idx] = entry
+            replaced = True
+            break
+    if not replaced:
+        entries.append(entry)
+    manifest["staged_scripts"] = entries
+    manifest["updated_at"] = utc_now_iso()
+    write_json_atomic(manifest_path, manifest)
+
+
+def build_script_promotion_result(
+    *,
+    job_dir: Path,
+    mode: str,
+    candidate: Dict[str, Any],
+    reviewed_by: Optional[str],
+    review_packet_path: Path,
+    validation: Dict[str, Any],
+    staged_script_path: Path,
+    staged_manifest_path: Path,
+    copied: bool,
+) -> Dict[str, Any]:
+    return {
+        "schema_version": STAGING_SCHEMA_VERSION,
+        "created_at": utc_now_iso(),
+        "mode": mode,
+        "job_dir": str(job_dir),
+        "candidate_id": candidate.get("candidate_id"),
+        "rule_id": candidate.get("rule_id"),
+        "reviewed_by": reviewed_by,
+        "source_review_packet": str(review_packet_path),
+        "source_script_path": validation.get("source_script_path"),
+        "source_script_sha256": validation.get("source_script_sha256"),
+        "staged_script_path": str(staged_script_path),
+        "staged_script_sha256": sha256_file(staged_script_path) if staged_script_path.exists() else None,
+        "staged_manifest_path": str(staged_manifest_path),
+        "static_checks": validation.get("static_checks"),
+        "promotion_blockers": validation.get("script_staging_blockers", []),
+        "script_staging_ready": validation.get("script_staging_ready", False),
+        "canonical_rule_map_mutation_performed": False,
+        "generated_script_promotion_performed": bool(copied),
+        "production_repair_activation_performed": False,
+        "final_pdf_adoption_performed": False,
+        "rule_map_apply_performed": False,
+    }
+
+
+def stage_script(
+    *,
+    job_dir: Path,
+    rule_map_path: Path,
+    candidate_id: str,
+    reviewed_by: Optional[str],
+    staging_dir: Path,
+    dry_run: bool,
+    output_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    if not clean_str(candidate_id):
+        raise PromotionError("--candidate-id is required for script staging")
+    if not dry_run and not clean_str(reviewed_by):
+        raise PromotionError("--reviewed-by is required for --stage-script")
+
+    job_dir = Path(job_dir)
+    audit_dir = job_dir / "audit"
+    review_packet_path = audit_dir / REVIEW_FILENAME
+    packet = create_review_packet(
+        job_dir=job_dir,
+        rule_map_path=Path(rule_map_path),
+        output_path=review_packet_path,
+        candidate_id=candidate_id,
+        dry_run=True,
+    )
+    matches = [c for c in as_list(packet.get("promotion_candidates")) if isinstance(c, dict) and c.get("candidate_id") == candidate_id]
+    if not matches:
+        raise PromotionError(f"candidate not found or not promotion-proposed: {candidate_id}")
+    candidate = matches[0]
+
+    validation = validate_script_staging_candidate(
+        job_dir=job_dir,
+        candidate=candidate,
+        reviewed_by=reviewed_by,
+        require_reviewer=not dry_run,
+        staging_dir=Path(staging_dir),
+    )
+    candidate.update(
+        {
+            "script_staging_ready": validation["script_staging_ready"],
+            "script_staging_blockers": validation["script_staging_blockers"],
+            "staged_script_proposed_path": validation["staged_script_proposed_path"],
+            "static_checks": validation["static_checks"],
+        }
+    )
+    write_json_atomic(review_packet_path, packet)
+
+    staged_script_path = Path(validation["staged_script_proposed_path"])
+    manifest_path = Path(staging_dir) / STAGING_MANIFEST_FILENAME
+    copied = False
+    if not validation["script_staging_ready"]:
+        result = build_script_promotion_result(
+            job_dir=job_dir,
+            mode="dry_run" if dry_run else "apply_script_staging",
+            candidate=candidate,
+            reviewed_by=reviewed_by,
+            review_packet_path=review_packet_path,
+            validation=validation,
+            staged_script_path=staged_script_path,
+            staged_manifest_path=manifest_path,
+            copied=False,
+        )
+        result_path = Path(output_path) if output_path else audit_dir / SCRIPT_PROMOTION_RESULT_FILENAME
+        write_json_atomic(result_path, result)
+        raise PromotionError("script staging blocked: " + ", ".join(validation["script_staging_blockers"]))
+
+    if not dry_run:
+        source_script_path = Path(validation["source_script_path"])
+        source_sha = clean_str(validation.get("source_script_sha256"))
+        staged_script_path.parent.mkdir(parents=True, exist_ok=True)
+        if staged_script_path.exists():
+            existing_sha = sha256_file(staged_script_path)
+            if existing_sha != source_sha:
+                result = build_script_promotion_result(
+                    job_dir=job_dir,
+                    mode="apply_script_staging",
+                    candidate=candidate,
+                    reviewed_by=reviewed_by,
+                    review_packet_path=review_packet_path,
+                    validation={**validation, "script_staging_blockers": ["staged_script_hash_conflict"], "script_staging_ready": False},
+                    staged_script_path=staged_script_path,
+                    staged_manifest_path=manifest_path,
+                    copied=False,
+                )
+                result_path = Path(output_path) if output_path else audit_dir / SCRIPT_PROMOTION_RESULT_FILENAME
+                write_json_atomic(result_path, result)
+                raise PromotionError("script staging blocked: staged_script_hash_conflict")
+        else:
+            shutil.copy2(source_script_path, staged_script_path)
+            copied = True
+
+        manifest_entry = {
+            "script_id": f"{safe_filename_component(candidate.get('rule_id'))}__{safe_filename_component(candidate.get('candidate_id'))}",
+            "rule_id": candidate.get("rule_id"),
+            "candidate_id": candidate.get("candidate_id"),
+            "source_job_dir": str(job_dir),
+            "source_review_packet": str(review_packet_path),
+            "source_script_sha256": source_sha,
+            "staged_script_path": str(staged_script_path),
+            "staged_script_sha256": sha256_file(staged_script_path),
+            "reviewed_by": reviewed_by,
+            "reviewed_at": utc_now_iso(),
+            "status": "staged_reviewed",
+            "production_active": False,
+            "rule_map_applied": False,
+            "notes": "Reviewed staging artifact only; not imported by production repair runtime.",
+        }
+        update_staging_manifest(manifest_path, manifest_entry)
+
+    result = build_script_promotion_result(
+        job_dir=job_dir,
+        mode="dry_run" if dry_run else "apply_script_staging",
+        candidate=candidate,
+        reviewed_by=reviewed_by,
+        review_packet_path=review_packet_path,
+        validation=validation,
+        staged_script_path=staged_script_path,
+        staged_manifest_path=manifest_path,
+        copied=copied,
+    )
+    # Idempotent re-stage should still be reported as staged, even if the file already existed.
+    if not dry_run and staged_script_path.exists() and sha256_file(staged_script_path) == result.get("source_script_sha256"):
+        result["generated_script_promotion_performed"] = True
+        result["staged_script_sha256"] = sha256_file(staged_script_path)
+    result_path = Path(output_path) if output_path else audit_dir / SCRIPT_PROMOTION_RESULT_FILENAME
+    write_json_atomic(result_path, result)
+    return result
+
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Create a reviewed dry-run promotion packet for learned strategies.")
+    parser = argparse.ArgumentParser(description="Create reviewed promotion packets and non-production staging artifacts for learned strategies.")
     parser.add_argument("--job-dir", required=True, help="Path to the job directory")
     parser.add_argument("--rule-map", default=None, help="Path to canonical rule_repair_map.json")
-    parser.add_argument("--output", default=None, help="Optional output path for strategy_promotion_review.json")
-    parser.add_argument("--candidate-id", default=None, help="Optional candidate_id filter")
-    parser.add_argument("--rule-id", default=None, help="Optional rule_id filter")
+    parser.add_argument("--output", default=None, help="Optional output path for the result artifact")
+    parser.add_argument("--candidate-id", default=None, help="Optional candidate_id filter; required for script staging")
+    parser.add_argument("--rule-id", default=None, help="Optional rule_id filter for dry-run review packet creation")
     parser.add_argument("--dry-run", action="store_true", default=True, help="Create review packet only; this is the default")
-    parser.add_argument("--apply-rule-map", action="store_true", help="Fails closed in Patch 8; apply mode is not implemented")
-    parser.add_argument("--reviewed-by", default=None, help="Required only by future apply-capable patches")
+    parser.add_argument("--apply-rule-map", action="store_true", help="Fails closed; rule-map adoption is a separate reviewed step")
+    parser.add_argument("--reviewed-by", default=None, help="Reviewer/operator identity; required by --stage-script")
+    parser.add_argument("--stage-script-dry-run", action="store_true", help="Run script staging checks and write readiness artifacts without copying")
+    parser.add_argument("--stage-script", action="store_true", help="Copy a reviewed candidate script into non-production staging only")
+    parser.add_argument("--staging-dir", default=None, help="Override non-production staging directory")
     return parser
 
 
@@ -606,13 +993,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     rule_map = Path(args.rule_map) if args.rule_map else resolve_default_rule_map()
+    staging_dir = Path(args.staging_dir) if args.staging_dir else resolve_default_staging_dir()
 
     if args.apply_rule_map:
         print(
             json.dumps(
                 {
                     "result": "ERROR",
-                    "reason": "apply-rule-map mode is not implemented in Patch 8; rerun with --dry-run",
+                    "reason": "Rule-map apply is not implemented in this patch. Stage the script first; rule-map adoption is a separate reviewed step.",
                     "policy": base_policy(apply_mode_requested=True),
                 },
                 indent=2,
@@ -623,6 +1011,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     try:
+        if args.stage_script or args.stage_script_dry_run:
+            result = stage_script(
+                job_dir=Path(args.job_dir),
+                rule_map_path=rule_map,
+                candidate_id=args.candidate_id or "",
+                reviewed_by=args.reviewed_by,
+                staging_dir=staging_dir,
+                dry_run=bool(args.stage_script_dry_run and not args.stage_script),
+                output_path=Path(args.output) if args.output else None,
+            )
+            print(json.dumps(result, indent=2, sort_keys=True, default=json_default))
+            return 0
+
         packet = create_review_packet(
             job_dir=Path(args.job_dir),
             rule_map_path=rule_map,
@@ -637,7 +1038,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     print(json.dumps(packet, indent=2, sort_keys=True, default=json_default))
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
