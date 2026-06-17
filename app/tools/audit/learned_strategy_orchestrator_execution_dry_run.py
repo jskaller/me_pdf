@@ -619,3 +619,114 @@ def run_orchestrator_learned_execution_dry_run(
     write_json_atomic(artifact_path, diagnostics)
     return diagnostics
 
+# PATCH19A_PRODUCTION_TEST_WRAPPER
+# Optional controlled production-test diagnostics after production-readiness evidence.
+# Diagnostic-only: never adopts learned output PDFs, never softens verdicts,
+# never mutates STATUS/package deliverables, never mutates the canonical rule map,
+# and never mutates app/tools/repair/*.
+_patch19a_previous_run_orchestrator_learned_execution_dry_run = run_orchestrator_learned_execution_dry_run
+
+def run_orchestrator_learned_execution_dry_run(
+    *,
+    rule_map_path,
+    audit_dir,
+    job_dir,
+    repo_root,
+    input_pdf,
+    residual_failures=None,
+    limit=1,
+    timeout_seconds=30,
+    replacement_trial_enabled=False,
+    replacement_trial_allow_manual_review=False,
+    production_readiness_enabled=False,
+    production_test_enabled=False,
+):
+    from pathlib import Path as _Path
+
+    diagnostics = _patch19a_previous_run_orchestrator_learned_execution_dry_run(
+        rule_map_path=rule_map_path,
+        audit_dir=audit_dir,
+        job_dir=job_dir,
+        repo_root=repo_root,
+        input_pdf=input_pdf,
+        residual_failures=residual_failures,
+        limit=limit,
+        timeout_seconds=timeout_seconds,
+        replacement_trial_enabled=replacement_trial_enabled,
+        replacement_trial_allow_manual_review=replacement_trial_allow_manual_review,
+        production_readiness_enabled=production_readiness_enabled,
+    )
+    audit_dir = _Path(audit_dir)
+    job_dir = _Path(job_dir)
+    artifact_path = audit_dir / ARTIFACT_NAME
+    diagnostics.setdefault("production_test_performed", False)
+    diagnostics.setdefault("production_test_artifact", None)
+    diagnostics.setdefault("production_test_summary", {})
+    diagnostics.setdefault("production_test_policy", {
+        "production_test_only": True,
+        "normal_final_pdf_remains_authoritative": True,
+        "candidate_is_adoptable": False,
+        "final_pdf_adoption_performed": False,
+        "production_repair_replacement_performed": False,
+        "verdict_softening_performed": False,
+        "package_status_mutation_performed": False,
+    })
+    diagnostics["final_pdf_adoption_performed"] = False
+    diagnostics["verdict_softening_performed"] = False
+    diagnostics["rule_map_mutation_performed"] = False
+    diagnostics["app_tools_repair_mutation_performed"] = False
+    diagnostics["production_repair_replacement_performed"] = False
+    diagnostics["package_status_mutation_performed"] = False
+
+    if not production_test_enabled:
+        write_json_atomic(artifact_path, diagnostics)
+        return diagnostics
+
+    if not (replacement_trial_enabled and production_readiness_enabled):
+        diagnostics.setdefault("blockers", []).append("learned_production_test_requires_replacement_trial_and_readiness")
+        diagnostics["production_test_performed"] = False
+        diagnostics["production_test_skipped_reason"] = "requires_full_learned_diagnostic_stack"
+        write_json_atomic(artifact_path, diagnostics)
+        return diagnostics
+
+    readiness_path = audit_dir / "learned_strategy_production_testing_readiness_report.json"
+    replacement_trial_path = audit_dir / "learned_strategy_replacement_trial_report.json"
+    if not readiness_path.exists() or not replacement_trial_path.exists():
+        diagnostics.setdefault("blockers", []).append("learned_production_test_missing_prerequisite_artifact")
+        diagnostics["production_test_performed"] = False
+        diagnostics["production_test_missing_artifacts"] = [
+            str(p) for p in (readiness_path, replacement_trial_path) if not p.exists()
+        ]
+        write_json_atomic(artifact_path, diagnostics)
+        return diagnostics
+
+    try:
+        from tools.audit.learned_strategy_production_test import evaluate_learned_strategy_production_test
+
+        production_test_payload = evaluate_learned_strategy_production_test(
+            readiness_report_path=readiness_path,
+            replacement_trial_report_path=replacement_trial_path,
+            job_dir=job_dir,
+            normal_final_pdf=_Path(input_pdf),
+        )
+        diagnostics["production_test_performed"] = bool(production_test_payload.get("production_test_performed"))
+        diagnostics["production_test_artifact"] = production_test_payload.get("artifact_path")
+        diagnostics["production_test_summary"] = production_test_payload.get("summary", {})
+        diagnostics["production_test_result"] = production_test_payload.get("result")
+        diagnostics["production_test_policy"] = production_test_payload.get("policy", diagnostics["production_test_policy"])
+        if production_test_payload.get("result") != "PASS":
+            diagnostics.setdefault("blockers", []).append("learned_production_test_blocked")
+    except Exception as exc:
+        diagnostics["production_test_performed"] = False
+        diagnostics["production_test_error"] = f"{type(exc).__name__}: {exc}"
+        diagnostics.setdefault("blockers", []).append("learned_production_test_diagnostic_error")
+
+    diagnostics["final_pdf_adoption_performed"] = False
+    diagnostics["verdict_softening_performed"] = False
+    diagnostics["rule_map_mutation_performed"] = False
+    diagnostics["app_tools_repair_mutation_performed"] = False
+    diagnostics["production_repair_replacement_performed"] = False
+    diagnostics["package_status_mutation_performed"] = False
+    write_json_atomic(artifact_path, diagnostics)
+    return diagnostics
+
