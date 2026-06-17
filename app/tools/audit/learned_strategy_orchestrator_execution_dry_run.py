@@ -325,3 +325,89 @@ def run_orchestrator_learned_execution_dry_run(
 
     write_json_atomic(artifact_path, diagnostics)
     return diagnostics
+
+# PATCH16A_DEEPER_VALIDATION_WRAPPER
+# Patch 16A wrapper: after opt-in learned execution dry-run writes output
+# comparisons, add candidate quality and deeper-validation sidecars. This wrapper
+# is diagnostic-only and does not alter final PDF adoption, verdicts, rule-map
+# state, or app/tools/repair/*.
+_patch16a_previous_run_orchestrator_learned_execution_dry_run = run_orchestrator_learned_execution_dry_run
+
+
+def run_orchestrator_learned_execution_dry_run(
+    *,
+    rule_map_path: Path,
+    audit_dir: Path,
+    job_dir: Path,
+    repo_root: Path,
+    input_pdf: Path,
+    residual_failures: Optional[Iterable[Dict[str, Any]]] = None,
+    limit: int = 1,
+    timeout_seconds: int = 30,
+) -> Dict[str, Any]:
+    diagnostics = _patch16a_previous_run_orchestrator_learned_execution_dry_run(
+        rule_map_path=rule_map_path,
+        audit_dir=audit_dir,
+        job_dir=job_dir,
+        repo_root=repo_root,
+        input_pdf=input_pdf,
+        residual_failures=residual_failures,
+        limit=limit,
+        timeout_seconds=timeout_seconds,
+    )
+    audit_dir = Path(audit_dir)
+    job_dir = Path(job_dir)
+    artifact_path = audit_dir / ARTIFACT_NAME
+    comparison_path = audit_dir / "learned_strategy_output_comparisons.json"
+
+    if not comparison_path.exists():
+        diagnostics.setdefault("candidate_quality_performed", False)
+        diagnostics.setdefault("deeper_validation_performed", False)
+        write_json_atomic(artifact_path, diagnostics)
+        return diagnostics
+
+    try:
+        from tools.audit.learned_strategy_candidate_quality import write_learned_strategy_candidate_quality_report
+
+        quality_payload = write_learned_strategy_candidate_quality_report(
+            comparison_artifact_path=comparison_path,
+            audit_dir=audit_dir,
+            job_dir=job_dir,
+        )
+        diagnostics["candidate_quality_performed"] = True
+        diagnostics["candidate_quality_artifact"] = quality_payload.get("artifact_path")
+        diagnostics["candidate_quality_summary"] = quality_payload.get("summary", {})
+    except Exception as exc:
+        diagnostics["candidate_quality_performed"] = False
+        diagnostics["candidate_quality_error"] = f"{type(exc).__name__}: {exc}"
+        diagnostics.setdefault("blockers", []).append("learned_candidate_quality_diagnostic_error")
+        write_json_atomic(artifact_path, diagnostics)
+        return diagnostics
+
+    try:
+        from tools.audit.learned_strategy_deeper_validation import run_learned_strategy_deeper_validation
+
+        quality_path = audit_dir / "learned_strategy_candidate_quality_report.json"
+        deeper_payload = run_learned_strategy_deeper_validation(
+            quality_report_path=quality_path,
+            comparison_artifact_path=comparison_path,
+            job_dir=job_dir,
+            timeout_seconds=timeout_seconds,
+        )
+        diagnostics["deeper_validation_performed"] = True
+        diagnostics["deeper_validation_artifact"] = deeper_payload.get("artifact_path")
+        diagnostics["deeper_validation_summary"] = deeper_payload.get("summary", {})
+        diagnostics["deeper_validation_candidate_count"] = deeper_payload.get("candidate_count", 0)
+        diagnostics["deeper_validation_policy"] = deeper_payload.get("policy", {})
+    except Exception as exc:
+        diagnostics["deeper_validation_performed"] = False
+        diagnostics["deeper_validation_error"] = f"{type(exc).__name__}: {exc}"
+        diagnostics.setdefault("blockers", []).append("learned_deeper_validation_diagnostic_error")
+
+    diagnostics["final_pdf_adoption_performed"] = False
+    diagnostics["verdict_softening_performed"] = False
+    diagnostics["rule_map_mutation_performed"] = False
+    diagnostics["app_tools_repair_mutation_performed"] = False
+    diagnostics["production_repair_replacement_performed"] = False
+    write_json_atomic(artifact_path, diagnostics)
+    return diagnostics

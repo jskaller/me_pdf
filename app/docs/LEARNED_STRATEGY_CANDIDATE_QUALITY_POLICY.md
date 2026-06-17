@@ -49,3 +49,19 @@ sidecar governance layer:
 Malformed or missing comparison artifacts are handled diagnostically by writing a
 quality report with a blocker and `needs_deeper_validation`. They must not alter
 normal remediation verdicts, status output, package behavior, or the final PDF.
+
+<!-- PATCH16A_DEEPER_VALIDATION_POLICY_UPDATE -->
+
+## Patch 16A — deeper validation gate
+
+Patch 16A adds a diagnostic-only deeper validation layer after learned output comparison and candidate quality. The gate is eligible only for `candidate_valid_changed` and `needs_deeper_validation` decisions. Rejected decisions such as `rejected_no_effect`, `rejected_invalid`, and `rejected_execution_failed` are recorded as `skipped_not_eligible`.
+
+The artifact is written to:
+
+```text
+JOB/audit/learned_strategy_deeper_validation_report.json
+```
+
+This gate may produce `deeper_validation_passed`, but that is not adoption approval. Required policy flags remain false: `candidate_is_adoptable`, `final_pdf_adoption_performed`, `verdict_softening_performed`, `rule_map_mutation_performed`, `app_tools_repair_mutation_performed`, and `production_repair_replacement_performed`.
+
+The next possible phase after this patch is an isolated replacement trial, still opt-in and still without final package adoption.
