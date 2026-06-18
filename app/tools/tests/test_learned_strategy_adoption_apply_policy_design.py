@@ -188,6 +188,33 @@ class ApplyPolicyDesignTest(unittest.TestCase):
         self.assertEqual(artifact["result"], "BLOCKED")
         self.assertTrue(any(item.startswith("forbidden_terminal_state_detected") for item in artifact["blockers"]))
 
+    def test_policy_text_mentions_of_forbidden_states_do_not_block_design(self):
+        data = self.valid_review()
+        data["forbidden_terminal_states"] = [
+            "approved",
+            "adoptable",
+            "production_ready",
+            "ready_for_adoption",
+            "adoption_unblocked",
+            "apply_ready",
+            "approved_for_apply",
+            "frozen_for_apply",
+        ]
+        data["future_discussion_only"] = {
+            "notes": [
+                "future apply must not mark candidate approved",
+                "future discussion must not make candidate adoptable",
+                "future freeze is evidence-only and not frozen_for_apply",
+            ]
+        }
+        self.write_review(data)
+        artifact = self.run_build()
+        blockers = artifact.get("blockers", [])
+        self.assertFalse(
+            any(str(blocker).startswith("forbidden_terminal_state_detected") for blocker in blockers),
+            blockers,
+        )
+
     def test_valid_dry_run_review_creates_apply_policy_design_artifact(self):
         artifact = self.run_main()
         self.assertEqual(artifact["result"], "PASS")

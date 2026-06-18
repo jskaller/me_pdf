@@ -205,14 +205,76 @@ def iter_value_strings(value: Any) -> Iterable[str]:
 
 
 def forbidden_values(data: Any) -> List[str]:
+    """Return forbidden terminal-state assertions only.
+
+    Policy text may mention forbidden words. Safety flags may include keys like
+    candidate_approved=false. Lists may enumerate forbidden states. None of
+    those are terminal-state assertions.
+
+    This helper rejects only:
+    - explicit decision/status/state fields whose value is a forbidden token
+    - forbidden-state boolean keys whose value is exactly true
+    """
     hits: List[str] = []
-    for raw in iter_value_strings(data):
-        normalized = raw.strip().lower()
-        if normalized in FORBIDDEN_VALUE_TOKENS:
-            hits.append(raw)
+
+    assertion_keys = {
+        "review_decision",
+        "decision",
+        "approval_decision",
+        "candidate_status",
+        "candidate_state",
+        "adoption_status",
+        "adoption_state",
+        "apply_status",
+        "apply_state",
+        "production_status",
+        "readiness_status",
+        "state",
+        "status",
+    }
+
+    ignored_container_keys = {
+        "forbidden_terminal_states",
+        "allowed_apply_policy_design_outcomes",
+        "future_apply_requirements",
+        "future_discussion_only",
+        "future_allowed_mutation_list_policy_text_only",
+        "future_forbidden_mutation_list_policy_text_only",
+        "future_backup_manifest_requirements_policy_text_only",
+        "future_post_apply_validation_requirements_policy_text_only",
+        "future_post_rollback_validation_requirements_policy_text_only",
+        "future_rollback_manifest_requirements_policy_text_only",
+        "future_rollback_verification_requirements_policy_text_only",
+    }
+
+    def visit(value: Any, key: str = "") -> None:
+        key_norm = key.strip().lower()
+
+        if key_norm in ignored_container_keys:
+            return
+
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                child_key_norm = str(child_key).strip().lower()
+                if child_key_norm in FORBIDDEN_TERMINAL_STATES and child_value is True:
+                    hits.append(child_key_norm)
+                    continue
+                visit(child_value, str(child_key))
+            return
+
+        if isinstance(value, list):
+            if key_norm in assertion_keys:
+                for child in value:
+                    visit(child, key)
+            return
+
+        if isinstance(value, str) and key_norm in assertion_keys:
+            normalized = value.strip().lower()
+            if normalized in FORBIDDEN_VALUE_TOKENS:
+                hits.append(value)
+
+    visit(data)
     return sorted(set(hits))
-
-
 def as_list(value: Any) -> List[Any]:
     if value is None:
         return []
