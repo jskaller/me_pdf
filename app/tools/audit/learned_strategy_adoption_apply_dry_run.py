@@ -20,6 +20,7 @@ SCHEMA_VERSION = "learned-strategy-adoption-apply-dry-run.v1"
 APPLY_POLICY_DESIGN_SCHEMA_VERSION = "learned-strategy-adoption-apply-policy-design.v1"
 APPLY_POLICY_DESIGN_ARTIFACT_NAME = "learned_strategy_adoption_apply_policy_design.json"
 APPLY_DRY_RUN_ARTIFACT_NAME = "learned_strategy_adoption_apply_dry_run.json"
+EVIDENCE_HASH_ARTIFACT_NAME = "learned_strategy_evidence_hashes.json"
 MODE = "adoption_apply_dry_run_only"
 
 ALLOWED_OUTCOMES = {
@@ -220,6 +221,56 @@ def extract_design_hashes(design: Dict[str, Any], design_path: Path) -> Dict[str
     return hashes
 
 
+
+
+def default_evidence_hashes_path(job_dir: Path) -> Path:
+    return job_dir / "audit" / EVIDENCE_HASH_ARTIFACT_NAME
+
+
+def load_normalized_evidence_hashes(job_dir: Path) -> Dict[str, Optional[str]]:
+    path = default_evidence_hashes_path(job_dir)
+    if not path.exists():
+        return {}
+    try:
+        data = load_json(path)
+    except Exception:
+        return {}
+    if data.get("mode") != "evidence_hashes_only":
+        return {}
+    if data.get("safety_flags", {}).get("evidence_hashes_only") is not True:
+        return {}
+    source = data.get("source_evidence_hashes")
+    if isinstance(source, dict):
+        return {str(k): v for k, v in source.items() if isinstance(v, str) and v}
+    entries = data.get("evidence_hashes")
+    if isinstance(entries, dict):
+        out: Dict[str, Optional[str]] = {}
+        for key, entry in entries.items():
+            if isinstance(entry, dict) and isinstance(entry.get("sha256"), str) and entry.get("sha256"):
+                out[str(key)] = entry.get("sha256")
+        return out
+    return {}
+
+
+def merge_normalized_evidence_hashes(job_dir: Path, hashes: Dict[str, Optional[str]]) -> Dict[str, Optional[str]]:
+    normalized = load_normalized_evidence_hashes(job_dir)
+    if not normalized:
+        return hashes
+    mapping = {
+        "normal_final_pdf_sha256": "normal_final_pdf_sha256",
+        "learned_trial_or_test_pdf_sha256": "learned_trial_or_test_pdf_sha256",
+        "production_readiness_report_sha256": "production_readiness_report_sha256",
+        "production_test_report_sha256": "production_test_report_sha256",
+        "production_test_review_report_sha256": "production_test_review_report_sha256",
+        "dry_run_plan_artifact_sha256": "adoption_dry_run_plan_sha256",
+        "dry_run_review_artifact_sha256": "adoption_dry_run_review_sha256",
+    }
+    merged = dict(hashes)
+    for target_key, normalized_key in mapping.items():
+        if not merged.get(target_key) and normalized.get(normalized_key):
+            merged[target_key] = normalized.get(normalized_key)
+    return merged
+
 def validate_design_source(design: Dict[str, Any], design_path: Path, candidate_id: str, rule_id: str) -> List[str]:
     blockers: List[str] = []
     if design.get("schema_version") != APPLY_POLICY_DESIGN_SCHEMA_VERSION:
@@ -364,6 +415,7 @@ def build_artifact(
         blockers.extend(validate_design_source(design, design_path, candidate_id, rule_id))
 
     hashes = extract_design_hashes(design, design_path) if design else {key: None for key in REQUIRED_DESIGN_HASH_KEYS}
+    hashes = merge_normalized_evidence_hashes(job_dir, hashes)
     if design:
         hashes.setdefault("apply_policy_design_artifact_sha256", sha256_file(design_path))
     for key in sorted(REQUIRED_DESIGN_HASH_KEYS):
