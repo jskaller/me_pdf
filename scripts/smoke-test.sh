@@ -3,6 +3,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+echo "Checking Hermes WebUI PDF: intake contract..."
+bash scripts/verify-webui-pdf-contract.sh
+
 echo "Checking compose config..."
 docker compose config >/dev/null
 
