@@ -30,20 +30,43 @@ parser.add_argument('--out', default=None,
                     help='Write JSON result to this file in addition to stdout')
 args = parser.parse_args()
 
-doc = fitz.open(args.input_pdf)
-xmp = doc.get_xml_metadata() or ''
-
-PDFUAID_NS   = 'xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/"'
+PDFUAID_NS_URI = 'http://www.aiim.org/pdfua/ns/id/'
+PDFUAID_NS   = f'xmlns:pdfuaid="{PDFUAID_NS_URI}"'
 PDFUAID_PART = '<pdfuaid:part>1</pdfuaid:part>'
 PDFUAID_AMD  = '<pdfuaid:amd>2005</pdfuaid:amd>'
 
-changes = []
+BASE_XMP_PACKET = '''<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:Description rdf:about="" xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/">
+</rdf:Description>
+</rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>'''
 
-# ── Inject namespace if missing ───────────────────────────────────────────────
-# Ensure the pdfuaid namespace is declared even if tags already exist
-if 'xmlns:pdfuaid=' not in xmp:
-    xmp = xmp.replace('<rdf:Description', f'<rdf:Description {PDFUAID_NS}', 1)
-    changes.append('injected pdfuaid namespace')
+
+def ensure_xmp_packet(xmp_str):
+    """Return a usable XMP packet with the PDF/UA namespace declared."""
+    if not xmp_str or '<rdf:RDF' not in xmp_str or '<rdf:Description' not in xmp_str:
+        return BASE_XMP_PACKET
+
+    if 'xmlns:pdfuaid=' in xmp_str:
+        return xmp_str
+
+    match = re.search(r'<rdf:Description\b[^>]*>', xmp_str, flags=re.S)
+    if not match:
+        return BASE_XMP_PACKET
+    desc = match.group(0)
+    desc_new = desc[:-1] + f' {PDFUAID_NS}>'
+    return xmp_str[:match.start()] + desc_new + xmp_str[match.end():]
+
+
+doc = fitz.open(args.input_pdf)
+xmp = ensure_xmp_packet(doc.get_xml_metadata() or '')
+
+changes = []
+if xmp != (doc.get_xml_metadata() or ''):
+    changes.append('initialized XMP packet with pdfuaid namespace')
 
 # ── Set pdfuaid:part = 1 ──────────────────────────────────────────────────────
 if '<pdfuaid:part>' not in xmp:
