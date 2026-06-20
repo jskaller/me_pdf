@@ -39,4 +39,11 @@ with socket.create_connection((host, port), timeout=5):
 print("gateway tcp ok")
 PY
 
+if [[ "${RUN_DOCKER_RUNTIME_CHECK:-0}" == "1" ]]; then
+  echo "Running optional Hermes WebUI PDF: Docker runtime verifier..."
+  bash scripts/verify-webui-pdf-runtime.sh
+else
+  echo "Skipping optional Docker runtime verifier. Run with RUN_DOCKER_RUNTIME_CHECK=1 to include it."
+fi
+
 echo "Smoke test complete."
