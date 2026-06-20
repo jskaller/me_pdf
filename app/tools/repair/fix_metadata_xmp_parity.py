@@ -26,7 +26,7 @@ Usage:
 
 Exit codes: 0=success, 1=missing required args, 2=error
 """
-import sys, json, re, argparse
+import sys, json, re, argparse, html
 from pathlib import Path
 
 try:
@@ -49,6 +49,27 @@ ARTIFACT_PATTERNS = [
     r'^untitled',
     r'^document\d*$',
 ]
+
+REQUIRED_XMP_NAMESPACES = {
+    'dc': 'http://purl.org/dc/elements/1.1/',
+    'xmp': 'http://ns.adobe.com/xap/1.0/',
+    'pdf': 'http://ns.adobe.com/pdf/1.3/',
+    'pdfuaid': 'http://www.aiim.org/pdfua/ns/id/',
+}
+
+BASE_XMP_PACKET = '''<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:Description rdf:about=""
+  xmlns:dc="http://purl.org/dc/elements/1.1/"
+  xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+  xmlns:pdf="http://ns.adobe.com/pdf/1.3/"
+  xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/">
+</rdf:Description>
+</rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>'''
+
 
 def is_meaningful(value, min_words=3):
     if not value or len(value.strip()) < 4:
@@ -123,6 +144,37 @@ language    = args.language
 
 # ── XMP helpers ───────────────────────────────────────────────────────────────
 
+def xml_text(value):
+    return html.escape(str(value), quote=False)
+
+
+def ensure_xmp_packet(xmp_str):
+    """Return a usable XMP packet with namespaces required by this repair.
+
+    PyMuPDF returns an empty string for PDFs without catalog metadata. The old
+    replacement-only logic inserted nothing into that empty string, leaving Info
+    metadata updated but XMP fields absent. Start from a minimal XMP packet in
+    that case, and add any missing namespace declarations to existing packets.
+    """
+    if not xmp_str or '<rdf:RDF' not in xmp_str or '<rdf:Description' not in xmp_str:
+        xmp_str = BASE_XMP_PACKET
+
+    match = re.search(r'<rdf:Description\b[^>]*>', xmp_str, flags=re.S)
+    if not match:
+        return BASE_XMP_PACKET
+
+    desc = match.group(0)
+    additions = []
+    for prefix, uri in REQUIRED_XMP_NAMESPACES.items():
+        if f'xmlns:{prefix}=' not in desc and f'xmlns:{prefix}=' not in xmp_str:
+            additions.append(f' xmlns:{prefix}="{uri}"')
+
+    if additions:
+        desc_new = desc[:-1] + ''.join(additions) + '>'
+        xmp_str = xmp_str[:match.start()] + desc_new + xmp_str[match.end():]
+    return xmp_str
+
+
 def set_xmp_val(tag, value, xmp_str):
     """Remove ALL existing instances of tag (including self-closing), then insert new value.
     This prevents duplicates regardless of how many times the script is run
@@ -131,6 +183,7 @@ def set_xmp_val(tag, value, xmp_str):
       <pdf:Keywords>value</pdf:Keywords>
       <pdf:Keywords/>   (self-closing empty tag)
     """
+    xmp_str = ensure_xmp_packet(xmp_str)
     # Remove self-closing instances first e.g. <pdf:Keywords/>
     cleaned = re.sub(
         rf'\s*<{re.escape(tag)}\s*/>\s*',
@@ -147,6 +200,7 @@ def set_xmp_val(tag, value, xmp_str):
         return cleaned.replace('</rdf:Description>', f'  {new_tag}\n</rdf:Description>', 1)
     return cleaned.replace('</rdf:RDF>', f'  {new_tag}\n</rdf:RDF>', 1)
 
+
 def remove_xmp_tag(tag, xmp_str):
     cleaned = re.sub(
         rf'\s*<{re.escape(tag)}[^>]*>.*?</{re.escape(tag)}>\s*',
@@ -156,43 +210,45 @@ def remove_xmp_tag(tag, xmp_str):
 
 # ── Apply Info + XMP fields ───────────────────────────────────────────────────
 
+xmp = ensure_xmp_packet(xmp)
+
 if meta.get('author') != FIXED_AUTHOR:
     meta['author'] = FIXED_AUTHOR
     changes.append(f'set Info.Author = {FIXED_AUTHOR!r}')
 xmp = set_xmp_val('dc:creator',
-                  f'<rdf:Seq><rdf:li>{FIXED_AUTHOR}</rdf:li></rdf:Seq>', xmp)
+                  f'<rdf:Seq><rdf:li>{xml_text(FIXED_AUTHOR)}</rdf:li></rdf:Seq>', xmp)
 
 if meta.get('creator') != FIXED_CREATOR:
     meta['creator'] = FIXED_CREATOR
     changes.append(f'set Info.Creator = {FIXED_CREATOR!r}')
-xmp = set_xmp_val('xmp:CreatorTool', FIXED_CREATOR, xmp)
+xmp = set_xmp_val('xmp:CreatorTool', xml_text(FIXED_CREATOR), xmp)
 
 if meta.get('producer') != FIXED_PRODUCER:
     meta['producer'] = FIXED_PRODUCER
     changes.append(f'set Info.Producer = {FIXED_PRODUCER!r}')
-xmp = set_xmp_val('pdf:Producer', FIXED_PRODUCER, xmp)
+xmp = set_xmp_val('pdf:Producer', xml_text(FIXED_PRODUCER), xmp)
 
 if meta.get('title') != title:
     meta['title'] = title
     changes.append(f'set Info.Title = {title!r}')
 xmp = set_xmp_val('dc:title',
-                  f'<rdf:Alt><rdf:li xml:lang="x-default">{title}</rdf:li></rdf:Alt>', xmp)
+                  f'<rdf:Alt><rdf:li xml:lang="x-default">{xml_text(title)}</rdf:li></rdf:Alt>', xmp)
 
 if subject:
     if meta.get('subject') != subject:
         meta['subject'] = subject
         changes.append(f'set Info.Subject = {subject!r}')
     xmp = set_xmp_val('dc:description',
-                      f'<rdf:Alt><rdf:li xml:lang="x-default">{subject}</rdf:li></rdf:Alt>', xmp)
+                      f'<rdf:Alt><rdf:li xml:lang="x-default">{xml_text(subject)}</rdf:li></rdf:Alt>', xmp)
 
 if keywords:
     if meta.get('keywords') != keywords:
         meta['keywords'] = keywords
         changes.append(f'set Info.Keywords = {keywords!r}')
-    xmp = set_xmp_val('pdf:Keywords', keywords, xmp)
+    xmp = set_xmp_val('pdf:Keywords', xml_text(keywords), xmp)
 
 xmp = set_xmp_val('dc:language',
-                  f'<rdf:Bag><rdf:li>{language}</rdf:li></rdf:Bag>', xmp)
+                  f'<rdf:Bag><rdf:li>{xml_text(language)}</rdf:li></rdf:Bag>', xmp)
 
 xmp = set_xmp_val('pdfuaid:part', '1', xmp)
 xmp = set_xmp_val('pdfuaid:amd', '2005', xmp)
