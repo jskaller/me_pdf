@@ -15,7 +15,7 @@
     "hermes_triggers": "The orchestrator emits an HERMES_REQUIRED signal when: (a) manual:true and strategies is empty, (b) all strategies exhausted with no PASS, (c) rule_id not found in map at all (unknown_rule). The signal includes rule_id, description, all strategy attempt history with failure reasons, and document tags. The agent reads the signal and either writes a new script or escalates to the operator if automation is not possible. For unknown rules, the agent researches the rule before writing.",
     "repair_order_note": "repair_order within each strategy matches the mandatory sequence. fix_table_headers.py (order 10) MUST be last \u2014 no saves may occur after it. fix_table_tagging.py (order 9) MUST run before fix_table_headers.py.",
     "confirmed_jobs": 8,
-    "last_updated": "2026-06-10"
+    "last_updated": "2026-06-20"
   },
   "rules": {
     "PDF/UA-1/5": {
@@ -844,15 +844,25 @@
     "PDF/UA-1/7.21.3.2": {
       "clause": "7.21.3.2",
       "description": "Embedded Type 2 CIDFont missing CIDToGIDMap entry in CIDFont dictionary",
-      "repair_script": null,
-      "repair_order": null,
-      "run_last": false,
-      "args_pattern": null,
-      "confidence": "HERMES_REQUIRED",
-      "confirmed_jobs": 0,
-      "notes": "First seen on MM-TEST3 (20 failures). fix_cidset.py removes CIDSet but does not add CIDToGIDMap. Requires new script to add /CIDToGIDMap /Identity to affected CIDFont dictionaries.",
-      "resolvability": "repairable_unbuilt",
-      "emits_review_artifact": false
+      "manual": false,
+      "strategies": [
+        {
+          "strategy": "fix_cidtogidmap_identity",
+          "repair_script": "tools/repair/fix_cidtogidmap_identity.py",
+          "repair_order": 9,
+          "run_last": false,
+          "args_pattern": "<input.pdf> <output.pdf> [--out results.json]",
+          "pass_count": 0,
+          "fail_count": 0,
+          "pass_rate": 0.0,
+          "doc_type_stats": [],
+          "known_failure_modes": [],
+          "confidence": "EXPECTED"
+        }
+      ],
+      "notes": "Patch G adds a narrow pikepdf repair for embedded Adobe-Identity-0 CIDFontType2 descendants missing /CIDToGIDMap. fix_cidset.py is not sufficient because it only removes /CIDSet from FontDescriptor entries. Runtime boundary: pikepdf is available under /usr/bin/python3 via REMEDIATION_PYTHON, but not under /opt/hermes/.venv/bin/python3.",
+      "resolvability": "repairable_review",
+      "emits_review_artifact": true
     },
     "PDF/UA-1/7.21.4.2": {
       "clause": "7.21.4.2",
