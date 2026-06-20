@@ -18,6 +18,20 @@ parser.add_argument('pdf')
 parser.add_argument('--out', default=None, help='Write JSON output to this file in addition to stdout')
 args = parser.parse_args()
 
+
+def is_embedded_font_extension(ext):
+    """Return True only when PyMuPDF reports a real embedded font program.
+
+    PyMuPDF page.get_fonts(full=True) reports Base-14 fonts such as Helvetica
+    with extension "n/a". That value means there is no extractable embedded
+    font program, not that the font is embedded. veraPDF clause 7.21.4.1 checks
+    the PDF font dictionary for containsFontFile == true, so the inventory must
+    not treat "n/a" as embedded.
+    """
+    normalized = str(ext or '').strip().lower()
+    return bool(normalized) and normalized not in {'n/a', 'na', 'none', 'null'}
+
+
 doc = fitz.open(args.pdf)
 fonts = []
 issues = []
@@ -25,6 +39,7 @@ issues = []
 for page_num, page in enumerate(doc):
     for font in page.get_fonts(full=True):
         xref, ext, font_type, basefont, name, enc, referencer = font
+        embedded = is_embedded_font_extension(ext)
         entry = {
             'page':       page_num + 1,
             'xref':       xref,
@@ -32,7 +47,7 @@ for page_num, page in enumerate(doc):
             'basefont':   basefont,
             'type':       font_type,
             'encoding':   enc,
-            'embedded':   ext != '',
+            'embedded':   embedded,
             'extension':  ext,
         }
         # Check ToUnicode via xref
