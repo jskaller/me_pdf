@@ -58,7 +58,7 @@ class CIDToGIDMapIdentityRepairPolicyTests(unittest.TestCase):
         cidfont_subtype: str = "/CIDFontType2",
         embedded_key: str | None = "/FontFile2",
         cidsystem_ordering: str = "Identity",
-        existing_cidtogidmap: object | None = None,
+        existing_cidtogidmap: str | None = None,
     ) -> None:
         pdf = pikepdf.Pdf.new()
         page = pdf.add_blank_page(page_size=(200, 300))
@@ -95,8 +95,10 @@ class CIDToGIDMapIdentityRepairPolicyTests(unittest.TestCase):
                 "/FontDescriptor": descriptor,
             }
         )
-        if existing_cidtogidmap is not None:
-            descendant["/CIDToGIDMap"] = existing_cidtogidmap
+        if existing_cidtogidmap == "stream":
+            descendant["/CIDToGIDMap"] = pdf.make_stream(b"existing map")
+        elif existing_cidtogidmap == "identity":
+            descendant["/CIDToGIDMap"] = pikepdf.Name("/Identity")
         descendant = pdf.make_indirect(descendant)
 
         type0 = pdf.make_indirect(
@@ -165,10 +167,7 @@ class CIDToGIDMapIdentityRepairPolicyTests(unittest.TestCase):
             src = root / "input.pdf"
             dst = root / "output.pdf"
             report_path = root / "report.json"
-            existing_stream_pdf = pikepdf.Pdf.new()
-            existing_stream = existing_stream_pdf.make_stream(b"existing map")
-            self.make_pdf(src, existing_cidtogidmap=existing_stream)
-            existing_stream_pdf.close()
+            self.make_pdf(src, existing_cidtogidmap="stream")
 
             report = self.run_script(src, dst, report_path)
 
