@@ -40,9 +40,12 @@ class ProductionReadinessMatrixPolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="matrix_empty_") as td:
             workspace = Path(td) / "workspace"
             payload = build_matrix(Args(workspace=str(workspace), inspect_existing=True))
+            record = payload["records"][0]
             self.assertEqual(payload["summary"]["jobs_total"], 1)
-            self.assertEqual(payload["records"][0]["final_matrix_classification"], "INCOMPLETE_ARTIFACTS")
-            self.assertNotEqual(payload["records"][0]["final_matrix_classification"], "PASS")
+            self.assertEqual(record["final_matrix_classification"], "INCOMPLETE_ARTIFACTS")
+            self.assertEqual(record["external_validators"]["axesCheck"], "NOT_RUN")
+            self.assertEqual(record["external_validators"]["PAC_2024"], "NOT_RUN")
+            self.assertNotEqual(record["final_matrix_classification"], "PASS")
 
     def test_status_orchestrator_mismatch_is_flagged(self) -> None:
         with tempfile.TemporaryDirectory(prefix="matrix_mismatch_") as td:
@@ -53,38 +56,98 @@ class ProductionReadinessMatrixPolicyTests(unittest.TestCase):
             self.assertEqual(records[0]["final_matrix_classification"], "MISMATCH")
             self.assertFalse(records[0]["status_matches_orchestrator_outcome"])
 
-    def test_fail_package_with_pdf_is_false_success_risk(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="matrix_false_success_") as td:
-            workspace = Path(td) / "workspace"
-            self.make_job(workspace, "TICKET-2", "bad", outcome="FAIL")
-            out = workspace / "output" / "TICKET-2_remediated"
-            (out / "bad_remediated.pdf").write_bytes(b"%PDF-risk")
-
-            record = inspect_existing(workspace)[0]
-            self.assertEqual(record["final_matrix_classification"], "FAIL")
-            self.assertTrue(record["fail_escalation_pdf_copied_to_successful_deliverables"])
-            self.assertIn("FAIL/ESCALATION output package contains PDF deliverable(s)", record["risk_flags"])
-
-    def test_pass_requires_remediated_pdf_package(self) -> None:
+    def test_pass_requires_matched_top_level_pdf_for_same_basename(self) -> None:
         with tempfile.TemporaryDirectory(prefix="matrix_pass_pkg_") as td:
             workspace = Path(td) / "workspace"
             self.make_job(workspace, "WEBUI-E2E-001", "e2e-smoke", outcome="PASS")
+            out = workspace / "output" / "WEBUI-E2E-001_remediated"
+            (out / "sibling_remediated.pdf").write_bytes(b"%PDF-sibling")
+
             record = inspect_existing(workspace)[0]
             self.assertEqual(record["final_matrix_classification"], "INCOMPLETE_ARTIFACTS")
-            self.assertIn("PASS lacks top-level remediated PDF deliverable", record["risk_flags"])
+            self.assertIn("PASS lacks matched top-level remediated PDF deliverable", record["risk_flags"])
+            self.assertFalse(record["pass_package_exists"])
+            self.assertEqual(record["matched_output_artifacts"]["unmatched_pdfs_in_output_dir"], [str(out / "sibling_remediated.pdf")])
 
-            out = workspace / "output" / "WEBUI-E2E-001_remediated"
             (out / "e2e-smoke_remediated.pdf").write_bytes(b"%PDF-ok")
             record = inspect_existing(workspace)[0]
             self.assertEqual(record["final_matrix_classification"], "PASS")
+            self.assertTrue(record["pass_package_exists"])
+            self.assertEqual(record["matched_output_artifacts"]["matched_top_level_pdfs"], [str(out / "e2e-smoke_remediated.pdf")])
             self.assertEqual(record["source_kind"], "controlled_fixture")
             self.assertEqual(record["external_validators"]["axesCheck"], "NOT_RUN")
             self.assertEqual(record["external_validators"]["PAC_2024"], "NOT_RUN")
 
+    def test_review_required_uses_matched_review_artifacts_for_same_basename(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix_review_pkg_") as td:
+            workspace = Path(td) / "workspace"
+            self.make_job(workspace, "TICKET-2", "needs-review", outcome="REVIEW_REQUIRED")
+            out = workspace / "output" / "TICKET-2_remediated"
+            (out / "review").mkdir(parents=True, exist_ok=True)
+            (out / "review" / "other_remediated.pdf").write_bytes(b"%PDF-other")
+
+            record = inspect_existing(workspace)[0]
+            self.assertEqual(record["final_matrix_classification"], "INCOMPLETE_ARTIFACTS")
+            self.assertIn("REVIEW_REQUIRED lacks matched review/package evidence", record["risk_flags"])
+            self.assertFalse(record["review_required_has_review_package"])
+
+            (out / "review" / "needs-review_remediated.pdf").write_bytes(b"%PDF-review")
+            (out / "review" / "needs-review_AUDIT_REPORT.md").write_text("review report")
+            record = inspect_existing(workspace)[0]
+            self.assertEqual(record["final_matrix_classification"], "REVIEW_REQUIRED")
+            self.assertTrue(record["review_required_has_review_package"])
+            self.assertEqual(record["matched_output_artifacts"]["matched_review_pdfs"], [str(out / "review" / "needs-review_remediated.pdf")])
+            self.assertEqual(record["matched_output_artifacts"]["matched_review_reports"], [str(out / "review" / "needs-review_AUDIT_REPORT.md")])
+
+    def test_escalation_with_only_sibling_pdf_is_stale_shared_not_confirmed_false_success(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix_stale_shared_") as td:
+            workspace = Path(td) / "workspace"
+            self.make_job(workspace, "TICKET-3", "failed-run", outcome="ESCALATION")
+            out = workspace / "output" / "TICKET-3_remediated"
+            (out / "sibling-run_remediated.pdf").write_bytes(b"%PDF-sibling")
+
+            record = inspect_existing(workspace)[0]
+            self.assertEqual(record["final_matrix_classification"], "ESCALATION")
+            self.assertFalse(record["confirmed_false_success_pdf"])
+            self.assertFalse(record["fail_escalation_pdf_copied_to_successful_deliverables"])
+            self.assertTrue(record["stale_or_shared_output_risk"])
+            self.assertIn("FAIL/ESCALATION output directory contains only unmatched sibling/stale PDF deliverable(s)", record["risk_flags"])
+            self.assertEqual(record["matched_output_artifacts"]["unmatched_pdfs_in_output_dir"], [str(out / "sibling-run_remediated.pdf")])
+
+    def test_escalation_with_matched_success_like_pdf_is_confirmed_false_success(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix_confirmed_false_success_") as td:
+            workspace = Path(td) / "workspace"
+            self.make_job(workspace, "TICKET-4", "bad", outcome="ESCALATION")
+            out = workspace / "output" / "TICKET-4_remediated"
+            (out / "bad_remediated.pdf").write_bytes(b"%PDF-risk")
+
+            record = inspect_existing(workspace)[0]
+            self.assertEqual(record["final_matrix_classification"], "ESCALATION")
+            self.assertTrue(record["confirmed_false_success_pdf"])
+            self.assertTrue(record["fail_escalation_pdf_copied_to_successful_deliverables"])
+            self.assertFalse(record["stale_or_shared_output_risk"])
+            self.assertIn("FAIL/ESCALATION has matched same-basename PDF in success-like deliverable location", record["risk_flags"])
+            payload = build_matrix(Args(workspace=str(workspace), inspect_existing=True))
+            self.assertEqual(payload["summary"]["confirmed_false_success_pdf_risks"], [str(workspace / "jobs" / "TICKET-4_bad")])
+
+    def test_fail_pdf_under_failed_directory_is_risk_but_not_success_deliverable(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix_failed_pdf_") as td:
+            workspace = Path(td) / "workspace"
+            self.make_job(workspace, "TICKET-5", "bad", outcome="FAIL")
+            out = workspace / "output" / "TICKET-5_remediated"
+            (out / "failed").mkdir(parents=True, exist_ok=True)
+            (out / "failed" / "bad_remediated.pdf").write_bytes(b"%PDF-failed")
+
+            record = inspect_existing(workspace)[0]
+            self.assertEqual(record["final_matrix_classification"], "FAIL")
+            self.assertFalse(record["confirmed_false_success_pdf"])
+            self.assertFalse(record["fail_escalation_pdf_copied_to_successful_deliverables"])
+            self.assertIn("FAIL/ESCALATION failed package contains matched PDF; not counted as success deliverable", record["risk_flags"])
+
     def test_residuals_repair_plan_execution_and_hermes_signals_are_reported(self) -> None:
         with tempfile.TemporaryDirectory(prefix="matrix_artifacts_") as td:
             workspace = Path(td) / "workspace"
-            job = self.make_job(workspace, "TICKET-3", "doc", outcome="ESCALATION")
+            job = self.make_job(workspace, "TICKET-6", "doc", outcome="ESCALATION")
             self.write_json(job / "audit" / "repair_plan.json", {
                 "result": "PLAN_READY",
                 "repair_steps": [{"strategy": "fix_example", "rules_addressed": ["PDF/UA-1/1"]}],
