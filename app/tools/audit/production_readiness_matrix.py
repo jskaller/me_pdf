@@ -156,38 +156,132 @@ def active_signals(job_dir: Path) -> list[dict[str, Any]]:
     return active
 
 
-def package_info(output_dir: Path) -> dict[str, Any]:
+def _paths(paths: Iterable[Path]) -> list[str]:
+    return [str(p) for p in sorted(paths, key=lambda p: str(p))]
+
+
+def _has_name(files: Iterable[Path], name: str) -> list[Path]:
+    return [p for p in files if p.name == name]
+
+
+def output_artifact_matches(output_dir: Path, basename: str) -> dict[str, Any]:
+    """Return basename-scoped deliverable matches for a ticket output directory.
+
+    Ticket output directories are shared across repeated runs for the same ticket.
+    This matcher therefore distinguishes same-basename artifacts from sibling or
+    stale artifacts before PASS/REVIEW/false-success decisions are made.
+    """
+    expected_pdf = f"{basename}_remediated.pdf"
+    expected_report = f"{basename}_AUDIT_REPORT.md"
+    expected_checksum = "SHA256SUMS.txt"
     if not output_dir.exists():
-        return {"exists": False, "path": str(output_dir), "files": [], "pdfs": [], "review_exists": False, "failed_exists": False, "checksums_exists": False, "pass_pdf_exists": False}
+        return {
+            "expected_basename": basename,
+            "output_dir": str(output_dir),
+            "matched_pdfs": [],
+            "matched_reports": [],
+            "matched_checksums": [],
+            "matched_top_level_pdfs": [],
+            "matched_review_pdfs": [],
+            "matched_failed_pdfs": [],
+            "matched_top_level_reports": [],
+            "matched_review_reports": [],
+            "matched_failed_reports": [],
+            "unmatched_pdfs_in_output_dir": [],
+            "unmatched_reports_in_output_dir": [],
+            "shared_output_dir": False,
+            "stale_or_shared_output_risk": False,
+            "confirmed_false_success_pdf": False,
+            "no_false_success_evidence": True,
+        }
+
+    files = [p for p in output_dir.rglob("*") if p.is_file()]
+    pdfs = [p for p in files if p.suffix.lower() == ".pdf"]
+    reports = [p for p in files if p.name.endswith("_AUDIT_REPORT.md") or p.name in {"ESCALATION_REPORT.md", "PACKAGE_CONTENTS.md"}]
+    checksums = [p for p in files if p.name == expected_checksum]
+
+    matched_pdfs = _has_name(pdfs, expected_pdf)
+    matched_reports = _has_name(reports, expected_report)
+    matched_checksums = [p for p in checksums if p.parent in {output_dir, output_dir / "review", output_dir / "failed"}]
+    unmatched_pdfs = [p for p in pdfs if p.name != expected_pdf]
+    unmatched_reports = [p for p in reports if p.name != expected_report]
+
+    top_level_pdfs = [p for p in matched_pdfs if p.parent == output_dir]
+    review_pdfs = [p for p in matched_pdfs if p.parent == output_dir / "review"]
+    failed_pdfs = [p for p in matched_pdfs if p.parent == output_dir / "failed"]
+    top_level_reports = [p for p in matched_reports if p.parent == output_dir]
+    review_reports = [p for p in matched_reports if p.parent == output_dir / "review"]
+    failed_reports = [p for p in matched_reports if p.parent == output_dir / "failed"]
+    shared_output = bool(unmatched_pdfs or unmatched_reports)
+
+    return {
+        "expected_basename": basename,
+        "output_dir": str(output_dir),
+        "matched_pdfs": _paths(matched_pdfs),
+        "matched_reports": _paths(matched_reports),
+        "matched_checksums": _paths(matched_checksums),
+        "matched_top_level_pdfs": _paths(top_level_pdfs),
+        "matched_review_pdfs": _paths(review_pdfs),
+        "matched_failed_pdfs": _paths(failed_pdfs),
+        "matched_top_level_reports": _paths(top_level_reports),
+        "matched_review_reports": _paths(review_reports),
+        "matched_failed_reports": _paths(failed_reports),
+        "unmatched_pdfs_in_output_dir": _paths(unmatched_pdfs),
+        "unmatched_reports_in_output_dir": _paths(unmatched_reports),
+        "shared_output_dir": shared_output,
+        "stale_or_shared_output_risk": False,
+        "confirmed_false_success_pdf": False,
+        "no_false_success_evidence": True,
+    }
+
+
+def package_info(output_dir: Path, basename: str) -> dict[str, Any]:
+    matches = output_artifact_matches(output_dir, basename)
+    if not output_dir.exists():
+        return {"exists": False, "path": str(output_dir), "files": [], "pdfs": [], "review_exists": False, "failed_exists": False, "checksums_exists": False, "pass_pdf_exists": False, "matched_output_artifacts": matches}
     files = [p for p in output_dir.rglob("*") if p.is_file()]
     pdfs = [p for p in files if p.suffix.lower() == ".pdf"]
     return {
         "exists": True,
         "path": str(output_dir),
-        "files": [str(p) for p in files],
-        "pdfs": [str(p) for p in pdfs],
+        "files": _paths(files),
+        "pdfs": _paths(pdfs),
         "review_exists": (output_dir / "review").exists(),
         "failed_exists": (output_dir / "failed").exists(),
         "checksums_exists": (output_dir / "SHA256SUMS.txt").is_file(),
-        "pass_pdf_exists": any(p.name.endswith("_remediated.pdf") and p.parent == output_dir for p in pdfs),
+        "pass_pdf_exists": bool(matches["matched_top_level_pdfs"]),
+        "matched_output_artifacts": matches,
     }
 
 
-def classify(overall: str, status: str, outcome: str, pkg: dict[str, Any], missing: list[str]) -> tuple[str, list[str]]:
+def classify(overall: str, status: str, outcome: str, pkg: dict[str, Any], missing: list[str]) -> tuple[str, list[str], dict[str, Any]]:
+    matches = dict(pkg.get("matched_output_artifacts") or {})
+    matched_success_like = bool(matches.get("matched_top_level_pdfs") or matches.get("matched_review_pdfs"))
+    matched_failed_pdf = bool(matches.get("matched_failed_pdfs"))
+    unmatched_pdfs = bool(matches.get("unmatched_pdfs_in_output_dir"))
     if status != "NOT_RUN" and outcome != "NOT_RUN" and status != outcome:
-        return "MISMATCH", [f"STATUS.json overall_result={status} differs from orchestrator_outcome.json overall_result={outcome}"]
+        return "MISMATCH", [f"STATUS.json overall_result={status} differs from orchestrator_outcome.json overall_result={outcome}"], matches
+    risks: list[str] = []
+    if overall in {"FAIL", "ESCALATION"}:
+        if matched_success_like:
+            matches["confirmed_false_success_pdf"] = True
+            matches["no_false_success_evidence"] = False
+            risks.append("FAIL/ESCALATION has matched same-basename PDF in success-like deliverable location")
+        elif unmatched_pdfs:
+            matches["stale_or_shared_output_risk"] = True
+            risks.append("FAIL/ESCALATION output directory contains only unmatched sibling/stale PDF deliverable(s)")
+        elif matched_failed_pdf:
+            matches["no_false_success_evidence"] = True
+            risks.append("FAIL/ESCALATION failed package contains matched PDF; not counted as success deliverable")
     if missing:
-        return "INCOMPLETE_ARTIFACTS", ["missing required artifacts: " + ", ".join(missing)]
-    risks = []
-    if overall in {"FAIL", "ESCALATION"} and pkg.get("pdfs"):
-        risks.append("FAIL/ESCALATION output package contains PDF deliverable(s)")
-    if overall == "PASS" and not pkg.get("pass_pdf_exists"):
-        return "INCOMPLETE_ARTIFACTS", ["PASS lacks top-level remediated PDF deliverable"] + risks
-    if overall == "REVIEW_REQUIRED" and not (pkg.get("review_exists") or pkg.get("exists")):
-        return "INCOMPLETE_ARTIFACTS", ["REVIEW_REQUIRED lacks review/package evidence"] + risks
+        return "INCOMPLETE_ARTIFACTS", ["missing required artifacts: " + ", ".join(missing)] + risks, matches
+    if overall == "PASS" and not matches.get("matched_top_level_pdfs"):
+        return "INCOMPLETE_ARTIFACTS", ["PASS lacks matched top-level remediated PDF deliverable"] + risks, matches
+    if overall == "REVIEW_REQUIRED" and not (matches.get("matched_review_pdfs") or matches.get("matched_review_reports") or matches.get("matched_top_level_reports")):
+        return "INCOMPLETE_ARTIFACTS", ["REVIEW_REQUIRED lacks matched review/package evidence"] + risks, matches
     if overall in KNOWN_RESULTS:
-        return overall, risks
-    return "INCOMPLETE_ARTIFACTS", ["no authoritative final outcome artifact"] + risks
+        return overall, risks, matches
+    return "INCOMPLETE_ARTIFACTS", ["no authoritative final outcome artifact"] + risks, matches
 
 
 def source_kind(ticket: str, basename: str, source: Path, explicit: str | None = None) -> str:
@@ -210,7 +304,7 @@ def inspect_job(workspace: Path, job_dir: Path, run_mode: str = "inspected_exist
     outcome = result_from(load_json(job_dir / "audit" / "orchestrator_outcome.json"))
     status = result_from(load_json(job_dir / "STATUS.json"))
     overall = outcome if outcome != "NOT_RUN" else status
-    pkg = package_info(out_dir)
+    pkg = package_info(out_dir, basename)
     missing = []
     if not (job_dir / "STATUS.json").exists():
         missing.append("STATUS.json")
@@ -218,7 +312,8 @@ def inspect_job(workspace: Path, job_dir: Path, run_mode: str = "inspected_exist
         missing.append("audit/orchestrator_outcome.json")
     if not pkg.get("exists"):
         missing.append("output package directory")
-    final, risks = classify(overall, status, outcome, pkg, missing)
+    final, risks, matches = classify(overall, status, outcome, pkg, missing)
+    pkg["matched_output_artifacts"] = matches
     res = residuals(job_dir)
     return {
         "ticket": ticket,
@@ -240,10 +335,14 @@ def inspect_job(workspace: Path, job_dir: Path, run_mode: str = "inspected_exist
         "status_json_overall_result": status,
         "status_matches_orchestrator_outcome": status != "NOT_RUN" and outcome != "NOT_RUN" and status == outcome,
         "package": pkg,
-        "fail_escalation_pdf_copied_to_successful_deliverables": bool(overall in {"FAIL", "ESCALATION"} and pkg.get("pdfs")),
-        "review_required_has_review_package": bool(overall == "REVIEW_REQUIRED" and (pkg.get("review_exists") or pkg.get("exists"))),
-        "pass_package_exists": bool(overall == "PASS" and pkg.get("pass_pdf_exists")),
-        "checksums_file_presence": bool(pkg.get("checksums_exists") or (job_dir / "SHA256SUMS.txt").is_file()),
+        "matched_output_artifacts": matches,
+        "fail_escalation_pdf_copied_to_successful_deliverables": bool(matches.get("confirmed_false_success_pdf")),
+        "confirmed_false_success_pdf": bool(matches.get("confirmed_false_success_pdf")),
+        "stale_or_shared_output_risk": bool(matches.get("stale_or_shared_output_risk")),
+        "no_false_success_evidence": bool(matches.get("no_false_success_evidence")),
+        "review_required_has_review_package": bool(overall == "REVIEW_REQUIRED" and (matches.get("matched_review_pdfs") or matches.get("matched_review_reports") or matches.get("matched_top_level_reports"))),
+        "pass_package_exists": bool(overall == "PASS" and matches.get("matched_top_level_pdfs")),
+        "checksums_file_presence": bool(pkg.get("checksums_exists") or matches.get("matched_checksums") or (job_dir / "SHA256SUMS.txt").is_file()),
         "external_validators": {"axesCheck": EXTERNAL_VALIDATOR_STATUS, "PAC_2024": EXTERNAL_VALIDATOR_STATUS},
         "final_matrix_classification": final,
         "risk_flags": risks,
@@ -265,6 +364,23 @@ def parse_pdf_spec(spec: str) -> tuple[str, str, Path, str | None]:
     return parts[0], parts[1], Path(parts[2]), parts[3] if len(parts) > 3 else None
 
 
+def _minimal_row(workspace: Path, ticket: str, basename: str, source: Path, classification: str, risks: list[str], run_mode: str) -> dict[str, Any]:
+    out_dir = workspace / "output" / f"{ticket}_remediated" if ticket else workspace / "output"
+    matches = output_artifact_matches(out_dir, basename)
+    return {
+        "ticket": ticket,
+        "basename": basename,
+        "source_pdf_path": str(source),
+        "job_dir": str(workspace / "jobs" / f"{ticket}_{basename}"),
+        "output_dir": str(out_dir),
+        "run_mode": run_mode,
+        "final_matrix_classification": classification,
+        "risk_flags": risks,
+        "matched_output_artifacts": matches,
+        "external_validators": {"axesCheck": EXTERNAL_VALIDATOR_STATUS, "PAC_2024": EXTERNAL_VALIDATOR_STATUS},
+    }
+
+
 def run_specs(workspace: Path, specs: list[str], python_bin: str) -> list[dict[str, Any]]:
     rows = []
     script = Path("app/tools/orchestrate/remediate.py")
@@ -275,14 +391,15 @@ def run_specs(workspace: Path, specs: list[str], python_bin: str) -> list[dict[s
         job_dir = workspace / "jobs" / f"{ticket}_{safe}"
         expected = workspace / "input" / ticket / f"{stem}.pdf"
         if not source.exists() or not expected.exists():
-            rows.append({"ticket": ticket, "basename": stem, "source_pdf_path": str(source), "job_dir": str(job_dir), "output_dir": str(workspace / "output" / f"{ticket}_remediated"), "run_mode": "skipped_missing_input", "final_matrix_classification": "INCOMPLETE_ARTIFACTS", "risk_flags": ["source PDF missing or not staged at expected orchestrator path"], "external_validators": {"axesCheck": EXTERNAL_VALIDATOR_STATUS, "PAC_2024": EXTERNAL_VALIDATOR_STATUS}})
+            rows.append(_minimal_row(workspace, ticket, stem, source, "INCOMPLETE_ARTIFACTS", ["source PDF missing or not staged at expected orchestrator path"], "skipped_missing_input"))
             continue
         proc = subprocess.run([python_bin, str(script), str(workspace), ticket, stem], capture_output=True, text=True)
         if job_dir.exists():
             row = inspect_job(workspace, job_dir, "orchestrator_run", source, kind)
             row["orchestrator_run"] = {"returncode": proc.returncode, "stdout_tail": proc.stdout[-4000:], "stderr_tail": proc.stderr[-4000:]}
         else:
-            row = {"ticket": ticket, "basename": stem, "source_pdf_path": str(source), "job_dir": str(job_dir), "output_dir": str(workspace / "output" / f"{ticket}_remediated"), "run_mode": "orchestrator_run", "final_matrix_classification": "BLOCKED", "risk_flags": ["orchestrator did not create job directory"], "orchestrator_run": {"returncode": proc.returncode, "stdout_tail": proc.stdout[-4000:], "stderr_tail": proc.stderr[-4000:]}, "external_validators": {"axesCheck": EXTERNAL_VALIDATOR_STATUS, "PAC_2024": EXTERNAL_VALIDATOR_STATUS}}
+            row = _minimal_row(workspace, ticket, stem, source, "BLOCKED", ["orchestrator did not create job directory"], "orchestrator_run")
+            row["orchestrator_run"] = {"returncode": proc.returncode, "stdout_tail": proc.stdout[-4000:], "stderr_tail": proc.stderr[-4000:]}
         rows.append(row)
     return rows
 
@@ -291,7 +408,8 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     counts = {name: 0 for name in CLASSIFICATIONS}
     source_counts: dict[str, int] = {}
     mismatches = []
-    false_success = []
+    confirmed_false_success = []
+    stale_shared = []
     for row in rows:
         cls = row.get("final_matrix_classification", "INCOMPLETE_ARTIFACTS")
         counts[cls] = counts.get(cls, 0) + 1
@@ -299,9 +417,21 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         source_counts[kind] = source_counts.get(kind, 0) + 1
         if cls == "MISMATCH":
             mismatches.append(row.get("job_dir"))
-        if row.get("fail_escalation_pdf_copied_to_successful_deliverables"):
-            false_success.append(row.get("output_dir"))
-    return {"jobs_total": len(rows), "counts_by_classification": counts, "counts_by_source_kind": source_counts, "status_orchestrator_mismatches": mismatches, "packaging_false_success_risks": false_success, "representative_real_pdf_coverage_count": source_counts.get("private_local_or_representative_pdf", 0), "synthetic_fixture_coverage_count": source_counts.get("controlled_fixture", 0) + source_counts.get("synthetic_generated_fixture", 0)}
+        if row.get("confirmed_false_success_pdf"):
+            confirmed_false_success.append(row.get("job_dir") or row.get("output_dir"))
+        if row.get("stale_or_shared_output_risk"):
+            stale_shared.append(row.get("job_dir") or row.get("output_dir"))
+    return {
+        "jobs_total": len(rows),
+        "counts_by_classification": counts,
+        "counts_by_source_kind": source_counts,
+        "status_orchestrator_mismatches": mismatches,
+        "packaging_false_success_risks": confirmed_false_success,
+        "confirmed_false_success_pdf_risks": confirmed_false_success,
+        "stale_or_shared_output_risks": stale_shared,
+        "representative_real_pdf_coverage_count": source_counts.get("private_local_or_representative_pdf", 0),
+        "synthetic_fixture_coverage_count": source_counts.get("controlled_fixture", 0) + source_counts.get("synthetic_generated_fixture", 0),
+    }
 
 
 def build_matrix(args: argparse.Namespace) -> dict[str, Any]:
@@ -312,8 +442,24 @@ def build_matrix(args: argparse.Namespace) -> dict[str, Any]:
     if args.pdf:
         rows.extend(run_specs(workspace, args.pdf, args.python_bin))
     if not rows:
-        rows.append({"ticket": "", "basename": "", "source_pdf_path": "", "job_dir": str(workspace / "jobs"), "output_dir": str(workspace / "output"), "run_mode": "inspected_existing", "final_matrix_classification": "INCOMPLETE_ARTIFACTS", "risk_flags": ["no workspace job artifacts or explicit PDF specs found"], "external_validators": {"axesCheck": EXTERNAL_VALIDATOR_STATUS, "PAC_2024": EXTERNAL_VALIDATOR_STATUS}})
-    return {"schema": "montefiore.production_readiness_matrix", "version": "1.0.0", "created_at": now(), "workspace": str(workspace), "mode": "mixed" if args.inspect_existing and args.pdf else "inspect_existing" if args.inspect_existing else "orchestrator_run" if args.pdf else "none", "records": rows, "summary": summarize(rows), "policy": {"read_only_artifact_inspection": bool(args.inspect_existing), "external_validators_default": EXTERNAL_VALIDATOR_STATUS, "does_not_modify_repair_scripts": True, "does_not_modify_rule_map": True, "does_not_claim_10_of_10_production_readiness": True}}
+        rows.append(_minimal_row(workspace, "", "", Path(""), "INCOMPLETE_ARTIFACTS", ["no workspace job artifacts or explicit PDF specs found"], "inspected_existing"))
+    return {
+        "schema": "montefiore.production_readiness_matrix",
+        "version": "1.1.0",
+        "created_at": now(),
+        "workspace": str(workspace),
+        "mode": "mixed" if args.inspect_existing and args.pdf else "inspect_existing" if args.inspect_existing else "orchestrator_run" if args.pdf else "none",
+        "records": rows,
+        "summary": summarize(rows),
+        "policy": {
+            "read_only_artifact_inspection": bool(args.inspect_existing),
+            "external_validators_default": EXTERNAL_VALIDATOR_STATUS,
+            "does_not_modify_repair_scripts": True,
+            "does_not_modify_rule_map": True,
+            "does_not_claim_10_of_10_production_readiness": True,
+            "basename_matched_package_attribution": True,
+        },
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
