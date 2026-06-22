@@ -1,22 +1,21 @@
-# MM-17179 Form-Widget Structure Trial (H10/H10A)
+# MM-17179 Form-Widget Structure Trial (H10/H10A/H10A-V)
 
-## Why H10A exists after H10
+## Production-readiness goal
 
-H9 proved a controlled, fixture-scoped structure-construction capability for `PDF/UA-1/7.18.4` on a synthetic, non-private AcroForm fixture. H10 moved that capability to a guarded MM-17179 dry-run path without silently enabling production behavior.
-
-H10A continues the guarded MM-17179 trial by fixing the concrete evidence-bound issue that stopped H10. H10A is not production activation. It keeps the repair isolated, guarded, non-default, and non-production.
-
-The system goal remains a production-ready remediation workflow, not a one-off PDF fix.
-
-## H10 runtime blocker
-
-After the H10 repository patch, the Docker/runtime MM-17179 dry-run found and inspected:
+The system goal is a production-ready PDF remediation workflow, not a one-off PDF fix. The production path remains:
 
 ```text
-/app/workspace/input/MM-17179/ROI4987_English_1-26_rev_Fillable.pdf
+Open WebUI prompt beginning with PDF:
+Hermes loads the pdf-remediation runbook
+/app/tools/orchestrate/remediate.py creates and executes the job
+STATUS/package artifacts truthfully reflect PASS, REVIEW_REQUIRED, FAIL, or ESCALATION
 ```
 
-The H10 runtime evidence showed:
+H10, H10A, and H10A-V are controlled development validations. They do not activate a production repair, do not update the rule map, and do not replace the orchestrator-first production path.
+
+## H10A evidence-bound correction
+
+H10 found the MM-17179 form-widget blocker shape:
 
 ```text
 AcroForm present: true
@@ -27,12 +26,9 @@ Widgets with /StructParent: 0
 /StructTreeRoot present: false
 /ParentTree present: false
 Form structure element count: 0
-Planned StructParent assignments: 102
-Planned Form structure elements: 102
-Planned ParentTree entries: 102
 ```
 
-H10 correctly refused to apply because the diagnostic report was bounded at 100 widgets while MM-17179 contains 102 widgets:
+H10 was blocked because the diagnostic evidence was bounded at 100 widget records while the PDF contained 102 widgets:
 
 ```text
 widget_annotation_count: 102
@@ -40,50 +36,19 @@ widgets_bounded_count: 100
 widgets_truncated: true
 ```
 
-The old blocker wording was confusing:
-
-```text
-widget evidence is not truncated
-```
-
-H10A corrects this to:
+H10A corrected the confusing blocker wording from `widget evidence is not truncated` to the failed precondition:
 
 ```text
 widget evidence is truncated
 ```
 
-and records the positive precondition as:
+and the positive precondition:
 
 ```text
 widget evidence is complete
 ```
 
-## H10A implementation summary
-
-Changed files:
-
-```text
-app/tools/audit/form_widget_structure_inspection.py
-app/tools/repair/repair_form_widget_structure.py
-app/tools/tests/test_form_widget_structure_inspection_policy.py
-app/tools/tests/test_form_widget_structure_repair_policy.py
-docs/MM_17179_FORM_WIDGET_TRIAL.md
-```
-
-H10A does not modify:
-
-```text
-app/tools/audit/rule_repair_map.json
-app/tools/orchestrate/remediate.py
-app/tools/packaging/status_json_writer.py
-app/tools/packaging/package_deliverables.py
-```
-
-## Widget evidence bound behavior
-
-The diagnostic keeps the default bound of 100 widget records for normal bounded reports. H10A adds explicit completeness fields and passes the requested bound through the repair dry-run/apply path.
-
-Diagnostic evidence now includes:
+The H10A diagnostic/repair path now exposes:
 
 ```text
 widgets_bounded_count
@@ -93,18 +58,7 @@ widget_evidence_complete
 max_widgets_requested
 ```
 
-Repair reports now include top-level:
-
-```text
-max_widgets
-widget_annotation_count
-widgets_bounded_count
-widgets_truncated
-widget_evidence_complete
-terminal_state
-```
-
-The dry-run completeness precondition passes only when:
+A dry-run is complete only when:
 
 ```text
 widgets_truncated: false
@@ -112,241 +66,217 @@ bounded_widget_records_count == widget_annotation_count
 widget_evidence_complete: true
 ```
 
-If evidence is still truncated, repair dry-run ends as:
+## H10A isolated trial status before H10A-V
 
-```text
-MM17179_DRY_RUN_BLOCKED
-```
-
-and no apply is attempted.
-
-## Required H10A dry-run command
-
-Run in the Docker/Hermes runtime that has the private MM-17179 source PDF:
-
-```bash
-docker compose exec -T hermes bash -lc '
-cd /app &&
-PYTHONPATH=/app /usr/bin/python3 /app/tools/repair/repair_form_widget_structure.py \
-  --input /app/workspace/input/MM-17179/ROI4987_English_1-26_rev_Fillable.pdf \
-  --dry-run-report /tmp/h10a-mm17179-form-widget-dry-run.json \
-  --max-widgets 1000
-'
-```
-
-Expected resolution of the H10 evidence-bound issue:
+The local H10A isolated trial showed promising object-level evidence:
 
 ```text
 widget_annotation_count: 102
-widgets_bounded_count: 102
-bounded_widget_records_count: 102
+widgets_with_struct_parent_count: 102
+widgets_missing_struct_parent_count: 0
+widgets_with_parent_tree_mapping_count: 102
+widgets_already_nested_in_form_count: 102
+form_struct_element_count: 102
+struct_tree_root_present: true
+parent_tree_present: true
+parent_tree_entry_count: 102
 widgets_truncated: false
 widget_evidence_complete: true
 ```
 
-If the dry-run reports `apply_allowed: false`, do not apply. Report the blocker and keep terminal state:
+qpdf and preservation are necessary, but they are not sufficient for adoption. H10A object diagnostics plus qpdf plus preservation must now be treated as:
 
 ```text
-MM17179_DRY_RUN_BLOCKED
+MM17179_REPAIR_VALIDATION_INCOMPLETE
 ```
 
-## Required isolated apply if dry-run passes
+until repo-approved veraPDF before/after delta evidence is available.
 
-If dry-run reports `apply_allowed: true`, run isolated apply to `/tmp` only:
+## H10A-V veraPDF validation correction
 
-```bash
-docker compose exec -T hermes bash -lc '
-cd /app &&
-rm -rf /tmp/h10a-mm17179-form-widget-trial &&
-mkdir -p /tmp/h10a-mm17179-form-widget-trial &&
-PYTHONPATH=/app /usr/bin/python3 /app/tools/repair/repair_form_widget_structure.py \
-  --input /app/workspace/input/MM-17179/ROI4987_English_1-26_rev_Fillable.pdf \
-  --output /tmp/h10a-mm17179-form-widget-trial/output.pdf \
-  --dry-run-report /tmp/h10a-mm17179-form-widget-trial/apply-report.json \
-  --apply \
-  --allow-structure-construction-trial \
-  --max-widgets 1000
-'
-```
-
-The apply path must not:
+The H10A documentation previously described this as an acceptable manual validation pattern:
 
 ```text
-overwrite source PDF
-write under workspace/output
-write under workspace/jobs
-write STATUS.json
-write orchestrator_outcome.json
-update rule_map
-activate production behavior
-claim production readiness
-dump field values
-```
-
-## Required before/after diagnostics
-
-Before:
-
-```bash
-docker compose exec -T hermes bash -lc '
-cd /app &&
-PYTHONPATH=/app /usr/bin/python3 /app/tools/audit/form_widget_structure_inspection.py \
-  /app/workspace/input/MM-17179/ROI4987_English_1-26_rev_Fillable.pdf \
-  --job-dir /app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable \
-  --out /tmp/h10a-mm17179-before-inspection.json \
-  --max-widgets 1000
-'
-```
-
-After, only if output exists:
-
-```bash
-docker compose exec -T hermes bash -lc '
-cd /app &&
-test -f /tmp/h10a-mm17179-form-widget-trial/output.pdf &&
-PYTHONPATH=/app /usr/bin/python3 /app/tools/audit/form_widget_structure_inspection.py \
-  /tmp/h10a-mm17179-form-widget-trial/output.pdf \
-  --out /tmp/h10a-mm17179-after-inspection.json \
-  --max-widgets 1000
-'
-```
-
-After diagnostics must prove:
-
-```text
-widget annotation count preserved
-widgets with /StructParent increased to 102
-widgets missing /StructParent reduced to 0
-/StructTreeRoot present
-/ParentTree present
-/Form structure elements created
-widgets with ParentTree mapping increased to 102
-widgets already nested in Form increased to 102
-field values redacted
-```
-
-If any of these fail, H10A terminal state is:
-
-```text
-MM17179_REPAIR_ATTEMPTED_NOT_ADOPTED
-```
-
-## qpdf result
-
-If output exists, run:
-
-```bash
-docker compose exec -T hermes bash -lc '
-test -f /tmp/h10a-mm17179-form-widget-trial/output.pdf &&
-qpdf --check /tmp/h10a-mm17179-form-widget-trial/output.pdf
-'
-```
-
-If qpdf fails, H10A terminal state is:
-
-```text
-MM17179_REPAIR_ATTEMPTED_NOT_ADOPTED
-```
-
-If qpdf is unavailable, report:
-
-```text
-qpdf: NOT_RUN_ENVIRONMENT_LIMITED
-```
-
-and do not claim qpdf pass.
-
-## veraPDF result
-
-If veraPDF is available, run before/after:
-
-```bash
-docker compose exec -T hermes bash -lc '
-if command -v verapdf >/dev/null 2>&1; then
-  verapdf --format json /app/workspace/input/MM-17179/ROI4987_English_1-26_rev_Fillable.pdf > /tmp/h10a-mm17179-verapdf-before.json || true
-  verapdf --format json /tmp/h10a-mm17179-form-widget-trial/output.pdf > /tmp/h10a-mm17179-verapdf-after.json || true
-else
-  echo "veraPDF: NOT_RUN_ENVIRONMENT_LIMITED"
-fi
-'
-```
-
-If veraPDF runs, report whether `PDF/UA-1/7.18.4` improved, cleared, remained unchanged, or introduced regressions. Do not fake improvement.
-
-If veraPDF is unavailable, report:
-
-```text
+command -v verapdf
 veraPDF: NOT_RUN_ENVIRONMENT_LIMITED
 ```
 
-## Preservation summary
-
-The repair report checks:
+That is superseded for this repository. H10A-V validation must use the orchestrator-approved veraPDF binary and profile runner unless the binary or profile root is genuinely absent. If that runtime is missing, the correct terminal state is:
 
 ```text
-page count preserved
-page MediaBox/CropBox preserved
-AcroForm field count preserved
-field names preserved
-field types preserved
-field value presence preserved
-widget annotation count preserved
-widget page annotation membership preserved
-semantic widget identity preserved
-exact object identity not claimed
-field values not dumped unredacted
+VERAPDF_RUN_FAILED
 ```
 
-Any failed preservation check means:
+not a successful or environment-limited validation.
+
+The approved runtime paths are:
 
 ```text
-MM17179_REPAIR_ATTEMPTED_NOT_ADOPTED
+/opt/verapdf-greenfield/verapdf
+/opt/veraPDF-validation-profiles-integration
+/app/tools/audit/run_verapdf_profiles.sh
+/app/tools/audit/parse_verapdf_summary.py
 ```
 
-## Rule-map adoption
+The runner writes per-profile XML sidecars and keeps stderr in separate sidecars. `audit/verapdf_summary.json` is diagnostic-only. Canonical H10A-V interpretation must derive from per-profile XML sidecars, parser output, and profile accounting.
 
-Rule-map adoption was not performed by this repository patch. H10A only prepares and guards the complete-evidence trial path.
+## Profile accounting policy
 
-Do not update `app/tools/audit/rule_repair_map.json` unless all are true in the local Docker/MM-17179 runtime:
+For PDF/UA-1 validation, the authoritative required profiles are:
 
 ```text
-dry-run passed with complete widget evidence
-isolated apply passed
-qpdf passed
-before/after object diagnostics prove expected structure construction
-preservation checks passed
-veraPDF either proves PDF/UA-1/7.18.4 improved/cleared or is explicitly unavailable and adoption is marked non-default/experimental
-repair remains guarded by preconditions
-orchestrator default behavior is not silently activated
-tests pass
+PDF_UA/PDFUA-1.xml
+PDF_UA/WCAG-2-2-Machine.xml
 ```
 
-If any gate fails or veraPDF is unavailable, prefer no rule-map adoption.
-
-## Orchestrator, packaging, and status behavior
-
-H10A intentionally does not modify:
+The pinned WCAG profile must be exactly:
 
 ```text
-app/tools/orchestrate/remediate.py
-app/tools/packaging/status_json_writer.py
-app/tools/packaging/package_deliverables.py
+PDF_UA/WCAG-2-2-Machine.xml
 ```
 
-No production default behavior is enabled. No deliverable-package or terminal-state authority is changed.
-
-## H10A terminal state
-
-For the repository patch alone, H10A is ready for the local Docker/private-PDF trial. The local runtime must determine the final MM-17179 terminal state as one of:
+The following profile is informational unless a later policy explicitly marks it authoritative:
 
 ```text
-MM17179_REPAIR_VALIDATED
-MM17179_REPAIR_ATTEMPTED_NOT_ADOPTED
-MM17179_DRY_RUN_BLOCKED
+PDF_UA/ISO-32000-1-Tagged.xml
 ```
 
-The repository-side patch does not claim production readiness.
+PDF/UA-2 is skipped unless explicitly requested:
+
+```text
+PDF_UA/PDFUA-2.xml
+```
+
+The following profile must not be used for a PDF/UA-1 verdict:
+
+```text
+PDF_UA/WCAG-2-2-Machine-PDF20.xml
+```
+
+Any PDF/UA-2 or PDF 2.0 namespace-specific profile is prohibited for PDF/UA-1 verdict use unless explicitly requested by policy. Experimental/custom XML profiles must be listed, hashed, classified, and preserved as diagnostic evidence; they must not silently hard-fail or pass the job.
+
+## H10A-V commands
+
+Verify the approved runtime and inputs:
+
+```bash
+docker compose exec -T hermes bash -lc '
+set -e
+test -x /opt/verapdf-greenfield/verapdf
+test -d /opt/veraPDF-validation-profiles-integration
+test -f /app/tools/audit/run_verapdf_profiles.sh
+test -f /app/tools/audit/parse_verapdf_summary.py
+test -f /app/workspace/input/MM-17179/ROI4987_English_1-26_rev_Fillable.pdf
+test -f /tmp/h10a-mm17179-form-widget-trial/output.pdf
+'
+```
+
+Run the before/after profiles with the approved runner:
+
+```bash
+docker compose exec -T hermes bash -lc '
+cd /app &&
+rm -rf /tmp/h10av-verapdf-before /tmp/h10av-verapdf-after &&
+mkdir -p /tmp/h10av-verapdf-before /tmp/h10av-verapdf-after &&
+bash /app/tools/audit/run_verapdf_profiles.sh \
+  /opt/verapdf-greenfield/verapdf \
+  /opt/veraPDF-validation-profiles-integration \
+  /app/workspace/input/MM-17179/ROI4987_English_1-26_rev_Fillable.pdf \
+  /tmp/h10av-verapdf-before || true
+bash /app/tools/audit/run_verapdf_profiles.sh \
+  /opt/verapdf-greenfield/verapdf \
+  /opt/veraPDF-validation-profiles-integration \
+  /tmp/h10a-mm17179-form-widget-trial/output.pdf \
+  /tmp/h10av-verapdf-after || true
+'
+```
+
+Parse required profile XML sidecars:
+
+```bash
+docker compose exec -T hermes bash -lc '
+cd /app &&
+PYTHONPATH=/app /usr/bin/python3 /app/tools/audit/parse_verapdf_summary.py \
+  /tmp/h10av-verapdf-before/verapdf_pdfua_ua1.xml \
+  /tmp/h10av-verapdf-before/verapdf_wcag_2_2_machine.xml \
+  > /tmp/h10av-verapdf-before/parsed_failures.json
+PYTHONPATH=/app /usr/bin/python3 /app/tools/audit/parse_verapdf_summary.py \
+  /tmp/h10av-verapdf-after/verapdf_pdfua_ua1.xml \
+  /tmp/h10av-verapdf-after/verapdf_wcag_2_2_machine.xml \
+  > /tmp/h10av-verapdf-after/parsed_failures.json
+'
+```
+
+Run profile accounting and delta analysis:
+
+```bash
+docker compose exec -T hermes bash -lc '
+cd /app &&
+PYTHONPATH=/app /usr/bin/python3 /app/tools/audit/verapdf_profile_accounting.py \
+  --profiles-root /opt/veraPDF-validation-profiles-integration \
+  --before-dir /tmp/h10av-verapdf-before \
+  --after-dir /tmp/h10av-verapdf-after \
+  --before-parsed /tmp/h10av-verapdf-before/parsed_failures.json \
+  --after-parsed /tmp/h10av-verapdf-after/parsed_failures.json \
+  --target-rule PDF/UA-1/7.18.4 \
+  --out /tmp/h10av-verapdf-delta.json
+'
+```
+
+This writes:
+
+```text
+/tmp/h10av-verapdf-before/profile_accounting.json
+/tmp/h10av-verapdf-after/profile_accounting.json
+/tmp/h10av-verapdf-delta.json
+```
+
+These files are runtime evidence only. Do not commit generated validator XML, generated JSON evidence, generated PDFs, private PDFs, or workspace artifacts.
+
+## H10A-V terminal states
+
+H10A-V uses these terminal states:
+
+```text
+VERAPDF_DELTA_VALIDATED
+VERAPDF_DELTA_FAILED
+VERAPDF_PROFILE_ACCOUNTING_FAILED
+VERAPDF_RUN_FAILED
+```
+
+`VERAPDF_DELTA_VALIDATED` is allowed only if required profiles exist, required profiles ran, required profile XMLs are parseable, `PDF/UA-1/7.18.4` cleared or improved, no unacceptable new authoritative profile regression appeared, and experimental/custom profiles were accounted for without silently becoming authoritative.
+
+`VERAPDF_DELTA_FAILED` means the target rule was unchanged or regressed, new authoritative failures were introduced, authoritative failure counts materially worsened, or qpdf/object/preservation evidence conflicts with veraPDF outcome.
+
+`VERAPDF_PROFILE_ACCOUNTING_FAILED` means profile classification, profile hash/path/command/result recording, required profile selection, or XML sidecar interpretation is incomplete. Use this if `verapdf_summary.json` is the only evidence.
+
+`VERAPDF_RUN_FAILED` means the approved binary, profile root, source PDF, after PDF, required XML sidecar, or parser execution is missing or failed.
+
+## Rule-map adoption and production integration
+
+Do not update `app/tools/audit/rule_repair_map.json` during H10A-V. Do not modify orchestrator, packaging, or status behavior during H10A-V.
+
+H10B guarded strategy adoption may be reconsidered only if H10A-V reaches:
+
+```text
+VERAPDF_DELTA_VALIDATED
+```
+
+Even then, adoption must remain guarded, non-default, and precondition-gated until a separate patch proves orchestrator/package/status behavior.
+
+## H10A-V files
+
+H10A-V is limited to:
+
+```text
+app/tools/audit/verapdf_profile_accounting.py
+app/tools/tests/test_verapdf_profile_accounting_policy.py
+docs/MM_17179_FORM_WIDGET_TRIAL.md
+docs/PDFUA_7_18_4_FORM_WIDGET_STRUCTURE_CONSTRUCTION.md
+```
+
+No private PDFs, generated PDFs, workspace artifacts, validator XML outputs, parsed failure JSON, profile accounting JSON, or delta JSON should be committed.
 
 ## Production-readiness statement
 
-H10A does not claim production readiness. It fixes the complete-widget-evidence path needed to continue a guarded isolated MM-17179 trial and keeps production activation, rule-map adoption, orchestrator integration, and package/status behavior unchanged.
+H10A-V does not claim production readiness. It closes the validator/profile-accounting gap required before any guarded form-widget strategy adoption can be reconsidered.
