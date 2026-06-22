@@ -32,7 +32,7 @@ Fix form-widget ISO side effect
 ## Current final commit after H10F
 
 ```text
-PENDING_APPLY
+ae30944
 ```
 
 This field should be checked against `git log` after any later doc-only finalization commit.
