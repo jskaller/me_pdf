@@ -32,12 +32,25 @@ Document unresolved form-widget ISO side effect
 ## Current final commit after H10E
 
 ```text
-PENDING_RUNTIME_VALIDATION
+83a1369
+Fix form-widget ISO side effect
 ```
 
-Update this field when H10E is finalized.
+This field should be checked against `git log` after any later doc-only finalization commit.
 
-## Last completed patch before H10E
+## Last completed patch
+
+```text
+H10E — Resolve Form-Widget ISO Side Effect and Update Production Roadmap Status
+```
+
+H10E terminal state:
+
+```text
+ISO_SIDE_EFFECT_FIXED_TARGET_RULE_STILL_CLEARS
+```
+
+## Previous completed patch before H10E
 
 ```text
 H10D — Repair Form-Widget Structure Construction ISO Side Effect
@@ -49,33 +62,17 @@ H10D terminal state:
 ISO_SIDE_EFFECT_NOT_FIXED_REPAIR_BLOCKED
 ```
 
-## Current active blocker
+## Current active blocker status
 
-The current active blocker remains the form-widget repair for:
+The H10D ISO blocker for the form-widget repair is fixed by H10E.
+
+Target rule:
 
 ```text
 PDF/UA-1/7.18.4
 ```
 
-The repair clears the target rule but introduces an ISO tagged-profile structural side effect.
-
-## Current repair under investigation
-
-```text
-app/tools/repair/repair_form_widget_structure.py
-```
-
-H10D tried:
-
-```text
-/ParentTreeNextKey moved from /ParentTree to /StructTreeRoot.
-/ParentTree /Nums integer/object pairs sorted before saving.
-Misplaced /ParentTreeNextKey removed from /ParentTree.
-```
-
-H10E is testing whether generated /Form structure elements must sit under a top-level /Document StructElem instead of being attached directly under /StructTreeRoot.
-
-## H10D target-rule status
+H10E status:
 
 ```text
 PDF/UA-1/7.18.4 before: 204
@@ -83,7 +80,44 @@ PDF/UA-1/7.18.4 after: 0
 status: CLEARED
 ```
 
-## H10D ISO side-effect status
+ISO side-effect status:
+
+```text
+ISO-32000-1-Tagged before: PASS
+ISO-32000-1-Tagged after: PASS
+classification: BENIGN_INFORMATIONAL
+new ISO rule IDs: []
+increased ISO rule IDs: []
+```
+
+## Current repair under investigation
+
+```text
+app/tools/repair/repair_form_widget_structure.py
+```
+
+H10E changed the repair to:
+
+```text
+Create or reuse one top-level /Document StructElem under /StructTreeRoot /K.
+Append generated /Form StructElem children under that /Document element.
+Set each generated /Form /P to the /Document element instead of /StructTreeRoot.
+Keep ParentTree entries mapped to the /Form StructElem values for widget annotations.
+Keep /ParentTreeNextKey on /StructTreeRoot.
+Keep /ParentTree /Nums sorted.
+```
+
+## H10D facts preserved for continuity
+
+H10D target-rule status:
+
+```text
+PDF/UA-1/7.18.4 before: 204
+PDF/UA-1/7.18.4 after: 0
+status: CLEARED
+```
+
+H10D ISO side-effect status:
 
 ```text
 ISO-32000-1-Tagged before: PASS
@@ -92,14 +126,90 @@ new ISO rule: ISO 19005-2:2011/Annex_L
 classification: STRUCTURAL_SIDE_EFFECT
 ```
 
-H10D ISO correlations:
+H10D adoption status:
 
 ```text
-correlation_to_form_widget_objects: true
-correlation_to_struct_tree_root: true
-correlation_to_parent_tree: true
-correlation_to_objr: false
-correlation_to_struct_parent: false
+No metadata adopted.
+No runtime activation.
+rule_repair_map.json unchanged.
+lookup_repair_plan.py unchanged.
+orchestrator unchanged.
+packaging/status unchanged.
+production readiness not claimed.
+```
+
+## H10E runtime validation status
+
+H10E isolated apply:
+
+```text
+result: APPLIED
+terminal_state: MM17179_REPAIR_VALIDATED
+repair_performed: True
+```
+
+H10E mutation summary:
+
+```text
+assigned_struct_parent_count: 102
+created_document_struct_element: True
+created_form_struct_elements_count: 102
+form_struct_parent_type: Document
+parent_tree_entries_created: 102
+parent_tree_next_key_location: StructTreeRoot
+parent_tree_nums_sorted: True
+top_level_structure_type: Document
+```
+
+H10E preservation status:
+
+```text
+field_count_preserved: True
+field_names_preserved: True
+field_types_preserved: True
+field_value_presence_preserved: True
+field_values_not_dumped: True
+page_boxes_preserved: True
+page_count_preserved: True
+semantic_widget_identity_preserved: True
+widget_count_preserved: True
+widget_page_membership_preserved: True
+```
+
+H10E profile accounting status:
+
+```text
+terminal_state: VERAPDF_DELTA_VALIDATED
+verdict_candidate: VALIDATED_FOR_ADOPTION_CONSIDERATION
+target_rule_before_count: 204
+target_rule_after_count: 0
+target_rule_delta: -204
+target_rule_status: CLEARED
+total_failures_before: 3656
+total_failures_after: 3450
+pdfua1_profile_result_before: FAIL
+pdfua1_profile_result_after: FAIL
+wcag_profile_result_before: FAIL
+wcag_profile_result_after: FAIL
+iso_profile_result_before: PASS
+iso_profile_result_after: PASS
+new_rule_ids: []
+increased_rule_ids: []
+accounting_blockers: []
+```
+
+H10E ISO review status:
+
+```text
+before_iso_result: PASS
+after_iso_result: PASS
+new_iso_rule_ids: []
+increased_iso_rule_ids: []
+new_or_increased_iso_checks: []
+classification: BENIGN_INFORMATIONAL
+blocks_metadata_adoption: False
+blocks_runtime_activation: True
+recommendation: ISO sidecars show no new or increased failed checks.
 ```
 
 ## Metadata adoption status
@@ -109,6 +219,8 @@ rule_map metadata adopted: false
 guarded metadata adopted: false
 runtime activation enabled: false
 ```
+
+H10E makes metadata adoption eligible for a later guarded patch, but H10E itself does not adopt metadata.
 
 ## Production path evidence status
 
@@ -120,14 +232,9 @@ orchestrator_outcome.json production truthfulness verified end-to-end: false
 deliverables package production evidence collected: false
 ```
 
-## Files that must not be mutated by H10E
+## Files that must not be mutated by the next guarded adoption patch unless explicitly in scope
 
 ```text
-app/tools/audit/rule_repair_map.json
-app/tools/audit/lookup_repair_plan.py
-app/tools/orchestrate/remediate.py
-app/tools/packaging/status_json_writer.py
-app/tools/packaging/package_deliverables.py
 workspace/
 private PDFs
 generated PDFs
@@ -138,25 +245,19 @@ h10e-verapdf-delta.json
 iso-regression-review.json
 ```
 
-## H10E allowed code focus
-
-H10E may modify the guarded form-widget repair implementation and tests:
+## Files not changed by H10E
 
 ```text
-app/tools/repair/repair_form_widget_structure.py
-app/tools/tests/test_form_widget_structure_repair_policy.py
-```
-
-H10E may add or update documentation:
-
-```text
-docs/H10E_FORM_WIDGET_ISO_SIDE_EFFECT_RESOLUTION.md
-docs/PRODUCTION_REMEDIATION_STATUS.md
+app/tools/audit/rule_repair_map.json
+app/tools/audit/lookup_repair_plan.py
+app/tools/orchestrate/remediate.py
+app/tools/packaging/status_json_writer.py
+app/tools/packaging/package_deliverables.py
 ```
 
 ## Remaining planned patches
 
-If H10E fixes the ISO side effect while preserving target-rule clearance:
+Because H10E fixed the ISO side effect while preserving target-rule clearance:
 
 ```text
 H10F — Guarded non-runtime metadata adoption for PDF/UA-1/7.18.4
@@ -164,37 +265,16 @@ H10G — Guarded runtime integration for the form-widget repair
 H10H — WebUI PDF: production-path evidence pass
 ```
 
-If H10E does not fix the ISO side effect:
-
-```text
-Continue focused repair only if the next change is precise and evidence-backed.
-If unsafe or rejected, park the form-widget repair and move to WebUI production-path baseline plus the next active blocker family.
-```
-
 ## Next recommended patch
 
-Pending H10E runtime result.
-
-If H10E succeeds:
-
 ```text
-Guarded metadata adoption and immediate guarded runtime integration.
+H10F — Guarded non-runtime metadata adoption for PDF/UA-1/7.18.4
 ```
 
-If H10E fails but remains repairable:
-
-```text
-Continue focused form-widget structural repair with exact ISO failed-check evidence.
-```
-
-If H10E proves the path unsafe or unsuitable:
-
-```text
-Park form-widget repair and move to WebUI production-path baseline plus next active blocker family.
-```
+H10F should update guarded metadata only. It should not yet enable default runtime execution unless the patch explicitly combines metadata adoption with runtime integration and includes the required safety evidence.
 
 ## Production-readiness statement
 
 Production readiness is not claimed.
 
-The current system has not yet proven the full intended production path from WebUI `PDF:` prompt through Hermes, orchestrator, deterministic repair, validation, truthful status, and deliverables packaging.
+H10E fixed one repair-family blocker, but the current system has not yet proven the full intended production path from WebUI `PDF:` prompt through Hermes, orchestrator, deterministic repair, validation, truthful status, and deliverables packaging.
