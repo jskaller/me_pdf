@@ -22,18 +22,17 @@ Open WebUI prompt beginning with PDF:
 master
 ```
 
-## H10E baseline commit
+## H10F baseline commit
 
 ```text
-8cd7bbb
-Document unresolved form-widget ISO side effect
+51eb34c
+Fix form-widget ISO side effect
 ```
 
-## Current final commit after H10E
+## Current final commit after H10F
 
 ```text
-83a1369
-Fix form-widget ISO side effect
+PENDING_APPLY
 ```
 
 This field should be checked against `git log` after any later doc-only finalization commit.
@@ -41,13 +40,13 @@ This field should be checked against `git log` after any later doc-only finaliza
 ## Last completed patch
 
 ```text
-H10E — Resolve Form-Widget ISO Side Effect and Update Production Roadmap Status
+H10F — Guarded Metadata Adoption and Runtime-Gating Contract for PDF/UA-1/7.18.4
 ```
 
-H10E terminal state:
+H10F terminal state:
 
 ```text
-ISO_SIDE_EFFECT_FIXED_TARGET_RULE_STILL_CLEARS
+GUARDED_METADATA_ADOPTED_RUNTIME_NOT_ACTIVE
 ```
 
 ## Previous completed patch before H10E
@@ -215,12 +214,23 @@ recommendation: ISO sidecars show no new or increased failed checks.
 ## Metadata adoption status
 
 ```text
-rule_map metadata adopted: false
-guarded metadata adopted: false
+rule_map metadata adopted: true
+guarded metadata adopted: true
 runtime activation enabled: false
+runtime_active: false
+production_default: false
+requires_explicit_activation_patch: true
+requires_runtime_gating_implementation: true
 ```
 
-H10E makes metadata adoption eligible for a later guarded patch, but H10E itself does not adopt metadata.
+H10F records guarded non-runtime metadata for `PDF/UA-1/7.18.4` at:
+
+```text
+app/tools/audit/rule_repair_map.json
+rules["PDF/UA-1/7.18.4"].guarded_strategy_candidates[0]
+```
+
+Active `strategies[]` remains empty for this rule. `lookup_repair_plan.py` must not emit `tools/repair/repair_form_widget_structure.py` until H10G implements explicit precondition-gated runtime behavior.
 
 ## Production path evidence status
 
@@ -257,10 +267,9 @@ app/tools/packaging/package_deliverables.py
 
 ## Remaining planned patches
 
-Because H10E fixed the ISO side effect while preserving target-rule clearance:
+Because H10F adopted guarded metadata without runtime activation:
 
 ```text
-H10F — Guarded non-runtime metadata adoption for PDF/UA-1/7.18.4
 H10G — Guarded runtime integration for the form-widget repair
 H10H — WebUI PDF: production-path evidence pass
 ```
@@ -268,13 +277,12 @@ H10H — WebUI PDF: production-path evidence pass
 ## Next recommended patch
 
 ```text
-H10F — Guarded non-runtime metadata adoption for PDF/UA-1/7.18.4
 ```
 
-H10F should update guarded metadata only. It should not yet enable default runtime execution unless the patch explicitly combines metadata adoption with runtime integration and includes the required safety evidence.
+H10G must implement and test explicit runtime gates before `repair_form_widget_structure.py` can appear in lookup/orchestrator repair steps. H10G must not simply move the guarded candidate into active `strategies[]`.
 
 ## Production-readiness statement
 
 Production readiness is not claimed.
 
-H10E fixed one repair-family blocker, but the current system has not yet proven the full intended production path from WebUI `PDF:` prompt through Hermes, orchestrator, deterministic repair, validation, truthful status, and deliverables packaging.
+H10F records guarded metadata for one repair-family candidate, but the current system has not yet proven the full intended production path from WebUI `PDF:` prompt through Hermes, orchestrator, deterministic repair, validation, truthful status, and deliverables packaging.

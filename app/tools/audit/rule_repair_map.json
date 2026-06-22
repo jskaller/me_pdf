@@ -5,22 +5,22 @@
     "purpose": "Maps veraPDF rule IDs to ordered repair strategies. The orchestrator looks up each failing rule ID here, sorts strategies by pass_rate desc / pass_count desc / doc_tag_overlap desc, and tries them in order. If all strategies fail or strategies array is empty, Hermes is invoked to write a new script.",
     "key_format": "{normalised_spec}/{clause}  e.g. PDF/UA-1/7.18.6.3",
     "normalisation": "veraPDF Greenfield profiles output rule IDs normalised to PDF/UA-1 prefix by parse_verapdf_summary.py.",
-    "schema_version_notes": "v2.0.0 \u2014 flat repair_script replaced by strategies array. Each rule has manual:true/false flag. manual:true routes directly to Hermes. Strategies sorted by pass_rate desc, pass_count desc, doc_tag_overlap desc before execution.",
+    "schema_version_notes": "v2.0.0 — flat repair_script replaced by strategies array. Each rule has manual:true/false flag. manual:true routes directly to Hermes. Strategies sorted by pass_rate desc, pass_count desc, doc_tag_overlap desc before execution.",
     "confidence_levels": {
-      "CONFIRMED": "Verified on at least one real Montefiore job \u2014 outcome was PASS",
-      "EXPECTED": "Correct per ISO 14289-1 spec + veraPDF rule definitions \u2014 not yet confirmed on a Montefiore job",
-      "NEW": "Written by Hermes \u2014 pass_count < 2, treat with extra scrutiny"
+      "CONFIRMED": "Verified on at least one real Montefiore job — outcome was PASS",
+      "EXPECTED": "Correct per ISO 14289-1 spec + veraPDF rule definitions — not yet confirmed on a Montefiore job",
+      "NEW": "Written by Hermes — pass_count < 2, treat with extra scrutiny"
     },
-    "strategy_ordering": "Sort strategies by: (1) pass_rate descending, (2) pass_count descending as tiebreaker, (3) doc_tag_overlap_score descending as final tiebreaker. Never exclude a strategy based on doc type \u2014 doc type affects ordering only, not eligibility. Skip strategies whose known_failure_modes match the current document's observed failure reason.",
+    "strategy_ordering": "Sort strategies by: (1) pass_rate descending, (2) pass_count descending as tiebreaker, (3) doc_tag_overlap_score descending as final tiebreaker. Never exclude a strategy based on doc type — doc type affects ordering only, not eligibility. Skip strategies whose known_failure_modes match the current document's observed failure reason.",
     "hermes_triggers": "The orchestrator emits an HERMES_REQUIRED signal when: (a) manual:true and strategies is empty, (b) all strategies exhausted with no PASS, (c) rule_id not found in map at all (unknown_rule). The signal includes rule_id, description, all strategy attempt history with failure reasons, and document tags. The agent reads the signal and either writes a new script or escalates to the operator if automation is not possible. For unknown rules, the agent researches the rule before writing.",
-    "repair_order_note": "repair_order within each strategy matches the mandatory sequence. fix_table_headers.py (order 10) MUST be last \u2014 no saves may occur after it. fix_table_tagging.py (order 9) MUST run before fix_table_headers.py.",
+    "repair_order_note": "repair_order within each strategy matches the mandatory sequence. fix_table_headers.py (order 10) MUST be last — no saves may occur after it. fix_table_tagging.py (order 9) MUST run before fix_table_headers.py.",
     "confirmed_jobs": 8,
     "last_updated": "2026-06-20"
   },
   "rules": {
     "PDF/UA-1/5": {
       "clause": "5",
-      "description": "Document does not conform to PDF/UA-1 \u2014 missing or incorrect pdfuaid identifier",
+      "description": "Document does not conform to PDF/UA-1 — missing or incorrect pdfuaid identifier",
       "manual": false,
       "strategies": [
         {
@@ -208,7 +208,7 @@
     },
     "PDF/UA-1/7.1-untagged": {
       "clause": "7.1",
-      "description": "Document has no StructTreeRoot \u2014 document is not tagged at all",
+      "description": "Document has no StructTreeRoot — document is not tagged at all",
       "manual": false,
       "strategies": [
         {
@@ -236,7 +236,7 @@
     },
     "PDF/UA-1/7.1": {
       "clause": "7.1",
-      "description": "Document-level conformance failures \u2014 covers tagged PDF, viewer preferences, language, and catalog requirements",
+      "description": "Document-level conformance failures — covers tagged PDF, viewer preferences, language, and catalog requirements",
       "manual": false,
       "strategies": [
         {
@@ -374,7 +374,7 @@
     },
     "PDF/UA-1/7.2": {
       "clause": "7.2",
-      "description": "Natural language for text cannot be determined \u2014 missing /Lang on struct elements or document catalog",
+      "description": "Natural language for text cannot be determined — missing /Lang on struct elements or document catalog",
       "manual": false,
       "strategies": [
         {
@@ -402,7 +402,7 @@
     },
     "PDF/UA-1/7.2-1": {
       "clause": "7.2-1",
-      "description": "Real content not tagged \u2014 content outside struct tree",
+      "description": "Real content not tagged — content outside struct tree",
       "manual": false,
       "strategies": [
         {
@@ -541,7 +541,7 @@
     },
     "PDF/UA-1/7.4.2": {
       "clause": "7.4.2",
-      "description": "Heading nesting level incorrect \u2014 heading element not at correct level for document structure (SEHn)",
+      "description": "Heading nesting level incorrect — heading element not at correct level for document structure (SEHn)",
       "repair_script": null,
       "repair_order": null,
       "run_last": false,
@@ -775,9 +775,68 @@
       "args_pattern": null,
       "confidence": "HERMES_REQUIRED",
       "confirmed_jobs": 0,
-      "notes": "First seen on MM-TEST3 (470 failures). Form widget annotations must be wrapped in /Form struct elements. Requires new fix_form_widget_tagging.py script. Related but distinct from 7.18.3-1.",
+      "notes": "First seen on MM-TEST3 (470 failures). H10F records guarded non-runtime metadata for repair_form_widget_structure.py based on H10E evidence. Runtime activation remains disabled until H10G implements explicit precondition gating. Related but distinct from 7.18.3-1.",
       "resolvability": "repairable_unbuilt",
-      "emits_review_artifact": false
+      "emits_review_artifact": false,
+      "strategies": [],
+      "guarded_strategy_candidates": [
+        {
+          "strategy_id": "form_widget_structure_construction_v1",
+          "strategy_name": "Form-widget structure construction",
+          "repair_script": "tools/repair/repair_form_widget_structure.py",
+          "repair_version": "1.4.0",
+          "runtime_active": false,
+          "production_default": false,
+          "activation_status": "guarded_metadata_only",
+          "requires_explicit_activation_patch": true,
+          "requires_runtime_gating_implementation": true,
+          "target_rule": "PDF/UA-1/7.18.4",
+          "validated_on_document_family": "MM-17179 form-fillable",
+          "h10e_terminal_state": "ISO_SIDE_EFFECT_FIXED_TARGET_RULE_STILL_CLEARS",
+          "target_rule_before_count": 204,
+          "target_rule_after_count": 0,
+          "target_rule_status": "CLEARED",
+          "qpdf": "PASS",
+          "object_diagnostics": "PASS",
+          "preservation": "PASS",
+          "profile_accounting_terminal_state": "VERAPDF_DELTA_VALIDATED",
+          "iso_profile_before": "PASS",
+          "iso_profile_after": "PASS",
+          "iso_regression_review_classification": "BENIGN_INFORMATIONAL",
+          "new_authoritative_rule_ids": [],
+          "increased_authoritative_rule_ids": [],
+          "pdf_still_noncompliant_overall": true,
+          "production_readiness_claimed": false,
+          "webui_production_path_validated": false,
+          "source_overwrite_refused": true,
+          "workspace_job_output_status_paths_refused_for_isolated_trial": true,
+          "field_values_not_dumped": true,
+          "requires_complete_widget_evidence": true,
+          "requires_widgets_truncated_false": true,
+          "requires_widget_evidence_complete_true": true,
+          "requires_explicit_output_path": true,
+          "requires_nonfixture_apply_guard": true,
+          "future_runtime_gates": [
+            "precondition_check_form_widget_structure_inspection",
+            "complete_widget_evidence_required",
+            "widgets_truncated_must_be_false",
+            "all_widgets_missing_or_validly_mapped_struct_parent_precondition",
+            "safe_output_path_policy",
+            "source_overwrite_refusal",
+            "workspace_output_discipline",
+            "post_repair_qpdf",
+            "post_repair_pdfua1_profile",
+            "post_repair_pinned_wcag_profile",
+            "post_repair_iso_profile_no_regression",
+            "post_repair_profile_accounting",
+            "post_repair_form_widget_diagnostic",
+            "preservation_check",
+            "status_truthfulness",
+            "package_truthfulness",
+            "review_required_if_residual_failures_remain"
+          ]
+        }
+      ]
     },
     "PDF/UA-1/7.18.5": {
       "clause": "7.18.5",
@@ -932,7 +991,7 @@
     },
     "PDF/UA-1/7.21.6-1": {
       "clause": "7.21.6-1",
-      "description": ".notdef glyph rendered \u2014 font has missing glyph mappings",
+      "description": ".notdef glyph rendered — font has missing glyph mappings",
       "manual": false,
       "strategies": [
         {
@@ -954,7 +1013,7 @@
     },
     "PDF/UA-1/7.21.7": {
       "clause": "7.21.7",
-      "description": "Font dictionary missing ToUnicode map \u2014 character codes cannot be mapped to Unicode values",
+      "description": "Font dictionary missing ToUnicode map — character codes cannot be mapped to Unicode values",
       "repair_script": null,
       "repair_order": null,
       "run_last": false,
@@ -967,7 +1026,7 @@
     },
     "ISO_32000-1/Annex_L_888": {
       "clause": "Annex_L",
-      "description": "L (List) struct element must not contain content item kid directly \u2014 must use L > LI > LBody > [MCID]",
+      "description": "L (List) struct element must not contain content item kid directly — must use L > LI > LBody > [MCID]",
       "manual": false,
       "strategies": [
         {
@@ -1085,11 +1144,11 @@
     }
   },
   "manual_escalation_triggers": [
-    "Image-only page detected \u2014 OCR required before any repair",
-    "Font not embeddable \u2014 license restriction",
-    "Encryption present \u2014 cannot modify document",
-    "Corrupt xref table \u2014 qpdf repair failed",
+    "Image-only page detected — OCR required before any repair",
+    "Font not embeddable — license restriction",
+    "Encryption present — cannot modify document",
+    "Corrupt xref table — qpdf repair failed",
     "Widget annotations require form remediation"
   ],
-  "agent_usage_instructions": "At the start of each job, after running parse_verapdf_summary.py, look up each failing rule_id in this map. For each match: (a) if manual:true and strategies is empty, emit HERMES_REQUIRED with full rule context; (b) if manual:false, sort strategies by pass_rate desc / pass_count desc / doc_tag_overlap desc and try in order; (c) if all strategies fail, emit HERMES_REQUIRED with full attempt history; (d) if rule_id not found at all, emit HERMES_REQUIRED with unknown_rule flag so the agent researches the rule before writing. Never package a FAIL result \u2014 audit report only goes to output/{TICKET}_remediated/failed/."
+  "agent_usage_instructions": "At the start of each job, after running parse_verapdf_summary.py, look up each failing rule_id in this map. For each match: (a) if manual:true and strategies is empty, emit HERMES_REQUIRED with full rule context; (b) if manual:false, sort strategies by pass_rate desc / pass_count desc / doc_tag_overlap desc and try in order; (c) if all strategies fail, emit HERMES_REQUIRED with full attempt history; (d) if rule_id not found at all, emit HERMES_REQUIRED with unknown_rule flag so the agent researches the rule before writing. Never package a FAIL result — audit report only goes to output/{TICKET}_remediated/failed/."
 }
