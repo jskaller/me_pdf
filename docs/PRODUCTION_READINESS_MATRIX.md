@@ -192,3 +192,21 @@ For executive reporting, prefer one of these approaches:
 ## Limitations
 
 The matrix is only as strong as the artifacts it inspects. If it only finds the WebUI smoke fixture, the report should say synthetic/fixture coverage is one and representative real-PDF coverage is zero. It does not claim 10/10 production readiness, does not mutate final PDFs, does not modify packaging behavior, and does not change package routing.
+
+## Patch H4 corpus profiles and blocker prioritization
+
+Patch H4 adds corpus-profile metadata and blocker prioritization to the matrix without changing repair behavior, package routing, rule-map authority, learned-strategy adoption, or final PDFs.
+
+Use `--profile` to select evidence scope:
+
+```bash
+bash scripts/run-production-readiness-matrix.sh --inspect-existing --profile all
+bash scripts/run-production-readiness-matrix.sh --inspect-existing --profile production
+bash scripts/run-production-readiness-matrix.sh --inspect-existing --profile fixtures
+bash scripts/run-production-readiness-matrix.sh --inspect-existing --profile historical
+bash scripts/run-production-readiness-matrix.sh --inspect-existing --profile actionable
+```
+
+Each row includes `corpus_profile` with `primary_profile`, `included_in_profiles`, `excluded_from_production_reason`, `manifest_source`, and `profile_reason`. Matrix output also includes `corpus_summary` and `blocker_priority_summary`.
+
+For detailed corpus-selection policy, manifest usage, blocker priority buckets, MM-17179/H3 interpretation, and executive reporting guidance, see `docs/PRODUCTION_CORPUS_SELECTION.md`.
