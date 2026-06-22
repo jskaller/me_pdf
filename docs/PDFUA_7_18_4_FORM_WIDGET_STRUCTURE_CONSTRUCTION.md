@@ -1,12 +1,70 @@
 # PDF/UA-1/7.18.4 Form-Widget Structure Construction
 
-Patch: H9 - Controlled Form-Widget Structure Construction Capability
+## Purpose
 
-Baseline: `8f20f6f`
+This document tracks the controlled form-widget structure-construction capability for `PDF/UA-1/7.18.4`. The capability is intended to move the remediation system toward production readiness, not to create a one-off PDF fix and not to bypass the orchestrator-first production workflow.
 
-## Why H9 Exists
+The production user-facing workflow remains:
 
-H8 proved that MM-17179 contains real AcroForm/widget evidence but lacks the tagged-PDF substrate required for a narrow repair:
+```text
+Open WebUI prompt beginning with PDF:
+Hermes loads the pdf-remediation runbook
+/app/tools/orchestrate/remediate.py runs the job
+STATUS/package artifacts truthfully report the terminal outcome
+```
+
+Standalone repair scripts may be used here only as controlled development validation. They do not replace orchestrator production flow.
+
+## H9 controlled fixture capability
+
+H9 added a guarded fixture-scoped capability for AcroForm widget annotations that lack `/StructParent` and are not represented by `/Form` structure elements.
+
+The synthetic fixture shape is:
+
+```text
+one or more AcroForm fields
+one widget annotation per field
+page /Annots membership
+synthetic field names and synthetic values only
+widgets initially lacking /StructParent
+no /StructTreeRoot
+no /ParentTree
+no /Form structure elements
+```
+
+The guarded repair algorithm:
+
+1. opens the PDF with pikepdf;
+2. enumerates widget annotations from page `/Annots`;
+3. preserves AcroForm fields, field names, field types, field-value presence, widget relationships, page membership, page count, and page boxes;
+4. creates `/StructTreeRoot` when missing;
+5. creates `/ParentTree` when missing;
+6. assigns stable integer `/StructParent` values to widgets that lack them;
+7. creates one `/Form` structure element per widget;
+8. links each `/Form` element to its widget annotation through an `/OBJR` object reference;
+9. appends each `/Form` element to the structure root `/K` array;
+10. maps each widget `/StructParent` key through `/ParentTree /Nums`;
+11. writes only to an explicit output path;
+12. emits before/after diagnostics and preservation evidence.
+
+## Guardrails
+
+The repair tool remains guarded:
+
+```text
+source overwrite refused
+workspace job/final/status paths refused for trial apply
+rule-map mutation never performed by the repair tool
+workspace artifact mutation never performed by the repair tool
+production readiness claim never made by the repair tool
+field values not dumped
+```
+
+For non-fixture inputs, apply requires an explicit `--allow-structure-construction-trial` flag and an explicit output path. H10A uses this only for an isolated `/tmp` MM-17179 trial.
+
+## H10/H10A MM-17179 evidence
+
+MM-17179 exhibits the target blocker shape:
 
 ```text
 AcroForm present: true
@@ -20,144 +78,28 @@ Structure element count: 0
 Form structure element count: 0
 ```
 
-That evidence means the next production-readiness step cannot be another standalone diagnostic and cannot safely apply directly to MM-17179. The system needs a controlled, synthetic, non-private fixture that models this blocker shape and proves whether a structure-construction capability is viable.
-
-H9 therefore adds a guarded fixture-scoped capability for PDF/UA-1/7.18.4-style form-widget structure construction.
-
-## Fixture Shape
-
-H9 adds:
+H10A added explicit widget-evidence completeness accounting so the 102-widget MM-17179 source is not blocked by the default bounded report of 100 records. Complete evidence requires:
 
 ```text
-app/tools/dev/generate_form_widget_structure_fixture.py
+widgets_truncated: false
+bounded_widget_records_count == widget_annotation_count
+widget_evidence_complete: true
 ```
 
-The generator creates a small synthetic PDF with:
-
-```text
-one or more AcroForm text fields
-one widget annotation per field
-page /Annots membership
-synthetic field names and synthetic values only
-widgets initially lacking /StructParent
-no /StructTreeRoot
-no /ParentTree
-no /Form structure elements
-```
-
-The fixture is generated during tests or manual runs. H9 does not require committing generated PDFs.
-
-Example command:
-
-```bash
-PYTHONPATH=app python3 app/tools/dev/generate_form_widget_structure_fixture.py \
-  --out /tmp/h9-form-widget-fixture/input.pdf \
-  --report /tmp/h9-form-widget-fixture/generation.json
-```
-
-## Guarded Repair Tool
-
-H9 adds:
-
-```text
-app/tools/repair/repair_form_widget_structure.py
-```
-
-The tool is explicitly guarded:
-
-```text
-fixture-mode apply path: supported
-non-fixture mode: refused
-source overwrite: refused
-rule-map mutation: never performed
-workspace artifact mutation: never performed
-production readiness claim: never made
-```
-
-Dry-run command:
-
-```bash
-PYTHONPATH=app python3 app/tools/repair/repair_form_widget_structure.py \
-  --input /tmp/h9-form-widget-fixture/input.pdf \
-  --dry-run-report /tmp/h9-form-widget-fixture/dry-run.json \
-  --fixture-mode
-```
-
-Apply command:
-
-```bash
-PYTHONPATH=app python3 app/tools/repair/repair_form_widget_structure.py \
-  --input /tmp/h9-form-widget-fixture/input.pdf \
-  --output /tmp/h9-form-widget-fixture/output.pdf \
-  --dry-run-report /tmp/h9-form-widget-fixture/apply-report.json \
-  --apply \
-  --fixture-mode
-```
-
-The apply mode writes only to the explicit output path and refuses to overwrite the source PDF.
-
-## Implemented Algorithm
-
-For controlled fixtures, the repair tool:
-
-1. opens the PDF with pikepdf;
-2. enumerates page widget annotations from page `/Annots`;
-3. preserves AcroForm fields, field names, field types, field value presence, widget relationships, page membership, page count, and page boxes;
-4. creates `/StructTreeRoot` when missing;
-5. creates `/ParentTree` when missing;
-6. assigns stable integer `/StructParent` values to widgets that lack them;
-7. creates one `/Form` structure element per widget;
-8. links each `/Form` element to its widget annotation through an `/OBJR` object reference;
-9. appends each `/Form` element to the structure root `/K` array;
-10. maps each widget `/StructParent` key through the `/ParentTree /Nums` array;
-11. writes a new output PDF only;
-12. emits a bounded JSON report with before/after diagnostics, planned changes, preservation checks, qpdf result when available, and an adoption decision.
-
-## Report Fields
-
-The repair report includes:
-
-```text
-schema
-version
-created_at
-result
-mode
-fixture_mode
-input_pdf
-output_pdf
-target_rule
-read_only
-repair_performed
-rule_map_mutation_performed
-workspace_artifacts_mutated
-safe_to_claim_production_ready
-before
-planned_changes
-after
-preservation
-validation
-decision
-```
-
-The report does not dump field values. It records field-value presence and value type only through the existing form-widget diagnostic.
-
-## Validation and Preservation
-
-The repair tool runs the existing H7/H8 diagnostic before apply and after apply. After a successful fixture apply, the after diagnostic should prove:
+Object-level after diagnostics for the isolated trial must prove:
 
 ```text
 widget annotation count preserved
 widgets missing /StructParent reduced to 0
-widgets with /StructParent increased to expected count
+widgets with /StructParent increased to 102
 /StructTreeRoot present
 /ParentTree present
-/Form structure element count increased
-widgets with ParentTree mapping increased to expected count
-widgets already nested in Form increased to expected count
+/Form structure element count increased to 102
+widgets with ParentTree mapping increased to 102
+widgets already nested in Form increased to 102
 ```
 
-The preservation summary checks:
+The preservation summary must prove:
 
 ```text
 field count preserved
@@ -168,152 +110,139 @@ widget count preserved
 widget page membership preserved
 page count preserved
 page boxes preserved
+semantic widget identity preserved
+exact object identity not falsely claimed
 field values not dumped
 ```
 
-The tool also attempts:
+## qpdf and veraPDF validation
+
+qpdf must pass on any isolated output before adoption is considered.
+
+For this repository, veraPDF validation for H10A/H10A-V must use the orchestrator-approved binary, profile root, runner, XML sidecars, parser, and profile accounting. The old H9/H10A wording that allowed `command -v verapdf` and `veraPDF: NOT_RUN_ENVIRONMENT_LIMITED` as an acceptable validation path is superseded.
+
+Approved paths:
 
 ```text
-qpdf --check output.pdf
+/opt/verapdf-greenfield/verapdf
+/opt/veraPDF-validation-profiles-integration
+/app/tools/audit/run_verapdf_profiles.sh
+/app/tools/audit/parse_verapdf_summary.py
 ```
 
-If qpdf is unavailable, the report records:
+If the approved binary/profile root is genuinely absent, the terminal state is:
 
 ```text
-NOT_RUN_ENVIRONMENT_LIMITED
+VERAPDF_RUN_FAILED
 ```
 
-veraPDF is not run by the tool itself in H9. Manual H9 validation may run veraPDF if available. If unavailable, record:
+not an adoption-ready environment-limited pass.
+
+## Profile accounting
+
+For PDF/UA-1 output, required authoritative profiles are:
 
 ```text
-veraPDF: NOT_RUN_ENVIRONMENT_LIMITED
+PDF_UA/PDFUA-1.xml
+PDF_UA/WCAG-2-2-Machine.xml
 ```
 
-## Production Guardrails
-
-H9 does not integrate this repair into production orchestration.
-
-The following files are intentionally not changed by H9 unless a later adoption gate justifies it:
+The pinned WCAG profile must be exactly:
 
 ```text
-app/tools/audit/rule_repair_map.json
-app/tools/orchestrate/remediate.py
-app/tools/packaging/
+PDF_UA/WCAG-2-2-Machine.xml
 ```
 
-The repair remains isolated and guarded. It does not silently run for production PDFs.
-
-For MM-17179 or other non-fixture inputs, the H9 tool refuses with a blocker such as:
+The ISO profile is informational unless a separate policy marks it authoritative:
 
 ```text
-non-fixture mode is not enabled for H9 structure construction
+PDF_UA/ISO-32000-1-Tagged.xml
 ```
 
-This is intentional. MM-17179 is private production evidence and should not be mutated by H9 unless a later explicit production trial patch authorizes it with stronger gates.
-
-## Rule-Map Adoption
-
-H9 does not require rule-map adoption. Rule-map adoption is allowed only if all gates pass:
+PDF/UA-2 is skipped unless explicitly requested:
 
 ```text
-controlled fixture repair implemented
-controlled fixture qpdf passes
-controlled fixture after diagnostic proves widgets are mapped to /Form
-preservation checks pass
-veraPDF either passes/improves for the target rule or is truthfully marked unavailable
-unit tests pass
-repair remains guarded and does not silently activate unsafe production behavior
+PDF_UA/PDFUA-2.xml
 ```
 
-If any condition is not satisfied, do not modify `app/tools/audit/rule_repair_map.json`.
-
-## Expected Terminal States
-
-H9 uses these terminal states:
+The PDF 2.0 WCAG machine profile must not be used for PDF/UA-1 verdicts:
 
 ```text
-IMPLEMENTED_AND_VALIDATED_ON_FIXTURE
-IMPLEMENTED_BUT_BLOCKED_FOR_PRODUCTION
-BLOCKED_BEFORE_IMPLEMENTATION
+PDF_UA/WCAG-2-2-Machine-PDF20.xml
 ```
 
-Meanings:
+Experimental/custom XML profiles must be listed, hashed, classified, and preserved as diagnostic evidence. They are non-authoritative by default and must not silently pass or fail the H10A-V verdict.
+
+`verapdf_summary.json` is diagnostic-only. Compliance/verdict interpretation must come from per-profile XML sidecars, parser output, and profile accounting.
+
+## H10A-V accounting helper
+
+H10A-V adds:
 
 ```text
-IMPLEMENTED_AND_VALIDATED_ON_FIXTURE:
-  fixture repair ran, after-object evidence passed, preservation passed, and qpdf passed.
-  Production default activation remains false.
-
-IMPLEMENTED_BUT_BLOCKED_FOR_PRODUCTION:
-  fixture repair was implemented or attempted, but one or more gates failed or were unavailable.
-  Keep the repair guarded and do not adopt as production-ready.
-
-BLOCKED_BEFORE_IMPLEMENTATION:
-  input could not be inspected, non-fixture mode was requested, apply lacked an explicit output path,
-  or another pre-implementation safety guard blocked mutation.
+app/tools/audit/verapdf_profile_accounting.py
+app/tools/tests/test_verapdf_profile_accounting_policy.py
 ```
 
-## Required Commands
+The helper records, for each relevant profile:
 
-```bash
-python3 -m py_compile \
-  app/tools/dev/generate_form_widget_structure_fixture.py \
-  app/tools/repair/repair_form_widget_structure.py \
-  app/tools/audit/form_widget_structure_inspection.py
-
-PYTHONPATH=app python3 -m unittest \
-  app/tools/tests/test_form_widget_structure_inspection_policy.py \
-  app/tools/tests/test_form_widget_structure_repair_policy.py \
-  app/tools/tests/test_mm17179_blocker_inspection_policy.py \
-  app/tools/tests/test_production_readiness_matrix_policy.py
+```text
+profile_id
+profile_path
+profile_sha256
+profile_name_or_filename
+classification
+required
+run_by_default
+was_run
+was_skipped
+skip_reason
+verdict_authoritative
+parse_for_rule_map
+command
+output_xml
+stderr_sidecar
+exit_code
+result
+failed_rules
+failed_checks
+passed_rules
+passed_checks
 ```
 
-Manual fixture capability run:
+It writes runtime-only artifacts when run in Docker:
 
-```bash
-rm -rf /tmp/h9-form-widget-fixture
-mkdir -p /tmp/h9-form-widget-fixture
-
-PYTHONPATH=app python3 app/tools/dev/generate_form_widget_structure_fixture.py \
-  --out /tmp/h9-form-widget-fixture/input.pdf \
-  --report /tmp/h9-form-widget-fixture/generation.json
-
-PYTHONPATH=app python3 app/tools/audit/form_widget_structure_inspection.py \
-  /tmp/h9-form-widget-fixture/input.pdf \
-  --out /tmp/h9-form-widget-fixture/before-inspection.json
-
-PYTHONPATH=app python3 app/tools/repair/repair_form_widget_structure.py \
-  --input /tmp/h9-form-widget-fixture/input.pdf \
-  --dry-run-report /tmp/h9-form-widget-fixture/dry-run.json \
-  --fixture-mode
-
-test ! -f /tmp/h9-form-widget-fixture/output.pdf
-
-PYTHONPATH=app python3 app/tools/repair/repair_form_widget_structure.py \
-  --input /tmp/h9-form-widget-fixture/input.pdf \
-  --output /tmp/h9-form-widget-fixture/output.pdf \
-  --dry-run-report /tmp/h9-form-widget-fixture/apply-report.json \
-  --apply \
-  --fixture-mode
-
-test -f /tmp/h9-form-widget-fixture/output.pdf
-qpdf --check /tmp/h9-form-widget-fixture/output.pdf
-
-PYTHONPATH=app python3 app/tools/audit/form_widget_structure_inspection.py \
-  /tmp/h9-form-widget-fixture/output.pdf \
-  --out /tmp/h9-form-widget-fixture/after-inspection.json
+```text
+/tmp/h10av-verapdf-before/profile_accounting.json
+/tmp/h10av-verapdf-after/profile_accounting.json
+/tmp/h10av-verapdf-delta.json
 ```
 
-Optional MM-17179 dry-run only:
+Do not commit these generated artifacts.
 
-```bash
-PYTHONPATH=app python3 app/tools/repair/repair_form_widget_structure.py \
-  --input workspace/input/MM-17179/ROI4987_English_1-26_rev_Fillable.pdf \
-  --dry-run-report /tmp/h9-mm17179-form-widget-dry-run.json
+## H10A-V terminal states
+
+```text
+VERAPDF_DELTA_VALIDATED
+VERAPDF_DELTA_FAILED
+VERAPDF_PROFILE_ACCOUNTING_FAILED
+VERAPDF_RUN_FAILED
 ```
 
-Expected H9 result for non-fixture MM-17179 dry-run is a truthful block, not repair.
+`VERAPDF_DELTA_VALIDATED` is allowed only when required profiles exist, required profile XML sidecars are present and parseable, `PDF/UA-1/7.18.4` cleared or improved, no unacceptable new authoritative failures were introduced, and experimental/custom profiles were accounted without becoming authoritative by default.
 
-## Production Readiness Statement
+`VERAPDF_DELTA_FAILED` means the target rule was unchanged/regressed or authoritative failures worsened.
 
-H9 does not claim production readiness. It adds a controlled, fixture-scoped construction capability and a validation framework for future guarded adoption. Production integration, rule-map activation, and MM-17179 apply remain future gated work.
+`VERAPDF_PROFILE_ACCOUNTING_FAILED` means profile selection/classification/hash/path/command/result accounting is incomplete or the wrong PDF/UA-1/WCAG profile is used.
+
+`VERAPDF_RUN_FAILED` means the approved validator runtime, required profile, before PDF, after PDF, XML sidecar, or parser execution is missing or failed.
+
+## Rule-map and production integration
+
+Do not modify `app/tools/audit/rule_repair_map.json`, `app/tools/orchestrate/remediate.py`, or `app/tools/packaging/` as part of H10A-V.
+
+Guarded strategy adoption may be reconsidered only after H10A-V reaches `VERAPDF_DELTA_VALIDATED`, and even then it must be a separate non-default, precondition-gated patch with no false production-readiness claim.
+
+## Production-readiness statement
+
+This capability is not production-ready merely because object diagnostics, qpdf, or preservation pass. H10A-V is required validator/profile-accounting evidence before adoption can be reconsidered. Production readiness still requires orchestrator integration, rule-map governance, truthful STATUS/outcome packaging, and end-to-end validation in a later patch.
