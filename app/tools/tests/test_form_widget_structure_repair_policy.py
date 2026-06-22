@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Policy tests for H9 guarded form-widget structure construction."""
+"""Policy tests for guarded H9/H10 form-widget structure construction."""
 from __future__ import annotations
 
 import hashlib
@@ -9,7 +9,13 @@ from pathlib import Path
 
 from tools.audit.form_widget_structure_inspection import inspect_pdf_with_pikepdf
 from tools.dev.generate_form_widget_structure_fixture import generate_fixture
-from tools.repair.repair_form_widget_structure import build_report
+from tools.repair.repair_form_widget_structure import (
+    H10_TERMINAL_ATTEMPTED_NOT_ADOPTED,
+    H10_TERMINAL_DRY_RUN_BLOCKED,
+    H10_TERMINAL_DRY_RUN_READY,
+    H10_TERMINAL_VALIDATED,
+    build_report,
+)
 
 
 def _pikepdf_available() -> bool:
@@ -24,7 +30,7 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-@unittest.skipUnless(_pikepdf_available(), "pikepdf is required for H9 fixture repair policy tests")
+@unittest.skipUnless(_pikepdf_available(), "pikepdf is required for form-widget repair policy tests")
 class FormWidgetStructureRepairPolicyTests(unittest.TestCase):
     def test_fixture_generator_creates_synthetic_pdf_with_untagged_widgets(self) -> None:
         with tempfile.TemporaryDirectory(prefix="h9_form_widget_fixture_") as td:
@@ -44,7 +50,7 @@ class FormWidgetStructureRepairPolicyTests(unittest.TestCase):
         self.assertEqual(evidence["form_struct_element_count"], 0)
 
     def test_dry_run_reports_planned_changes_and_writes_no_output_pdf(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="h9_form_widget_dry_run_") as td:
+        with tempfile.TemporaryDirectory(prefix="h10_form_widget_dry_run_") as td:
             root = Path(td)
             input_pdf = root / "input.pdf"
             output_pdf = root / "output.pdf"
@@ -54,6 +60,7 @@ class FormWidgetStructureRepairPolicyTests(unittest.TestCase):
 
             self.assertFalse(output_pdf.exists())
             self.assertEqual(report["mode"], "dry_run")
+            self.assertIsNone(report["output_pdf"])
             self.assertTrue(report["read_only"])
             self.assertFalse(report["repair_performed"])
             self.assertFalse(report["rule_map_mutation_performed"])
@@ -63,6 +70,65 @@ class FormWidgetStructureRepairPolicyTests(unittest.TestCase):
             self.assertTrue(report["planned_changes"]["create_struct_tree_root"])
             self.assertTrue(report["planned_changes"]["create_parent_tree"])
             self.assertEqual(report["planned_changes"]["create_form_struct_elements_count"], 1)
+            self.assertEqual(report["decision"]["terminal_state"], H10_TERMINAL_DRY_RUN_READY)
+
+    def test_non_fixture_dry_run_is_allowed_and_non_mutating(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="h10_form_widget_nonfixture_dry_run_") as td:
+            root = Path(td)
+            input_pdf = root / "input.pdf"
+            output_pdf = root / "output.pdf"
+            generate_fixture(input_pdf, field_count=1)
+            before_hash = _sha256(input_pdf)
+
+            report = build_report(input_pdf, output_pdf=output_pdf, apply=False, fixture_mode=False)
+
+            self.assertFalse(output_pdf.exists())
+            self.assertEqual(_sha256(input_pdf), before_hash)
+            self.assertEqual(report["mode"], "dry_run")
+            self.assertTrue(report["read_only"])
+            self.assertFalse(report["repair_performed"])
+            self.assertTrue(report["apply_allowed"])
+            self.assertEqual(report["decision"]["terminal_state"], H10_TERMINAL_DRY_RUN_READY)
+            self.assertIn("before_object_evidence", report)
+            self.assertIn("planned_struct_parent_assignments", report["planned_changes"])
+            self.assertFalse(report["safe_to_claim_production_ready"])
+
+    def test_non_fixture_apply_is_refused_without_explicit_trial_flag(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="h10_form_widget_nonfixture_apply_refused_") as td:
+            root = Path(td)
+            input_pdf = root / "input.pdf"
+            output_pdf = root / "output.pdf"
+            generate_fixture(input_pdf, field_count=1)
+
+            report = build_report(input_pdf, output_pdf=output_pdf, apply=True, fixture_mode=False)
+
+            self.assertFalse(output_pdf.exists())
+            self.assertEqual(report["decision"]["terminal_state"], H10_TERMINAL_DRY_RUN_BLOCKED)
+            self.assertFalse(report["repair_performed"])
+            self.assertIn("--allow-structure-construction-trial", " ".join(report["apply_blockers"]))
+
+    def test_non_fixture_trial_apply_writes_only_explicit_output(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="h10_form_widget_nonfixture_trial_apply_") as td:
+            root = Path(td)
+            input_pdf = root / "input.pdf"
+            output_pdf = root / "output.pdf"
+            generate_fixture(input_pdf, field_count=1)
+            before_hash = _sha256(input_pdf)
+
+            report = build_report(
+                input_pdf,
+                output_pdf=output_pdf,
+                apply=True,
+                fixture_mode=False,
+                allow_structure_construction_trial=True,
+            )
+
+            self.assertTrue(output_pdf.exists())
+            self.assertEqual(_sha256(input_pdf), before_hash)
+            self.assertFalse(report["rule_map_mutation_performed"])
+            self.assertFalse(report["workspace_artifacts_mutated"])
+            self.assertFalse(report["safe_to_claim_production_ready"])
+            self.assertIn(report["decision"]["terminal_state"], {H10_TERMINAL_VALIDATED, H10_TERMINAL_ATTEMPTED_NOT_ADOPTED})
 
     def test_apply_writes_only_explicit_output_and_constructs_form_structure(self) -> None:
         with tempfile.TemporaryDirectory(prefix="h9_form_widget_apply_") as td:
@@ -90,10 +156,7 @@ class FormWidgetStructureRepairPolicyTests(unittest.TestCase):
             self.assertFalse(report["rule_map_mutation_performed"])
             self.assertFalse(report["workspace_artifacts_mutated"])
             self.assertFalse(report["safe_to_claim_production_ready"])
-            self.assertIn(report["decision"]["terminal_state"], {
-                "IMPLEMENTED_AND_VALIDATED_ON_FIXTURE",
-                "IMPLEMENTED_BUT_BLOCKED_FOR_PRODUCTION",
-            })
+            self.assertIn(report["decision"]["terminal_state"], {H10_TERMINAL_VALIDATED, H10_TERMINAL_ATTEMPTED_NOT_ADOPTED})
 
     def test_preservation_summary_confirms_fields_widgets_pages_and_boxes(self) -> None:
         with tempfile.TemporaryDirectory(prefix="h9_form_widget_preserve_") as td:
@@ -116,6 +179,19 @@ class FormWidgetStructureRepairPolicyTests(unittest.TestCase):
             self.assertTrue(preservation["field_values_not_dumped"])
             self.assertFalse(preservation["exact_object_identity_claimed"])
 
+    def test_preservation_failures_block_adoption(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="h10_form_widget_preserve_fail_") as td:
+            root = Path(td)
+            input_pdf = root / "input.pdf"
+            output_pdf = root / "output.pdf"
+            generate_fixture(input_pdf, field_count=1)
+            report = build_report(input_pdf, output_pdf=output_pdf, apply=True, fixture_mode=True)
+
+            report["preservation"]["field_count_preserved"] = False
+            adoption_ready = report["decision"]["terminal_state"] == H10_TERMINAL_VALIDATED and all(report["preservation"].values())
+
+            self.assertFalse(adoption_ready)
+
     def test_report_does_not_dump_synthetic_field_values(self) -> None:
         with tempfile.TemporaryDirectory(prefix="h9_form_widget_redact_") as td:
             root = Path(td)
@@ -130,32 +206,18 @@ class FormWidgetStructureRepairPolicyTests(unittest.TestCase):
             self.assertIn("field_value_type", serialized)
             self.assertNotIn("fixture-value-1", serialized)
 
-    def test_non_fixture_mode_refuses_unsafe_repair(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="h9_form_widget_non_fixture_") as td:
-            root = Path(td)
-            input_pdf = root / "input.pdf"
-            output_pdf = root / "output.pdf"
-            generate_fixture(input_pdf, field_count=1)
-
-            report = build_report(input_pdf, output_pdf=output_pdf, apply=True, fixture_mode=False)
-
-            self.assertFalse(output_pdf.exists())
-            self.assertEqual(report["decision"]["terminal_state"], "BLOCKED_BEFORE_IMPLEMENTATION")
-            self.assertFalse(report["repair_performed"])
-            self.assertIn("non-fixture mode", " ".join(report["decision"]["blockers"]))
-
     def test_missing_input_pdf_fails_truthfully(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="h9_form_widget_missing_") as td:
+        with tempfile.TemporaryDirectory(prefix="h10_form_widget_missing_") as td:
             root = Path(td)
-            report = build_report(root / "missing.pdf", output_pdf=root / "output.pdf", apply=True, fixture_mode=True)
+            report = build_report(root / "missing.pdf", output_pdf=root / "output.pdf", apply=False, fixture_mode=False)
 
-            self.assertEqual(report["decision"]["terminal_state"], "BLOCKED_BEFORE_IMPLEMENTATION")
+            self.assertEqual(report["decision"]["terminal_state"], H10_TERMINAL_DRY_RUN_BLOCKED)
             self.assertFalse(report["repair_performed"])
             self.assertFalse(report["safe_to_claim_production_ready"])
-            self.assertIn("input PDF could not be inspected", report["decision"]["blockers"])
+            self.assertIn("input PDF is inspectable", report["preconditions_failed"])
 
     def test_apply_requires_explicit_distinct_output_path(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="h9_form_widget_output_guard_") as td:
+        with tempfile.TemporaryDirectory(prefix="h10_form_widget_output_guard_") as td:
             root = Path(td)
             input_pdf = root / "input.pdf"
             generate_fixture(input_pdf, field_count=1)
@@ -167,6 +229,25 @@ class FormWidgetStructureRepairPolicyTests(unittest.TestCase):
             self.assertIn("output path must not overwrite input PDF", same_output["decision"]["blockers"])
             self.assertFalse(missing_output["repair_performed"])
             self.assertFalse(same_output["repair_performed"])
+
+    def test_apply_cannot_write_into_workspace_package_paths(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="h10_form_widget_workspace_guard_") as td:
+            root = Path(td)
+            input_pdf = root / "input.pdf"
+            generate_fixture(input_pdf, field_count=1)
+            forbidden_output = Path("/app/workspace/jobs/MM-17179_ROI4987_English_1-26_rev_Fillable/final/output.pdf")
+
+            report = build_report(
+                input_pdf,
+                output_pdf=forbidden_output,
+                apply=True,
+                fixture_mode=False,
+                allow_structure_construction_trial=True,
+            )
+
+            self.assertEqual(report["decision"]["terminal_state"], H10_TERMINAL_DRY_RUN_BLOCKED)
+            self.assertFalse(report["repair_performed"])
+            self.assertIn("workspace job/final package/status", " ".join(report["apply_blockers"]))
 
 
 if __name__ == "__main__":
