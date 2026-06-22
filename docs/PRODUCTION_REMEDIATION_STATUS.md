@@ -22,16 +22,26 @@ Open WebUI prompt beginning with PDF:
 master
 ```
 
-## Current commit after H10G
+## Current commit after H10H
 
 ```text
-H10G terminal status commit: check git log -1 after this status update.
-Last implementation/documentation commit before status finalization: 5272d66
+H10H final status commit: this docs/PRODUCTION_REMEDIATION_STATUS.md update commit. Check git log -1 for the exact SHA.
+Implementation/doc commit before final status update: aacb475
 ```
 
-This status file is the authoritative H10G handoff record. If a later doc-only commit updates commit references, that later commit supersedes the short hash above.
-
 ## Last completed patch
+
+```text
+H10H - Orchestrator Guarded Runtime Integration for PDF/UA-1/7.18.4
+```
+
+H10H terminal state:
+
+```text
+ORCHESTRATOR_RUNTIME_BLOCKED_BY_STATUS_PACKAGE_CONTRACT
+```
+
+## Previous completed patch
 
 ```text
 H10G - Guarded Runtime Integration for PDF/UA-1/7.18.4 Form-Widget Repair
@@ -41,18 +51,6 @@ H10G terminal state:
 
 ```text
 LOOKUP_GATING_IMPLEMENTED_ORCHESTRATOR_DEFERRED
-```
-
-## Previous completed patch
-
-```text
-H10F - Guarded Metadata Adoption and Runtime-Gating Contract for PDF/UA-1/7.18.4
-```
-
-H10F terminal state:
-
-```text
-GUARDED_METADATA_ADOPTED_RUNTIME_NOT_ACTIVE
 ```
 
 ## Target rule
@@ -112,49 +110,47 @@ requires_explicit_activation_patch: true
 requires_runtime_gating_implementation: true
 ```
 
-## H10G guarded runtime integration status
+## H10G guarded lookup status
 
 ```text
 lookup guarded-candidate gating implemented: true
-orchestrator guarded-runtime integration implemented: false
-orchestrator guarded-runtime integration deferred: true
-runtime integration default-on: false
-```
-
-The H10G lookup gate is explicit and fail-closed:
-
-```text
 required lookup flag: --enable-guarded-candidates
-required precondition input: --precondition-report <path>
-```
-
-Default lookup behavior remains safe:
-
-```text
+required lookup precondition input: --precondition-report <path>
+default lookup behavior changed: false
 default lookup evaluates guarded candidates: false
 default lookup emits repair_form_widget_structure.py: false
 default lookup repair_steps for PDF/UA-1/7.18.4: []
 default lookup result for only PDF/UA-1/7.18.4: ALL_MANUAL
-```
-
-Guarded lookup behavior:
-
-```text
 guarded lookup without precondition report: blocked
 guarded lookup with missing precondition report path: blocked
 guarded lookup with malformed precondition report: blocked
 guarded lookup with failed preconditions: blocked
 guarded lookup with valid preconditions: emits guarded repair step
-guarded repair step is distinguishable from active strategy steps: true
 ```
 
-## Active strategies status
+## H10H guarded orchestrator runtime status
 
 ```text
-rule_repair_map.json changed by H10G: false
-active strategies[] for PDF/UA-1/7.18.4 changed: false
-active strategies[] for PDF/UA-1/7.18.4 remains: []
-repair_form_widget_structure.py added to active strategies[]: false
+orchestrator guarded runtime implemented: false
+orchestrator guarded runtime integrated: false
+orchestrator guarded runtime blocked: true
+orchestrator guarded runtime terminal state: ORCHESTRATOR_RUNTIME_BLOCKED_BY_STATUS_PACKAGE_CONTRACT
+guarded runtime default-on: false
+explicit orchestrator flag enabling guarded form-widget runtime: none implemented in H10H
+default orchestrator behavior changed: false
+default lookup behavior changed: false
+lookup_repair_plan.py changed by H10H: false
+repair_form_widget_structure.py changed by H10H: false
+rule_repair_map.json changed by H10H: false
+active strategies[] changed by H10H: false
+```
+
+H10H did not add `--enable-guarded-form-widget-repair` to `app/tools/orchestrate/remediate.py`.
+
+Reason:
+
+```text
+The current orchestrator can truthfully package existing remediation outcomes, but the guarded form-widget repair requires a complete acceptance/status-package contract before it can be wired safely. H10H found that the orchestrator path does not yet make the full guarded post-repair bundle authoritative for intermediate guarded outputs: qpdf after repair, pinned WCAG, ISO no-regression, profile accounting, after-repair form-widget diagnostic, preservation/equivalent QA, and residual-failure routing to REVIEW_REQUIRED rather than PASS. Enabling runtime before those checks are wired would risk false success or wrong artifact routing.
 ```
 
 ## Required guarded lookup preconditions
@@ -192,36 +188,28 @@ source overwrite is not allowed
 output path discipline is explicit and safe
 ```
 
-## Required guarded post-validations
+## Required guarded post-validations still blocking runtime integration
 
-Any future orchestrator runtime caller must run the full guarded post-validation bundle:
+Before guarded orchestrator runtime can be enabled, the orchestrator must make these checks authoritative for the guarded intermediate output:
 
 ```text
-qpdf
-verapdf_pdfua1
-verapdf_pinned_wcag
-verapdf_iso_no_regression
-profile_accounting
-form_widget_structure_inspection
-preservation
+qpdf after guarded repair
+veraPDF PDF/UA-1 after guarded repair
+pinned WCAG profile after guarded repair
+ISO no-regression review
+profile accounting
+after-repair form-widget diagnostic
+preservation / equivalent QA
+truthful STATUS/package behavior for residual failures and intermediate guarded output routing
 ```
 
-Residual failures must produce REVIEW_REQUIRED rather than PASS.
+Residual failures must produce `REVIEW_REQUIRED`, `FAIL`, or `ESCALATION` according to policy, never `PASS`.
 
-## Orchestrator deferral reason
-
-H10G did not wire `app/tools/orchestrate/remediate.py` to invoke the repair.
-
-Reason:
+## Active strategies status
 
 ```text
-lookup can now fail closed and emit a guarded repair step, but full orchestrator runtime still needs a separate patch to wire safe intermediate output paths, complete post-validation, truthful STATUS.json and orchestrator_outcome.json behavior, and deliverables packaging safety. Implementing orchestrator invocation without those contracts would risk false success or wrong artifact routing.
-```
-
-Additional precondition-contract note:
-
-```text
-form_widget_structure_inspection.py supplies object evidence such as widget counts, truncation status, AcroForm presence, StructTreeRoot/ParentTree presence, and redaction status. It does not itself produce every runtime-planning assertion required by H10G, including planned_struct_parent_assignments and planned_form_struct_elements. H10G therefore requires those fields from a guarded precondition report or future orchestrator wrapper.
+active strategies[] for PDF/UA-1/7.18.4 remains: []
+repair_form_widget_structure.py added to active strategies[]: false
 ```
 
 ## Production path evidence status
@@ -229,25 +217,28 @@ form_widget_structure_inspection.py supplies object evidence such as widget coun
 ```text
 WebUI production-path evidence collected: false
 orchestrator end-to-end guarded-runtime evidence collected: false
+STATUS/package behavior validated end-to-end: false
 STATUS.json production truthfulness verified end-to-end: false
 orchestrator_outcome.json production truthfulness verified end-to-end: false
 deliverables package production evidence collected: false
+runtime smoke run: false
+runtime smoke reason: guarded orchestrator runtime not enabled
 ```
 
-## Files changed by H10G
+## Files changed by H10H
 
 ```text
-app/tools/audit/lookup_repair_plan.py
-app/tools/tests/test_lookup_repair_plan_guarded_candidates_policy.py
-docs/H10G_GUARDED_FORM_WIDGET_RUNTIME_INTEGRATION.md
+app/tools/tests/test_orchestrator_guarded_form_widget_policy.py
+docs/H10H_ORCHESTRATOR_GUARDED_FORM_WIDGET_RUNTIME.md
 docs/PRODUCTION_REMEDIATION_STATUS.md
 ```
 
-## Files not changed by H10G
+## Files intentionally not changed by H10H
 
 ```text
-app/tools/audit/rule_repair_map.json
 app/tools/orchestrate/remediate.py
+app/tools/audit/lookup_repair_plan.py
+app/tools/audit/rule_repair_map.json
 app/tools/repair/repair_form_widget_structure.py
 app/tools/packaging/status_json_writer.py
 app/tools/packaging/package_deliverables.py
@@ -260,25 +251,25 @@ validator XML artifacts
 ## Remaining path to production readiness
 
 ```text
-1. H10H: wire orchestrator guarded-runtime integration behind an explicit opt-in flag.
-2. Generate or load the guarded precondition report from the job workspace.
-3. Run repair_form_widget_structure.py only to a safe intermediate output path.
-4. Refuse source overwrite and final/status/package direct writes during repair.
-5. Run qpdf, veraPDF PDF/UA-1, pinned WCAG, ISO regression, profile accounting, post-repair form-widget inspection, and preservation gates.
-6. Preserve REVIEW_REQUIRED if residual failures remain.
-7. Prove STATUS.json and orchestrator_outcome.json truthfulness.
-8. Prove deliverables package truthfulness.
-9. Run WebUI prompt beginning with PDF: through Hermes and the orchestrator.
+1. H10I: add the guarded form-widget acceptance/status-package contract before runtime activation.
+2. Wire qpdf, pinned WCAG, ISO no-regression, profile accounting, after-repair form-widget inspection, and preservation/equivalent QA to the guarded intermediate output.
+3. Prove residual failures cannot produce PASS.
+4. Prove STATUS.json, orchestrator_outcome.json, and package routing remain truthful for guarded intermediate outputs.
+5. Only then add an explicit --enable-guarded-form-widget-repair flag.
+6. Run guarded orchestrator smoke on MM-17179 or a repo-approved equivalent input.
+7. Run WebUI prompt beginning with PDF: through Hermes and collect production-path evidence.
 ```
 
 ## Next recommended patch
 
 ```text
-H10H - Orchestrator guarded-runtime integration for PDF/UA-1/7.18.4
+H10I - Guarded form-widget acceptance/status-package contract
 ```
+
+H10I should fix the exact blocker, not redesign the pipeline.
 
 ## Production-readiness statement
 
 Production readiness is not claimed.
 
-H10G implements guarded lookup gating only. The system has not yet proven the full intended production path from WebUI `PDF:` prompt through Hermes, orchestrator guarded runtime, validation, truthful status, and deliverables packaging.
+H10H confirms that H10G lookup gating remains safe and that default orchestrator behavior remains unchanged. Guarded form-widget runtime is still not integrated because the missing guarded acceptance/status-package contract must be implemented first. The full intended production path from WebUI `PDF:` prompt through Hermes, orchestrator guarded runtime, validation, truthful status, and deliverables packaging has not yet been proven.
