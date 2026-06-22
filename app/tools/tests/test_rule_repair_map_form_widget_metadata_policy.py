@@ -2,9 +2,9 @@
 """H10B/H10C policy tests for PDF/UA-1/7.18.4 form-widget metadata adoption.
 
 H10B deferred metadata adoption because the H10A-V ISO-32000-1 informational
-profile regressed from PASS to FAIL. H10C adds ISO regression review tooling but
-keeps the canonical rule map unchanged until runtime XML evidence can classify
-that regression safely.
+profile regressed from PASS to FAIL. H10C reviewed runtime ISO evidence and
+classified the regression as a structural side effect, so the canonical rule map
+remains unchanged until the repair is adjusted.
 """
 from __future__ import annotations
 
@@ -43,8 +43,13 @@ class FormWidgetMetadataDeferralPolicyTests(unittest.TestCase):
         self.assertIn("after: FAIL", self.h10b_decision_doc)
         self.assertIn("classification: informational", self.h10b_decision_doc)
 
-    def test_h10c_keeps_metadata_deferred_while_iso_review_is_inconclusive(self) -> None:
-        self.assertIn("ISO_REVIEW_INCONCLUSIVE", self.h10c_decision_doc)
+    def test_h10c_blocks_metadata_for_structural_iso_side_effect(self) -> None:
+        self.assertIn("ISO_REGRESSION_REQUIRES_REPAIR_CHANGE", self.h10c_decision_doc)
+        self.assertIn("STRUCTURAL_SIDE_EFFECT", self.h10c_decision_doc)
+        self.assertIn("ISO 19005-2:2011/Annex_L", self.h10c_decision_doc)
+        self.assertIn("correlation_to_form_widget_objects: true", self.h10c_decision_doc)
+        self.assertIn("correlation_to_struct_tree_root: true", self.h10c_decision_doc)
+        self.assertIn("correlation_to_parent_tree: true", self.h10c_decision_doc)
         self.assertIn("No guarded metadata is adopted", self.h10c_decision_doc)
         self.assertIn("No active executable strategy is added", self.h10c_decision_doc)
         self.assertIn("must not emit tools/repair/repair_form_widget_structure.py", self.h10c_decision_doc)
@@ -57,7 +62,7 @@ class FormWidgetMetadataDeferralPolicyTests(unittest.TestCase):
             [strategy.get("repair_script") for strategy in active_strategies],
         )
 
-    def test_no_guarded_metadata_was_adopted_while_deferred_or_inconclusive(self) -> None:
+    def test_no_guarded_metadata_was_adopted_while_iso_regression_requires_repair_change(self) -> None:
         self.assertNotIn("guarded_strategy_candidates", self.entry)
         self.assertNotIn("reviewed_strategy_metadata", self.entry)
         self.assertNotIn("reviewed_learned_strategies", self.entry)
