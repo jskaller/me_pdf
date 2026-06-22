@@ -3,21 +3,12 @@
 ## Terminal state
 
 ```text
-PENDING_RUNTIME_VALIDATION
-```
-
-H10D terminal state must be finalized after the Hermes runtime validation pass as exactly one of:
-
-```text
-ISO_SIDE_EFFECT_FIXED_TARGET_RULE_STILL_CLEARS
-ISO_SIDE_EFFECT_PARTIALLY_FIXED_ADOPTION_BLOCKED
 ISO_SIDE_EFFECT_NOT_FIXED_REPAIR_BLOCKED
-ISO_SIDE_EFFECT_FIX_UNSAFE
 ```
 
 ## Scope
 
-H10D attempts a focused repair adjustment for the H10C ISO tagged-profile structural side effect introduced by the form-widget structure-construction trial.
+H10D attempted a focused repair adjustment for the H10C ISO tagged-profile structural side effect introduced by the form-widget structure-construction trial.
 
 The production-readiness goal remains the orchestrator-first workflow:
 
@@ -80,7 +71,7 @@ Reasoning:
 ```text
 /ParentTreeNextKey is a /StructTreeRoot key, not a key on the ParentTree number-tree dictionary.
 The H10C ISO review correlated the regression with /StructTreeRoot and /ParentTree.
-Moving the key to the correct structure root location and sorting /Nums is the smallest safe structure-tree correction before considering broader repair changes.
+Moving the key to the correct structure root location and sorting /Nums was the smallest safe structure-tree correction to attempt before considering broader repair changes.
 ```
 
 ## Fixture coverage added
@@ -121,6 +112,108 @@ non-fixture apply guard
 lookup safety via rule-map policy tests
 ```
 
+## Runtime validation result
+
+H10D reran the isolated MM-17179 apply to `/tmp` only.
+
+Repair apply result:
+
+```text
+repair_performed: true
+terminal_state: MM17179_REPAIR_VALIDATED
+assigned_struct_parent_count: 102
+created_form_struct_elements_count: 102
+parent_tree_entries_created: 102
+parent_tree_next_key_location: StructTreeRoot
+parent_tree_nums_sorted: true
+rule_map_mutation_performed: false
+workspace_artifacts_mutated: false
+safe_to_claim_production_ready: false
+```
+
+qpdf result:
+
+```text
+PASS
+```
+
+Preservation summary:
+
+```text
+field_count_preserved: true
+field_names_preserved: true
+field_types_preserved: true
+field_value_presence_preserved: true
+field_values_not_dumped: true
+page_boxes_preserved: true
+page_count_preserved: true
+semantic_widget_identity_preserved: true
+widget_count_preserved: true
+widget_page_membership_preserved: true
+```
+
+Profile accounting result:
+
+```text
+terminal_state: VERAPDF_DELTA_VALIDATED
+verdict_candidate: VALIDATED_FOR_ADOPTION_CONSIDERATION
+target_rule_before_count: 204
+target_rule_after_count: 0
+target_rule_status: CLEARED
+pdfua1_profile_result_before: FAIL
+pdfua1_profile_result_after: FAIL
+wcag_profile_result_before: FAIL
+wcag_profile_result_after: FAIL
+iso_profile_result_before: PASS
+iso_profile_result_after: FAIL
+new_rule_ids: []
+increased_rule_ids: []
+accounting_blockers: []
+```
+
+ISO review result:
+
+```text
+before_iso_result: PASS
+after_iso_result: FAIL
+new_iso_rule_ids: ['ISO 19005-2:2011/Annex_L']
+increased_iso_rule_ids: []
+new_or_increased_iso_checks: [{'after_failed_checks': 1, 'before_failed_checks': 0, 'delta': 1, 'rule_id': 'ISO 19005-2:2011/Annex_L'}]
+correlation_to_form_widget_objects: True
+correlation_to_struct_tree_root: True
+correlation_to_parent_tree: True
+correlation_to_objr: False
+correlation_to_struct_parent: False
+classification: STRUCTURAL_SIDE_EFFECT
+blocks_metadata_adoption: True
+blocks_runtime_activation: True
+recommendation: New or increased ISO checks correlate with form-widget or structure-construction evidence.
+```
+
+## H10D interpretation
+
+H10D preserved the target-rule clearance:
+
+```text
+PDF/UA-1/7.18.4: 204 → 0
+```
+
+H10D did not introduce new or increased authoritative PDF/UA-1/WCAG rule IDs:
+
+```text
+new_rule_ids: []
+increased_rule_ids: []
+```
+
+However, H10D did not fix the ISO tagged-profile side effect:
+
+```text
+ISO-32000-1-Tagged: PASS → FAIL
+ISO classification: STRUCTURAL_SIDE_EFFECT
+```
+
+Therefore H10D remains blocked for metadata adoption and runtime activation.
+
 ## Rule-map status
 
 H10D does not change:
@@ -133,7 +226,7 @@ No guarded metadata is adopted in H10D.
 
 No active executable strategy is added.
 
-`PDF/UA-1/7.18.4` remains non-runtime-active unless a later patch explicitly implements guarded runtime integration.
+`PDF/UA-1/7.18.4` remains non-runtime-active unless a later patch explicitly implements guarded runtime integration after the ISO side effect is fixed or a different safe path is selected.
 
 ## Lookup status
 
@@ -163,52 +256,21 @@ H10D does not claim production readiness.
 
 H10D does not activate runtime form-widget repair.
 
-H10D must not commit private PDFs, generated PDFs, workspace artifacts, validator XML outputs, parsed-failure JSON, profile-accounting JSON, delta JSON, or ISO review JSON.
+H10D does not commit private PDFs, generated PDFs, workspace artifacts, validator XML outputs, parsed-failure JSON, profile-accounting JSON, delta JSON, or ISO review JSON.
 
-## Required runtime validation
+## Required next action
 
-Run the H10D Hermes runtime validation against MM-17179 using `/tmp` output only.
+The next patch must continue repair adjustment or choose a different blocker-family path only if this form-widget repair path is proven unsafe.
 
-Success requires:
-
-```text
-qpdf passes.
-Object diagnostics pass.
-Preservation passes.
-PDF/UA-1/7.18.4 remains cleared: before 204, after 0.
-Required PDF/UA-1 and pinned WCAG profiles run and parse.
-No new authoritative PDF/UA-1/WCAG regression appears.
-ISO-32000-1-Tagged does not regress PASS → FAIL.
-ISO regression review is BENIGN_INFORMATIONAL or no-regression equivalent.
-lookup_repair_plan.py does not emit repair_form_widget_structure.py.
-rule_repair_map.json is unchanged.
-orchestrator is unchanged.
-packaging/status is unchanged.
-No private/generated/workspace artifacts are committed.
-```
-
-## Pending decision
-
-If runtime validation proves the ISO side effect is fixed while `PDF/UA-1/7.18.4` still clears, finalize H10D as:
+The next form-widget repair investigation should focus on structure-tree construction beyond the H10D key-placement hygiene fix, especially:
 
 ```text
-ISO_SIDE_EFFECT_FIXED_TARGET_RULE_STILL_CLEARS
+root /K structure shape and whether direct Form children are sufficient
+whether a Document or other grouping StructElem is required
+OBJR placement and /K shape under Form elements
+ParentTree value shape for annotation StructParent entries
+whether /StructParent or /StructParents handling needs a different object/page relationship
+validator-specific details behind ISO 19005-2:2011/Annex_L
 ```
 
-If the ISO side effect remains, finalize H10D as:
-
-```text
-ISO_SIDE_EFFECT_NOT_FIXED_REPAIR_BLOCKED
-```
-
-If the ISO evidence improves but remains unsafe or target-rule clearance becomes unstable, finalize H10D as:
-
-```text
-ISO_SIDE_EFFECT_PARTIALLY_FIXED_ADOPTION_BLOCKED
-```
-
-If runtime evidence shows that fixing this safely requires broad structural rewrite or unsafe object surgery, finalize H10D as:
-
-```text
-ISO_SIDE_EFFECT_FIX_UNSAFE
-```
+A future patch may only reconsider guarded metadata adoption after ISO no longer regresses or the side effect is otherwise proved benign under the project’s profile-accounting policy.
