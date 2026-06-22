@@ -4,6 +4,8 @@
 H9 proved a controlled structure-construction capability on synthetic fixtures.
 H10 keeps production behavior disabled while allowing non-mutating non-fixture
 dry-runs and an explicitly flagged isolated trial apply for MM-17179-style PDFs.
+H10A passes an explicit widget evidence bound through the repair dry-run/apply
+path and refuses apply when widget evidence is still truncated.
 """
 from __future__ import annotations
 
@@ -15,10 +17,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from tools.audit.form_widget_structure_inspection import TARGET_RULE, inspect_pdf_with_pikepdf
+from tools.audit.form_widget_structure_inspection import (
+    MAX_WIDGETS_DEFAULT,
+    TARGET_RULE,
+    inspect_pdf_with_pikepdf,
+)
 
 SCHEMA = "montefiore.form_widget_structure_repair"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 H10_TERMINAL_DRY_RUN_BLOCKED = "MM17179_DRY_RUN_BLOCKED"
 H10_TERMINAL_ATTEMPTED_NOT_ADOPTED = "MM17179_REPAIR_ATTEMPTED_NOT_ADOPTED"
@@ -69,6 +75,16 @@ def _page_boxes(evidence: dict[str, Any]) -> list[tuple[int, tuple[float, ...], 
     return out
 
 
+def _bounded_widget_count(before: dict[str, Any]) -> int:
+    return int(before.get("bounded_widget_records_count", before.get("widgets_bounded_count", 0)) or 0)
+
+
+def _widget_evidence_complete(before: dict[str, Any]) -> bool:
+    widget_count = int(before.get("widget_annotation_count", 0) or 0)
+    bounded_count = _bounded_widget_count(before)
+    return bool(before.get("widget_evidence_complete")) and not bool(before.get("widgets_truncated")) and bounded_count == widget_count
+
+
 def planned_changes(before: dict[str, Any]) -> dict[str, Any]:
     widget_count = int(before.get("widget_annotation_count", 0) or 0)
     missing = int(before.get("widgets_missing_struct_parent_count", 0) or 0)
@@ -92,6 +108,9 @@ def planned_changes(before: dict[str, Any]) -> dict[str, Any]:
 def _mm17179_summary(before: dict[str, Any]) -> dict[str, Any]:
     return {
         "widget_annotation_count": int(before.get("widget_annotation_count", 0) or 0),
+        "widgets_bounded_count": _bounded_widget_count(before),
+        "widgets_truncated": bool(before.get("widgets_truncated")),
+        "widget_evidence_complete": _widget_evidence_complete(before),
         "widgets_missing_struct_parent_count": int(before.get("widgets_missing_struct_parent_count", 0) or 0),
         "widgets_with_struct_parent_count": int(before.get("widgets_with_struct_parent_count", 0) or 0),
         "struct_tree_root_present": bool(before.get("struct_tree_root_present")),
@@ -113,13 +132,16 @@ def _precondition_report(before: dict[str, Any]) -> dict[str, Any]:
     satisfied: list[str] = []
     failed: list[str] = []
 
-    def check(condition: bool, name: str) -> None:
-        (satisfied if condition else failed).append(name)
+    def check(condition: bool, satisfied_name: str, failed_name: str | None = None) -> None:
+        if condition:
+            satisfied.append(satisfied_name)
+        else:
+            failed.append(failed_name or satisfied_name)
 
     check(bool(before.get("available")), "input PDF is inspectable")
     check(bool(before.get("acroform_present")), "AcroForm is present")
     check(int(before.get("widget_annotation_count", 0) or 0) > 0, "widget annotations are present")
-    check(not bool(before.get("widgets_truncated")), "widget evidence is not truncated")
+    check(_widget_evidence_complete(before), "widget evidence is complete", "widget evidence is truncated")
     check(int(before.get("widgets_referenced_from_non_form_count", 0) or 0) == 0, "widgets are not already mapped to non-Form structure")
     check(not bool(before.get("parent_tree_has_kids")), "ParentTree does not require /Kids number-tree mutation")
     return {"satisfied": satisfied, "failed": failed}
@@ -309,8 +331,11 @@ def _all_preserved(preservation: dict[str, Any]) -> bool:
 
 def _after_object_gate(after: dict[str, Any]) -> bool:
     widget_count = int(after.get("widget_annotation_count", 0) or 0)
+    bounded_count = _bounded_widget_count(after)
     return (
         widget_count > 0
+        and bounded_count == widget_count
+        and not bool(after.get("widgets_truncated"))
         and int(after.get("widgets_missing_struct_parent_count", 0) or 0) == 0
         and int(after.get("widgets_with_struct_parent_count", 0) or 0) == widget_count
         and bool(after.get("struct_tree_root_present"))
@@ -328,9 +353,11 @@ def build_report(
     apply: bool = False,
     fixture_mode: bool = False,
     allow_structure_construction_trial: bool = False,
+    max_widgets: int = MAX_WIDGETS_DEFAULT,
 ) -> dict[str, Any]:
+    max_widgets = max(1, int(max_widgets or MAX_WIDGETS_DEFAULT))
     mode = "apply" if apply else "dry_run"
-    before = inspect_pdf_with_pikepdf(input_pdf)
+    before = inspect_pdf_with_pikepdf(input_pdf, max_widgets=max_widgets)
     preconditions = _precondition_report(before)
     blockers = _apply_blockers(
         before,
@@ -353,6 +380,12 @@ def build_report(
         "mode": mode,
         "fixture_mode": fixture_mode,
         "allow_structure_construction_trial": allow_structure_construction_trial,
+        "max_widgets": max_widgets,
+        "widget_annotation_count": int(before.get("widget_annotation_count", 0) or 0),
+        "widgets_bounded_count": _bounded_widget_count(before),
+        "widgets_truncated": bool(before.get("widgets_truncated")),
+        "widget_evidence_complete": _widget_evidence_complete(before),
+        "terminal_state": dry_run_terminal,
         "input_pdf": str(input_pdf),
         "output_pdf": str(output_pdf) if output_pdf and apply else None,
         "target_rule": TARGET_RULE,
@@ -388,18 +421,20 @@ def build_report(
     if not apply_allowed:
         report["result"] = "BLOCKED_BEFORE_IMPLEMENTATION"
         report["read_only"] = True
+        report["terminal_state"] = H10_TERMINAL_DRY_RUN_BLOCKED
         report["decision"]["terminal_state"] = H10_TERMINAL_DRY_RUN_BLOCKED
         return report
 
     if output_pdf is None:  # defensive; should already be blocked above
         report["result"] = "BLOCKED_BEFORE_IMPLEMENTATION"
         report["read_only"] = True
+        report["terminal_state"] = H10_TERMINAL_DRY_RUN_BLOCKED
         report["decision"]["terminal_state"] = H10_TERMINAL_DRY_RUN_BLOCKED
         report["decision"]["blockers"].append("apply mode requires explicit --output path")
         return report
 
     mutation = apply_fixture_repair(input_pdf, output_pdf)
-    after = inspect_pdf_with_pikepdf(output_pdf)
+    after = inspect_pdf_with_pikepdf(output_pdf, max_widgets=max_widgets)
     preservation = preservation_summary(before, after)
     qpdf_result = run_qpdf_check(output_pdf)
     object_gate = _after_object_gate(after)
@@ -417,6 +452,7 @@ def build_report(
     terminal = H10_TERMINAL_VALIDATED if not validation_blockers else H10_TERMINAL_ATTEMPTED_NOT_ADOPTED
     report.update({
         "result": "APPLIED" if terminal == H10_TERMINAL_VALIDATED else "APPLIED_NOT_ADOPTED",
+        "terminal_state": terminal,
         "read_only": False,
         "repair_performed": True,
         "mutation_summary": mutation,
@@ -445,6 +481,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run-report", required=True, help="JSON report path for dry-run/apply")
     parser.add_argument("--apply", action="store_true", help="Write repaired PDF to --output")
     parser.add_argument("--fixture-mode", action="store_true", help="Allow controlled synthetic fixture repair path")
+    parser.add_argument("--max-widgets", type=int, default=MAX_WIDGETS_DEFAULT, help="Maximum widget records to include in before/after diagnostics")
     parser.add_argument(
         "--allow-structure-construction-trial",
         action="store_true",
@@ -459,6 +496,7 @@ def main(argv: list[str] | None = None) -> int:
         apply=bool(args.apply),
         fixture_mode=bool(args.fixture_mode),
         allow_structure_construction_trial=bool(args.allow_structure_construction_trial),
+        max_widgets=max(1, args.max_widgets),
     )
     text = json.dumps(report, indent=2, sort_keys=True)
     report_path = Path(args.dry_run_report)
