@@ -1,0 +1,371 @@
+#!/usr/bin/env python3
+"""Guarded fixture-scoped repair for PDF/UA-1/7.18.4 form-widget structure.
+
+H9 implements a controlled capability for synthetic/non-private fixtures only.
+The apply path is deliberately gated by --fixture-mode and never overwrites the
+source PDF. Non-fixture inputs are refused truthfully until later production
+preconditions are designed and validated.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from tools.audit.form_widget_structure_inspection import TARGET_RULE, inspect_pdf_with_pikepdf
+
+SCHEMA = "montefiore.form_widget_structure_repair"
+VERSION = "1.0.0"
+
+POLICY_BASE = {
+    "rule_map_mutation_performed": False,
+    "workspace_artifacts_mutated": False,
+    "safe_to_claim_production_ready": False,
+}
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _load_pikepdf() -> Any:
+    try:
+        import pikepdf  # type: ignore
+    except Exception as exc:  # pragma: no cover - environment dependent
+        raise RuntimeError(f"pikepdf unavailable: {type(exc).__name__}: {exc}") from exc
+    return pikepdf
+
+
+def _field_signature(evidence: dict[str, Any]) -> list[tuple[str, str, bool]]:
+    fields = evidence.get("acroform_fields") or []
+    return sorted((str(f.get("field_name", "")), str(f.get("field_type", "")), bool(f.get("field_value_present"))) for f in fields)
+
+
+def _widget_signature(evidence: dict[str, Any]) -> list[tuple[int, str, str, tuple[float, ...]]]:
+    widgets = evidence.get("widgets") or []
+    out: list[tuple[int, str, str, tuple[float, ...]]] = []
+    for widget in widgets:
+        rect = tuple(float(v) for v in widget.get("rect", [])[:4])
+        out.append((int(widget.get("page_index", 0)), str(widget.get("field_name", "")), str(widget.get("field_type", "")), rect))
+    return sorted(out)
+
+
+def _page_boxes(evidence: dict[str, Any]) -> list[tuple[int, tuple[float, ...], tuple[float, ...]]]:
+    out: list[tuple[int, tuple[float, ...], tuple[float, ...]]] = []
+    for page in evidence.get("page_boxes") or []:
+        out.append((
+            int(page.get("page_index", 0)),
+            tuple(float(v) for v in page.get("media_box", [])[:4]),
+            tuple(float(v) for v in page.get("crop_box", [])[:4]),
+        ))
+    return out
+
+
+def planned_changes(before: dict[str, Any]) -> dict[str, Any]:
+    widget_count = int(before.get("widget_annotation_count", 0) or 0)
+    missing = int(before.get("widgets_missing_struct_parent_count", 0) or 0)
+    return {
+        "assign_struct_parent_count": missing,
+        "create_struct_tree_root": not bool(before.get("struct_tree_root_present")),
+        "create_parent_tree": not bool(before.get("parent_tree_present")),
+        "create_form_struct_elements_count": widget_count,
+        "parent_tree_entries_to_create": widget_count,
+        "k_array_updates_to_create": widget_count,
+    }
+
+
+def _iter_widget_annotations(pdf: Any) -> list[tuple[int, Any, Any]]:
+    widgets: list[tuple[int, Any, Any]] = []
+    for page_index, page in enumerate(pdf.pages, start=1):
+        page_obj = getattr(page, "obj", page)
+        annots = page_obj.get("/Annots", []) if hasattr(page_obj, "get") else []
+        try:
+            annot_list = list(annots or [])
+        except Exception:
+            annot_list = []
+        for annot in annot_list:
+            try:
+                if annot.get("/Subtype") == "/Widget":
+                    widgets.append((page_index, page_obj, annot))
+            except Exception:
+                continue
+    return widgets
+
+
+def _ensure_struct_tree_root(pdf: Any, pikepdf: Any) -> Any:
+    root = pdf.Root
+    struct_root = root.get("/StructTreeRoot")
+    if struct_root is None:
+        struct_root = pdf.make_indirect(pikepdf.Dictionary({
+            "/Type": pikepdf.Name("/StructTreeRoot"),
+            "/K": pikepdf.Array([]),
+        }))
+        root["/StructTreeRoot"] = struct_root
+    if struct_root.get("/K") is None:
+        struct_root["/K"] = pikepdf.Array([])
+    parent_tree = struct_root.get("/ParentTree")
+    if parent_tree is None:
+        parent_tree = pdf.make_indirect(pikepdf.Dictionary({"/Nums": pikepdf.Array([])}))
+        struct_root["/ParentTree"] = parent_tree
+    if parent_tree.get("/Nums") is None:
+        parent_tree["/Nums"] = pikepdf.Array([])
+    return struct_root
+
+
+def apply_fixture_repair(input_pdf: Path, output_pdf: Path) -> dict[str, Any]:
+    pikepdf = _load_pikepdf()
+    output_pdf.parent.mkdir(parents=True, exist_ok=True)
+    if input_pdf.resolve() == output_pdf.resolve():
+        raise ValueError("output path must differ from input path")
+
+    pdf = pikepdf.Pdf.open(input_pdf)
+    with pdf:
+        struct_root = _ensure_struct_tree_root(pdf, pikepdf)
+        parent_tree = struct_root["/ParentTree"]
+        nums = parent_tree["/Nums"]
+        root_k = struct_root["/K"]
+        widgets = _iter_widget_annotations(pdf)
+
+        next_key = 0
+        existing_nums = list(nums)
+        if existing_nums:
+            keys = []
+            for index in range(0, len(existing_nums) - 1, 2):
+                try:
+                    keys.append(int(existing_nums[index]))
+                except Exception:
+                    continue
+            next_key = max(keys) + 1 if keys else 0
+
+        created = 0
+        assigned = 0
+        for _page_index, page_obj, widget in widgets:
+            try:
+                current_struct_parent = widget.get("/StructParent")
+            except Exception:
+                current_struct_parent = None
+            if current_struct_parent is None:
+                struct_parent = next_key
+                next_key += 1
+                widget["/StructParent"] = struct_parent
+                assigned += 1
+            else:
+                struct_parent = int(current_struct_parent)
+
+            objr = pikepdf.Dictionary({
+                "/Type": pikepdf.Name("/OBJR"),
+                "/Obj": widget,
+            })
+            form_elem = pdf.make_indirect(pikepdf.Dictionary({
+                "/Type": pikepdf.Name("/StructElem"),
+                "/S": pikepdf.Name("/Form"),
+                "/P": struct_root,
+                "/Pg": page_obj,
+                "/K": objr,
+            }))
+            root_k.append(form_elem)
+            nums.append(struct_parent)
+            nums.append(form_elem)
+            created += 1
+
+        parent_tree["/ParentTreeNextKey"] = next_key
+        pdf.save(output_pdf)
+
+    return {
+        "assigned_struct_parent_count": assigned,
+        "created_form_struct_elements_count": created,
+        "parent_tree_entries_created": created,
+    }
+
+
+def run_qpdf_check(pdf_path: Path) -> dict[str, Any]:
+    qpdf = shutil.which("qpdf")
+    if not qpdf:
+        return {"result": "NOT_RUN_ENVIRONMENT_LIMITED", "reason": "qpdf not found"}
+    proc = subprocess.run([qpdf, "--check", str(pdf_path)], capture_output=True, text=True, timeout=60)
+    return {
+        "result": "PASS" if proc.returncode == 0 else "FAIL",
+        "returncode": proc.returncode,
+        "stdout": proc.stdout[-4000:],
+        "stderr": proc.stderr[-4000:],
+    }
+
+
+def preservation_summary(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "field_count_preserved": before.get("acroform_field_count") == after.get("acroform_field_count"),
+        "field_names_preserved": [x[0] for x in _field_signature(before)] == [x[0] for x in _field_signature(after)],
+        "field_types_preserved": [x[1] for x in _field_signature(before)] == [x[1] for x in _field_signature(after)],
+        "field_value_presence_preserved": [x[2] for x in _field_signature(before)] == [x[2] for x in _field_signature(after)],
+        "widget_count_preserved": before.get("widget_annotation_count") == after.get("widget_annotation_count"),
+        "widget_page_membership_preserved": _widget_signature(before) == _widget_signature(after),
+        "page_count_preserved": before.get("page_count") == after.get("page_count"),
+        "page_boxes_preserved": _page_boxes(before) == _page_boxes(after),
+        "semantic_widget_identity_preserved": _widget_signature(before) == _widget_signature(after),
+        "exact_object_identity_claimed": False,
+        "field_values_not_dumped": bool(after.get("sensitive_field_values_redacted")),
+    }
+
+
+def _all_preserved(preservation: dict[str, Any]) -> bool:
+    required = [
+        "field_count_preserved",
+        "field_names_preserved",
+        "field_types_preserved",
+        "field_value_presence_preserved",
+        "widget_count_preserved",
+        "widget_page_membership_preserved",
+        "page_count_preserved",
+        "page_boxes_preserved",
+        "field_values_not_dumped",
+    ]
+    return all(bool(preservation.get(key)) for key in required)
+
+
+def _after_object_gate(after: dict[str, Any]) -> bool:
+    widget_count = int(after.get("widget_annotation_count", 0) or 0)
+    return (
+        widget_count > 0
+        and int(after.get("widgets_missing_struct_parent_count", 0) or 0) == 0
+        and int(after.get("widgets_with_struct_parent_count", 0) or 0) == widget_count
+        and bool(after.get("struct_tree_root_present"))
+        and bool(after.get("parent_tree_present"))
+        and int(after.get("form_struct_element_count", 0) or 0) >= widget_count
+        and int(after.get("widgets_with_parent_tree_mapping_count", 0) or 0) == widget_count
+        and int(after.get("widgets_already_nested_in_form_count", 0) or 0) == widget_count
+    )
+
+
+def build_report(
+    input_pdf: Path,
+    *,
+    output_pdf: Path | None = None,
+    apply: bool = False,
+    fixture_mode: bool = False,
+) -> dict[str, Any]:
+    mode = "apply" if apply else "dry_run"
+    before = inspect_pdf_with_pikepdf(input_pdf)
+    report: dict[str, Any] = {
+        "schema": SCHEMA,
+        "version": VERSION,
+        "created_at": now(),
+        "result": "DRY_RUN" if not apply else "APPLY_ATTEMPTED",
+        "mode": mode,
+        "fixture_mode": fixture_mode,
+        "input_pdf": str(input_pdf),
+        "output_pdf": str(output_pdf) if output_pdf else "",
+        "target_rule": TARGET_RULE,
+        "read_only": not apply,
+        "repair_performed": False,
+        **POLICY_BASE,
+        "before": before,
+        "planned_changes": planned_changes(before),
+        "after": {},
+        "preservation": {},
+        "validation": {
+            "qpdf_result": {"result": "NOT_RUN_NO_OUTPUT"},
+            "verapdf_result_if_run": {"result": "NOT_RUN_ENVIRONMENT_LIMITED"},
+            "form_widget_diagnostic_result_after": "NOT_RUN_NO_OUTPUT",
+        },
+        "decision": {
+            "terminal_state": "BLOCKED_BEFORE_IMPLEMENTATION",
+            "adoption_allowed": False,
+            "production_default_activation_allowed": False,
+            "blockers": [],
+        },
+    }
+
+    if not before.get("available"):
+        report["result"] = "BLOCKED_BEFORE_IMPLEMENTATION"
+        report["decision"]["blockers"].append("input PDF could not be inspected")
+        return report
+
+    if not fixture_mode:
+        report["result"] = "BLOCKED_BEFORE_IMPLEMENTATION"
+        report["decision"]["blockers"].append("non-fixture mode is not enabled for H9 structure construction")
+        return report
+
+    if not apply:
+        report["decision"]["terminal_state"] = "IMPLEMENTED_BUT_BLOCKED_FOR_PRODUCTION"
+        report["decision"]["blockers"].append("dry-run only; no output PDF was written")
+        return report
+
+    if output_pdf is None:
+        report["result"] = "BLOCKED_BEFORE_IMPLEMENTATION"
+        report["decision"]["blockers"].append("apply mode requires explicit --output path")
+        return report
+
+    if input_pdf.resolve() == output_pdf.resolve():
+        report["result"] = "BLOCKED_BEFORE_IMPLEMENTATION"
+        report["decision"]["blockers"].append("output path must not overwrite input PDF")
+        return report
+
+    mutation = apply_fixture_repair(input_pdf, output_pdf)
+    after = inspect_pdf_with_pikepdf(output_pdf)
+    preservation = preservation_summary(before, after)
+    qpdf_result = run_qpdf_check(output_pdf)
+    object_gate = _after_object_gate(after)
+    preservation_gate = _all_preserved(preservation)
+    qpdf_gate = qpdf_result.get("result") == "PASS"
+
+    blockers: list[str] = []
+    if not object_gate:
+        blockers.append("after diagnostic did not prove complete widget-to-Form structure construction")
+    if not preservation_gate:
+        blockers.append("preservation check failed")
+    if not qpdf_gate:
+        blockers.append("qpdf did not pass or was not available")
+
+    terminal = "IMPLEMENTED_AND_VALIDATED_ON_FIXTURE" if not blockers else "IMPLEMENTED_BUT_BLOCKED_FOR_PRODUCTION"
+    report.update({
+        "result": "APPLIED",
+        "read_only": False,
+        "repair_performed": True,
+        "mutation_summary": mutation,
+        "after": after,
+        "preservation": preservation,
+        "validation": {
+            "qpdf_result": qpdf_result,
+            "verapdf_result_if_run": {"result": "NOT_RUN_ENVIRONMENT_LIMITED"},
+            "form_widget_diagnostic_result_after": after.get("result", ""),
+        },
+        "decision": {
+            "terminal_state": terminal,
+            "adoption_allowed": terminal == "IMPLEMENTED_AND_VALIDATED_ON_FIXTURE",
+            "production_default_activation_allowed": False,
+            "blockers": blockers,
+        },
+    })
+    return report
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Guarded fixture-mode PDF/UA-1/7.18.4 form-widget structure repair")
+    parser.add_argument("--input", required=True, help="Input PDF path")
+    parser.add_argument("--output", default="", help="Output PDF path for apply mode")
+    parser.add_argument("--dry-run-report", required=True, help="JSON report path for dry-run/apply")
+    parser.add_argument("--apply", action="store_true", help="Write repaired PDF to --output")
+    parser.add_argument("--fixture-mode", action="store_true", help="Allow controlled synthetic fixture repair path")
+    args = parser.parse_args(argv)
+
+    output_path = Path(args.output) if args.output else None
+    report = build_report(
+        Path(args.input),
+        output_pdf=output_path,
+        apply=bool(args.apply),
+        fixture_mode=bool(args.fixture_mode),
+    )
+    text = json.dumps(report, indent=2, sort_keys=True)
+    report_path = Path(args.dry_run_report)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(text)
+    print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
