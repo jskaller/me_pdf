@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Policy tests for guarded H9/H10/H10A/H10D form-widget structure construction."""
+"""Policy tests for guarded H9/H10/H10A/H10D/H10E form-widget structure construction."""
 from __future__ import annotations
 
 import hashlib
@@ -200,20 +200,57 @@ class FormWidgetStructureRepairPolicyTests(unittest.TestCase):
                 nums = list(parent_tree["/Nums"])
                 keys = [int(nums[index]) for index in range(0, len(nums), 2)]
                 values = [nums[index + 1] for index in range(0, len(nums), 2)]
-                root_k = list(struct_root["/K"])
 
                 self.assertNotIn("/ParentTreeNextKey", parent_tree)
                 self.assertEqual(int(struct_root["/ParentTreeNextKey"]), max(keys) + 1)
                 self.assertEqual(keys, sorted(keys))
                 self.assertEqual(len(keys), field_count)
-                self.assertEqual(len(root_k), field_count)
                 self.assertEqual(len(values), field_count)
                 for value in values:
                     self.assertEqual(value.get("/Type"), "/StructElem")
                     self.assertEqual(value.get("/S"), "/Form")
-                    self.assertEqual(value.get("/P"), struct_root)
                     self.assertIsNotNone(value.get("/Pg"))
                     objr = value.get("/K")
+                    self.assertEqual(objr.get("/Type"), "/OBJR")
+                    self.assertEqual(objr.get("/Obj").get("/Subtype"), "/Widget")
+
+    def test_trial_apply_uses_document_container_for_form_structure(self) -> None:
+        import pikepdf  # type: ignore
+
+        with tempfile.TemporaryDirectory(prefix="h10e_form_widget_document_container_") as td:
+            root = Path(td)
+            input_pdf = root / "input.pdf"
+            output_pdf = root / "output.pdf"
+            field_count = 3
+            generate_fixture(input_pdf, field_count=field_count)
+
+            report = build_report(
+                input_pdf,
+                output_pdf=output_pdf,
+                apply=True,
+                fixture_mode=False,
+                allow_structure_construction_trial=True,
+                max_widgets=MAX_WIDGETS_DEFAULT + 10,
+            )
+
+            self.assertTrue(output_pdf.exists())
+            self.assertEqual(report["mutation_summary"]["top_level_structure_type"], "Document")
+            self.assertEqual(report["mutation_summary"]["form_struct_parent_type"], "Document")
+            self.assertTrue(report["mutation_summary"]["created_document_struct_element"])
+            with pikepdf.Pdf.open(output_pdf) as pdf:
+                struct_root = pdf.Root["/StructTreeRoot"]
+                document = struct_root["/K"]
+                self.assertEqual(document.get("/Type"), "/StructElem")
+                self.assertEqual(document.get("/S"), "/Document")
+                self.assertEqual(document.get("/P"), struct_root)
+                document_k = list(document["/K"])
+                self.assertEqual(len(document_k), field_count)
+                for form_elem in document_k:
+                    self.assertEqual(form_elem.get("/Type"), "/StructElem")
+                    self.assertEqual(form_elem.get("/S"), "/Form")
+                    self.assertEqual(form_elem.get("/P"), document)
+                    self.assertIsNotNone(form_elem.get("/Pg"))
+                    objr = form_elem.get("/K")
                     self.assertEqual(objr.get("/Type"), "/OBJR")
                     self.assertEqual(objr.get("/Obj").get("/Subtype"), "/Widget")
 
