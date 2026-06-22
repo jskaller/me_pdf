@@ -1,0 +1,36 @@
+{
+  "version": "1.0.0",
+  "profiles": {
+    "production": {
+      "include_jobs": [
+        "MM-17161_FinancialAidMMVPolicyRevised_06032026_TinaM",
+        "MM-17179_ROI4987_English_1-26_rev_Fillable"
+      ],
+      "exclude_jobs": [
+        "TEST-001_Montefiore_ROI_form_instructions-English"
+      ]
+    }
+  },
+  "jobs": {
+    "MM-17161_FinancialAidMMVPolicyRevised_06032026_TinaM": {
+      "source_kind": "private_local_or_representative_pdf",
+      "profile": "production_corpus",
+      "notes": "Representative local PDF; private source not committed."
+    },
+    "MM-17179_ROI4987_English_1-26_rev_Fillable": {
+      "source_kind": "private_local_or_representative_pdf",
+      "profile": "production_corpus",
+      "notes": "Representative local PDF; private source not committed."
+    },
+    "WEBUI-E2E-001_e2e-smoke": {
+      "source_kind": "controlled_fixture",
+      "profile": "controlled_fixture",
+      "notes": "Controlled WebUI smoke fixture."
+    },
+    "TEST-001_Montefiore_ROI_form_instructions-English": {
+      "source_kind": "controlled_fixture",
+      "profile": "historical_probe",
+      "notes": "Historical/fixture row excluded from production profile."
+    }
+  }
+}

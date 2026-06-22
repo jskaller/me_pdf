@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -18,6 +19,12 @@ from typing import Any, Iterable
 CLASSIFICATIONS = ("PASS", "REVIEW_REQUIRED", "FAIL", "ESCALATION", "BLOCKED", "INCOMPLETE_ARTIFACTS", "MISMATCH")
 KNOWN_RESULTS = {"PASS", "REVIEW_REQUIRED", "FAIL", "ESCALATION", "BLOCKED"}
 EXTERNAL_VALIDATOR_STATUS = "NOT_RUN"
+PROFILES_AVAILABLE = ("all", "production", "fixtures", "historical", "actionable")
+ACTIONABLE_CLASSIFICATIONS = {"ESCALATION", "FAIL", "MISMATCH", "INCOMPLETE_ARTIFACTS", "BLOCKED"}
+HISTORICAL_NAME_PATTERNS = (
+    "probe", "smoke_", "_smoke", "pre-patch", ".pre-patch", "rerun", "historical",
+)
+TIMESTAMP_RE = re.compile(r"(?:19|20)\d{6}(?:[-_]\d{6})?")
 
 GATES = {
     "qpdf": ("audit/qpdf.json", "qpdf.json"),
@@ -165,12 +172,7 @@ def _has_name(files: Iterable[Path], name: str) -> list[Path]:
 
 
 def output_artifact_matches(output_dir: Path, basename: str) -> dict[str, Any]:
-    """Return basename-scoped deliverable matches for a ticket output directory.
-
-    Ticket output directories are shared across repeated runs for the same ticket.
-    This matcher therefore distinguishes same-basename artifacts from sibling or
-    stale artifacts before PASS/REVIEW/false-success decisions are made.
-    """
+    """Return basename-scoped deliverable matches for a ticket output directory."""
     expected_pdf = f"{basename}_remediated.pdf"
     expected_report = f"{basename}_AUDIT_REPORT.md"
     expected_checksum = "SHA256SUMS.txt"
@@ -287,11 +289,14 @@ def classify(overall: str, status: str, outcome: str, pkg: dict[str, Any], missi
 def source_kind(ticket: str, basename: str, source: Path, explicit: str | None = None) -> str:
     if explicit:
         return explicit
-    text = f"{ticket} {basename} {source}".lower()
+    text = f"{ticket} {basename}".lower()
+    source_text = str(source).lower()
     if "webui-e2e" in text or "smoke" in text:
         return "controlled_fixture"
     if "fixture" in text or "synthetic" in text or "generated" in text:
         return "synthetic_generated_fixture"
+    if "webui-e2e" in source_text:
+        return "controlled_fixture"
     if source.exists():
         return "private_local_or_representative_pdf"
     return "unknown"
@@ -371,13 +376,27 @@ def _minimal_row(workspace: Path, ticket: str, basename: str, source: Path, clas
         "ticket": ticket,
         "basename": basename,
         "source_pdf_path": str(source),
+        "source_kind": source_kind(ticket, basename, source),
+        "source_pdf_exists": source.exists() if str(source) else False,
         "job_dir": str(workspace / "jobs" / f"{ticket}_{basename}"),
         "output_dir": str(out_dir),
         "run_mode": run_mode,
+        "pre_repair_validator_failures": [],
+        "repair_plan": {"path": "", "result": "NOT_RUN", "rules": [], "strategies": [], "hermes_required": []},
+        "repair_scripts_executed": [],
+        "post_repair_validator_outcomes": {name: {"available": False, "path": "", "result": "NOT_RUN"} for name in GATES},
+        "residual_targetable_rules": [],
+        "non_targetable_rules": [],
+        "active_hermes_required_signals": [],
+        "orchestrator_outcome_overall_result": "NOT_RUN",
+        "status_json_overall_result": "NOT_RUN",
+        "status_matches_orchestrator_outcome": False,
+        "package": {"exists": False, "path": str(out_dir), "matched_output_artifacts": matches},
         "final_matrix_classification": classification,
         "risk_flags": risks,
         "matched_output_artifacts": matches,
         "external_validators": {"axesCheck": EXTERNAL_VALIDATOR_STATUS, "PAC_2024": EXTERNAL_VALIDATOR_STATUS},
+        "evidence_policy": {"rule_map_entries_count_as_proven_repairs": False, "requires_script_execution_and_validator_delta": True},
     }
 
 
@@ -402,6 +421,133 @@ def run_specs(workspace: Path, specs: list[str], python_bin: str) -> list[dict[s
             row["orchestrator_run"] = {"returncode": proc.returncode, "stdout_tail": proc.stdout[-4000:], "stderr_tail": proc.stderr[-4000:]}
         rows.append(row)
     return rows
+
+
+def load_manifest(path: str | None) -> dict[str, Any]:
+    if not path:
+        return {}
+    data = load_json(Path(path))
+    return data if isinstance(data, dict) else {"_manifest_error": f"unable to read manifest: {path}"}
+
+
+def row_job_name(row: dict[str, Any]) -> str:
+    value = str(row.get("job_dir") or "")
+    return Path(value).name if value else f"{row.get('ticket', '')}_{row.get('basename', '')}".strip("_")
+
+
+def _manifest_job(manifest: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
+    jobs = manifest.get("jobs") if isinstance(manifest.get("jobs"), dict) else {}
+    job_name = row_job_name(row)
+    for key in (job_name, row.get("ticket"), row.get("basename")):
+        if key and isinstance(jobs.get(str(key)), dict):
+            return dict(jobs[str(key)])
+    return {}
+
+
+def _manifest_profile_rules(manifest: dict[str, Any], profile: str) -> dict[str, Any]:
+    profiles = manifest.get("profiles") if isinstance(manifest.get("profiles"), dict) else {}
+    value = profiles.get(profile)
+    return value if isinstance(value, dict) else {}
+
+
+def _profile_name_from_manifest(value: str) -> str:
+    aliases = {
+        "production": "production_corpus",
+        "fixture": "controlled_fixture",
+        "fixtures": "controlled_fixture",
+        "historical": "historical_probe",
+        "stale": "stale_or_incomplete",
+    }
+    return aliases.get(value, value)
+
+
+def _is_historical_name(text: str) -> bool:
+    lower = text.lower()
+    if lower.startswith(("test-", "probe-", "smoke-", "smoke_", "probe_")):
+        return True
+    if any(pattern in lower for pattern in HISTORICAL_NAME_PATTERNS):
+        return True
+    return bool(TIMESTAMP_RE.search(lower))
+
+
+def _base_profile(row: dict[str, Any], manifest_job: dict[str, Any]) -> tuple[str, str]:
+    if manifest_job.get("exclude") is True or manifest_job.get("profile") == "excluded":
+        return "excluded", "manifest explicitly excludes this job"
+    if manifest_job.get("profile"):
+        return _profile_name_from_manifest(str(manifest_job["profile"])), "manifest job profile override"
+
+    job_name = row_job_name(row)
+    combined = f"{job_name} {row.get('ticket', '')} {row.get('basename', '')}"
+    source = str(row.get("source_kind") or "unknown")
+    cls = str(row.get("final_matrix_classification") or "INCOMPLETE_ARTIFACTS")
+    if "webui-e2e" in combined.lower() or source == "controlled_fixture":
+        return "controlled_fixture", f"source_kind={source}"
+    if _is_historical_name(combined):
+        return "historical_probe", "job name matches development/probe/test/rerun heuristic"
+    if source == "synthetic_generated_fixture":
+        return "controlled_fixture", f"source_kind={source}"
+    if cls == "INCOMPLETE_ARTIFACTS" or row.get("stale_or_shared_output_risk"):
+        return "stale_or_incomplete", "missing/stale artifact evidence"
+    if source == "private_local_or_representative_pdf":
+        return "production_corpus", "representative/private source PDF evidence"
+    return "historical_probe", "unknown source kind treated as non-production until manifest classifies it"
+
+
+def _included_profiles(primary: str, row: dict[str, Any]) -> list[str]:
+    profiles = {"all"}
+    cls = str(row.get("final_matrix_classification") or "")
+    has_blockers = bool(row.get("active_hermes_required_signals") or row.get("residual_targetable_rules") or row.get("non_targetable_rules"))
+    if primary == "production_corpus":
+        profiles.add("production")
+        if cls in ACTIONABLE_CLASSIFICATIONS or has_blockers:
+            profiles.add("actionable")
+    elif primary in {"controlled_fixture", "synthetic_generated_fixture"}:
+        profiles.add("fixtures")
+    elif primary in {"historical_probe", "stale_or_incomplete"}:
+        profiles.add("historical")
+    elif primary == "excluded":
+        profiles.add("historical")
+    return sorted(profiles, key=lambda x: PROFILES_AVAILABLE.index(x) if x in PROFILES_AVAILABLE else 999)
+
+
+def apply_corpus_profiles(rows: list[dict[str, Any]], manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    for row in rows:
+        job_name = row_job_name(row)
+        mjob = _manifest_job(manifest, row)
+        if mjob.get("source_kind"):
+            row["source_kind"] = str(mjob["source_kind"])
+        primary, reason = _base_profile(row, mjob)
+        included = set(_included_profiles(primary, row))
+        excluded_reasons: list[str] = []
+        for profile in PROFILES_AVAILABLE:
+            rules = _manifest_profile_rules(manifest, profile)
+            include_jobs = {str(v) for v in rules.get("include_jobs", []) or []}
+            exclude_jobs = {str(v) for v in rules.get("exclude_jobs", []) or []}
+            if job_name in include_jobs:
+                included.add(profile)
+                reason = f"manifest include_jobs override for profile={profile}"
+            if job_name in exclude_jobs:
+                included.discard(profile)
+                excluded_reasons.append(f"manifest excludes job from profile={profile}")
+        if primary == "excluded" and "production" in included:
+            included.discard("production")
+        production_exclusion = ""
+        if "production" not in included:
+            production_exclusion = "; ".join(excluded_reasons) or f"primary_profile={primary} is not representative production corpus"
+        row["corpus_profile"] = {
+            "primary_profile": primary,
+            "included_in_profiles": sorted(included, key=lambda x: PROFILES_AVAILABLE.index(x) if x in PROFILES_AVAILABLE else 999),
+            "excluded_from_production_reason": production_exclusion,
+            "manifest_source": mjob.get("notes", "manifest job entry") if mjob else "heuristic",
+            "profile_reason": reason,
+        }
+    return rows
+
+
+def select_profile(rows: list[dict[str, Any]], profile: str) -> list[dict[str, Any]]:
+    if profile not in PROFILES_AVAILABLE:
+        raise ValueError(f"unknown profile {profile}; expected one of {', '.join(PROFILES_AVAILABLE)}")
+    return [row for row in rows if profile in (row.get("corpus_profile", {}).get("included_in_profiles") or [])]
 
 
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -434,8 +580,241 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def corpus_summary(rows: list[dict[str, Any]], selected_profile: str) -> dict[str, Any]:
+    profile_counts: dict[str, int] = {}
+    class_counts = {name: 0 for name in CLASSIFICATIONS}
+    for row in rows:
+        primary = row.get("corpus_profile", {}).get("primary_profile", "unknown")
+        profile_counts[primary] = profile_counts.get(primary, 0) + 1
+        cls = row.get("final_matrix_classification", "INCOMPLETE_ARTIFACTS")
+        class_counts[cls] = class_counts.get(cls, 0) + 1
+    production_rows = [r for r in rows if r.get("corpus_profile", {}).get("primary_profile") == "production_corpus"]
+    prod_class_counts = {name: 0 for name in CLASSIFICATIONS}
+    for row in production_rows:
+        cls = row.get("final_matrix_classification", "INCOMPLETE_ARTIFACTS")
+        prod_class_counts[cls] = prod_class_counts.get(cls, 0) + 1
+    return {
+        "profiles_available": list(PROFILES_AVAILABLE),
+        "selected_profile": selected_profile,
+        "selected_rows_count": len(rows),
+        "counts_by_primary_profile": profile_counts,
+        "production_rows_count": profile_counts.get("production_corpus", 0),
+        "fixture_rows_count": profile_counts.get("controlled_fixture", 0) + profile_counts.get("synthetic_generated_fixture", 0),
+        "historical_probe_rows_count": profile_counts.get("historical_probe", 0),
+        "stale_or_incomplete_rows_count": profile_counts.get("stale_or_incomplete", 0),
+        "excluded_rows_count": profile_counts.get("excluded", 0),
+        "representative_real_pdf_coverage_count": sum(1 for r in production_rows if r.get("source_kind") == "private_local_or_representative_pdf"),
+        "synthetic_fixture_coverage_count": sum(1 for r in rows if r.get("corpus_profile", {}).get("primary_profile") in {"controlled_fixture", "synthetic_generated_fixture"}),
+        "production_pass_count": prod_class_counts.get("PASS", 0),
+        "production_review_required_count": prod_class_counts.get("REVIEW_REQUIRED", 0),
+        "production_fail_count": prod_class_counts.get("FAIL", 0),
+        "production_escalation_count": prod_class_counts.get("ESCALATION", 0),
+        "production_mismatch_count": prod_class_counts.get("MISMATCH", 0),
+        "production_incomplete_count": prod_class_counts.get("INCOMPLETE_ARTIFACTS", 0) + prod_class_counts.get("BLOCKED", 0),
+        "counts_by_classification": class_counts,
+    }
+
+
+def _rule_map_entries(path: Path | None = None) -> dict[str, dict[str, Any]]:
+    candidates = []
+    if path:
+        candidates.append(path)
+    candidates.extend([
+        Path("app/tools/audit/rule_repair_map.json"),
+        Path("tools/audit/rule_repair_map.json"),
+        Path("/app/tools/audit/rule_repair_map.json"),
+    ])
+    for candidate in candidates:
+        data = load_json(candidate)
+        if isinstance(data, dict) and isinstance(data.get("rules"), dict):
+            return data["rules"]
+    return {}
+
+
+def _rule_ids_from_failures(items: Any) -> list[str]:
+    out = []
+    if not isinstance(items, list):
+        return out
+    for item in items:
+        if isinstance(item, dict) and item.get("rule_id"):
+            out.append(str(item["rule_id"]))
+    return out
+
+
+def _row_rule_observations(row: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    observations: dict[str, dict[str, Any]] = {}
+
+    def mark(rule_id: str, field: str, value: Any = True) -> None:
+        if not rule_id:
+            return
+        observations.setdefault(rule_id, {})[field] = value
+
+    for rule_id in _rule_ids_from_failures(row.get("pre_repair_validator_failures")):
+        mark(rule_id, "pre_validator_failure", True)
+    for gate in (row.get("post_repair_validator_outcomes") or {}).values():
+        if isinstance(gate, dict) and gate.get("available"):
+            # Current gate summaries usually expose the aggregate result only; rule-level
+            # post failures are captured when their JSON uses failures/failures_by_rule.
+            path = gate.get("path")
+            if path:
+                for rule_id in _rule_ids_from_failures(failures_from(Path(path))):
+                    mark(rule_id, "post_validator_failure", True)
+    for rule_id in row.get("residual_targetable_rules") or []:
+        mark(str(rule_id), "residual_targetable", True)
+    for rule_id in row.get("non_targetable_rules") or []:
+        mark(str(rule_id), "residual_non_targetable", True)
+    for rule_id in (row.get("repair_plan") or {}).get("rules", []) or []:
+        mark(str(rule_id), "repair_plan_rule", True)
+    for item in (row.get("repair_plan") or {}).get("hermes_required", []) or []:
+        if isinstance(item, dict):
+            mark(str(item.get("rule_id") or ""), "repair_plan_hermes_required", item.get("reason", True))
+    for item in row.get("active_hermes_required_signals") or []:
+        if isinstance(item, dict):
+            mark(str(item.get("rule_id") or ""), "active_hermes_required", item.get("reason", True))
+    for item in row.get("repair_scripts_executed") or []:
+        if not isinstance(item, dict):
+            continue
+        rules = item.get("rules") or []
+        if isinstance(rules, str):
+            rules = [rules]
+        for rule_id in rules:
+            mark(str(rule_id), "executed_scripts", [])
+            observations[str(rule_id)].setdefault("executed_scripts", []).append(item.get("script", ""))
+    return observations
+
+
+def _entry_resolvability(entry: dict[str, Any] | None) -> str:
+    if not isinstance(entry, dict):
+        return "missing_map_entry"
+    if entry.get("resolvability"):
+        return str(entry["resolvability"])
+    strategies = entry.get("strategies") if isinstance(entry.get("strategies"), list) else []
+    if entry.get("manual") and not strategies:
+        return "legacy_manual_review"
+    if strategies:
+        return "effective"
+    return "repairable_unbuilt"
+
+
+def _priority_bucket(affected_production: int, affected_fixture: int, affected_historical: int, classifications: set[str], present_in_rule_map: bool, executed_count: int) -> str:
+    production_blocking = bool(classifications & {"ESCALATION", "FAIL", "MISMATCH", "BLOCKED", "INCOMPLETE_ARTIFACTS"}) and affected_production > 0
+    if production_blocking and affected_production > 1:
+        return "P0_systemic_production_blocker"
+    if production_blocking:
+        return "P1_single_production_blocker"
+    if affected_fixture and not affected_production:
+        return "P2_fixture_only_blocker"
+    if affected_historical and not affected_production:
+        return "P3_historical_or_stale_only"
+    if present_in_rule_map and executed_count == 0:
+        return "P4_mapped_but_unproven"
+    return "P5_external_validation_gap"
+
+
+def _recommended_next_action(bucket: str, present_in_rule_map: bool) -> str:
+    del present_in_rule_map  # Rule-map presence is reported, not counted as proof of repair.
+    if bucket in {"P0_systemic_production_blocker", "P1_single_production_blocker"}:
+        return "build_or_repair_strategy"
+    if bucket == "P2_fixture_only_blocker":
+        return "collect_more_corpus_evidence"
+    if bucket == "P3_historical_or_stale_only":
+        return "exclude_stale_artifact"
+    if bucket == "P4_mapped_but_unproven":
+        return "audit_rule_map_and_tests"
+    return "external_validator_ingestion"
+
+
+def blocker_priority_summary(rows: list[dict[str, Any]], rule_map_path: Path | None = None) -> dict[str, Any]:
+    rule_map = _rule_map_entries(rule_map_path)
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        job_name = row_job_name(row)
+        primary = row.get("corpus_profile", {}).get("primary_profile", "unknown")
+        observations = _row_rule_observations(row)
+        for rule_id, flags in observations.items():
+            bucket = grouped.setdefault(rule_id, {
+                "rule_id": rule_id,
+                "affected_rows": set(),
+                "affected_production_rows": set(),
+                "affected_fixture_rows": set(),
+                "affected_historical_rows": set(),
+                "classifications_seen": set(),
+                "source_kinds_seen": set(),
+                "repair_scripts_seen_executed": set(),
+                "active_hermes_required_count": 0,
+                "unknown_rule_count": 0,
+            })
+            bucket["affected_rows"].add(job_name)
+            if primary == "production_corpus":
+                bucket["affected_production_rows"].add(job_name)
+            elif primary in {"controlled_fixture", "synthetic_generated_fixture"}:
+                bucket["affected_fixture_rows"].add(job_name)
+            else:
+                bucket["affected_historical_rows"].add(job_name)
+            bucket["classifications_seen"].add(str(row.get("final_matrix_classification") or "UNKNOWN"))
+            bucket["source_kinds_seen"].add(str(row.get("source_kind") or "unknown"))
+            for script in flags.get("executed_scripts", []) or []:
+                if script:
+                    bucket["repair_scripts_seen_executed"].add(str(script))
+            if flags.get("active_hermes_required"):
+                bucket["active_hermes_required_count"] += 1
+                if flags.get("active_hermes_required") == "unknown_rule":
+                    bucket["unknown_rule_count"] += 1
+            if flags.get("repair_plan_hermes_required") == "unknown_rule":
+                bucket["unknown_rule_count"] += 1
+
+    rules = []
+    for rule_id, raw in grouped.items():
+        entry = rule_map.get(rule_id)
+        present = isinstance(entry, dict)
+        strategies = entry.get("strategies", []) if isinstance(entry, dict) and isinstance(entry.get("strategies"), list) else []
+        classifications = set(raw["classifications_seen"])
+        affected_production = len(raw["affected_production_rows"])
+        affected_fixture = len(raw["affected_fixture_rows"])
+        affected_historical = len(raw["affected_historical_rows"])
+        executed = sorted(raw["repair_scripts_seen_executed"])
+        priority = _priority_bucket(affected_production, affected_fixture, affected_historical, classifications, present, len(executed))
+        rules.append({
+            "rule_id": rule_id,
+            "affected_rows": sorted(raw["affected_rows"]),
+            "affected_production_rows": affected_production,
+            "affected_fixture_rows": affected_fixture,
+            "affected_historical_or_stale_rows": affected_historical,
+            "classifications_seen": sorted(classifications),
+            "source_kinds_seen": sorted(raw["source_kinds_seen"]),
+            "present_in_rule_map": present,
+            "rule_map_resolvability": _entry_resolvability(entry),
+            "mapped_strategies_count": len(strategies),
+            "repair_scripts_seen_executed": executed,
+            "active_hermes_required_count": raw["active_hermes_required_count"],
+            "unknown_rule_count": raw["unknown_rule_count"],
+            "priority_bucket": priority,
+            "recommended_next_action": _recommended_next_action(priority, present),
+        })
+    priority_order = {
+        "P0_systemic_production_blocker": 0,
+        "P1_single_production_blocker": 1,
+        "P2_fixture_only_blocker": 2,
+        "P3_historical_or_stale_only": 3,
+        "P4_mapped_but_unproven": 4,
+        "P5_external_validation_gap": 5,
+    }
+    rules.sort(key=lambda r: (priority_order.get(r["priority_bucket"], 99), r["rule_id"]))
+    return {
+        "rules": rules,
+        "policy": {
+            "rule_map_entries_count_as_proven_repairs": False,
+            "priority_uses_selected_corpus_profile": True,
+            "external_validators_default": EXTERNAL_VALIDATOR_STATUS,
+        },
+    }
+
+
 def build_matrix(args: argparse.Namespace) -> dict[str, Any]:
     workspace = Path(args.workspace)
+    selected_profile = getattr(args, "profile", "all") or "all"
+    manifest_path = getattr(args, "manifest", "") or ""
+    manifest = load_manifest(manifest_path)
     rows: list[dict[str, Any]] = []
     if args.inspect_existing:
         rows.extend(inspect_existing(workspace))
@@ -443,14 +822,20 @@ def build_matrix(args: argparse.Namespace) -> dict[str, Any]:
         rows.extend(run_specs(workspace, args.pdf, args.python_bin))
     if not rows:
         rows.append(_minimal_row(workspace, "", "", Path(""), "INCOMPLETE_ARTIFACTS", ["no workspace job artifacts or explicit PDF specs found"], "inspected_existing"))
+    rows = apply_corpus_profiles(rows, manifest)
+    selected_rows = select_profile(rows, selected_profile)
     return {
         "schema": "montefiore.production_readiness_matrix",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "created_at": now(),
         "workspace": str(workspace),
         "mode": "mixed" if args.inspect_existing and args.pdf else "inspect_existing" if args.inspect_existing else "orchestrator_run" if args.pdf else "none",
-        "records": rows,
-        "summary": summarize(rows),
+        "selected_profile": selected_profile,
+        "manifest": {"path": manifest_path, "loaded": bool(manifest and not manifest.get("_manifest_error")), "error": manifest.get("_manifest_error", "") if isinstance(manifest, dict) else ""},
+        "records": selected_rows,
+        "summary": summarize(selected_rows),
+        "corpus_summary": corpus_summary(selected_rows, selected_profile),
+        "blocker_priority_summary": blocker_priority_summary(selected_rows),
         "policy": {
             "read_only_artifact_inspection": bool(args.inspect_existing),
             "external_validators_default": EXTERNAL_VALIDATOR_STATUS,
@@ -458,6 +843,8 @@ def build_matrix(args: argparse.Namespace) -> dict[str, Any]:
             "does_not_modify_rule_map": True,
             "does_not_claim_10_of_10_production_readiness": True,
             "basename_matched_package_attribution": True,
+            "corpus_profiles_enabled": True,
+            "manifest_overrides_enabled": True,
         },
     }
 
@@ -468,6 +855,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--inspect-existing", action="store_true")
     parser.add_argument("--pdf", action="append", default=[], help="ticket:basename:path[:source_kind]")
     parser.add_argument("--python-bin", default=sys.executable)
+    parser.add_argument("--profile", choices=PROFILES_AVAILABLE, default="all")
+    parser.add_argument("--manifest", default="", help="Optional corpus manifest JSON with job/profile include and exclude overrides")
     parser.add_argument("--out", default="")
     args = parser.parse_args(argv)
     if not args.inspect_existing and not args.pdf:

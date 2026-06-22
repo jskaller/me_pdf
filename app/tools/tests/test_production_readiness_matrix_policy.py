@@ -17,6 +17,8 @@ class Args:
         self.pdf = kwargs.get("pdf", [])
         self.python_bin = kwargs.get("python_bin", "python3")
         self.out = kwargs.get("out", "")
+        self.profile = kwargs.get("profile", "all")
+        self.manifest = kwargs.get("manifest", "")
 
 
 class ProductionReadinessMatrixPolicyTests(unittest.TestCase):
@@ -36,6 +38,11 @@ class ProductionReadinessMatrixPolicyTests(unittest.TestCase):
         (out / "SHA256SUMS.txt").write_text("abc  report.md\n")
         return job
 
+    def stage_source_pdf(self, workspace: Path, ticket: str, basename: str) -> None:
+        path = workspace / "input" / ticket / f"{basename}.pdf"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"%PDF-local")
+
     def test_empty_workspace_is_incomplete_not_pass(self) -> None:
         with tempfile.TemporaryDirectory(prefix="matrix_empty_") as td:
             workspace = Path(td) / "workspace"
@@ -46,6 +53,9 @@ class ProductionReadinessMatrixPolicyTests(unittest.TestCase):
             self.assertEqual(record["external_validators"]["axesCheck"], "NOT_RUN")
             self.assertEqual(record["external_validators"]["PAC_2024"], "NOT_RUN")
             self.assertNotEqual(record["final_matrix_classification"], "PASS")
+            self.assertIn("corpus_profile", record)
+            self.assertIn("corpus_summary", payload)
+            self.assertIn("blocker_priority_summary", payload)
 
     def test_status_orchestrator_mismatch_is_flagged(self) -> None:
         with tempfile.TemporaryDirectory(prefix="matrix_mismatch_") as td:
@@ -170,6 +180,108 @@ class ProductionReadinessMatrixPolicyTests(unittest.TestCase):
             self.assertEqual(record["residual_targetable_rules"], ["PDF/UA-1/2"])
             self.assertEqual(record["non_targetable_rules"], ["PDF/UA-1/3"])
             self.assertEqual(record["active_hermes_required_signals"][0]["rule_id"], "PDF/UA-1/2")
+
+    def test_production_profile_includes_representative_rows_and_excludes_fixtures(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix_profiles_prod_") as td:
+            workspace = Path(td) / "workspace"
+            self.make_job(workspace, "MM-1", "real-doc", outcome="ESCALATION")
+            self.stage_source_pdf(workspace, "MM-1", "real-doc")
+            self.make_job(workspace, "WEBUI-E2E-001", "e2e-smoke", outcome="PASS")
+            (workspace / "output" / "WEBUI-E2E-001_remediated" / "e2e-smoke_remediated.pdf").write_bytes(b"%PDF-fixture")
+
+            payload = build_matrix(Args(workspace=str(workspace), inspect_existing=True, profile="production"))
+            self.assertEqual(payload["summary"]["jobs_total"], 1)
+            self.assertEqual(payload["records"][0]["ticket"], "MM-1")
+            self.assertEqual(payload["records"][0]["corpus_profile"]["primary_profile"], "production_corpus")
+            self.assertEqual(payload["corpus_summary"]["production_rows_count"], 1)
+            self.assertEqual(payload["corpus_summary"]["fixture_rows_count"], 0)
+
+    def test_fixtures_profile_includes_controlled_and_synthetic_fixtures(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix_profiles_fixtures_") as td:
+            workspace = Path(td) / "workspace"
+            self.make_job(workspace, "WEBUI-E2E-001", "e2e-smoke", outcome="PASS")
+            (workspace / "output" / "WEBUI-E2E-001_remediated" / "e2e-smoke_remediated.pdf").write_bytes(b"%PDF-fixture")
+            self.make_job(workspace, "MM-1", "real-doc", outcome="ESCALATION")
+            self.stage_source_pdf(workspace, "MM-1", "real-doc")
+
+            payload = build_matrix(Args(workspace=str(workspace), inspect_existing=True, profile="fixtures"))
+            self.assertEqual(payload["summary"]["jobs_total"], 1)
+            self.assertEqual(payload["records"][0]["corpus_profile"]["primary_profile"], "controlled_fixture")
+
+    def test_historical_profile_catches_test_smoke_probe_timestamp_and_incomplete_rows(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix_profiles_hist_") as td:
+            workspace = Path(td) / "workspace"
+            self.make_job(workspace, "TEST-001", "old-fixture", outcome="FAIL")
+            self.make_job(workspace, "PROBE-001", "trial", outcome="ESCALATION")
+            self.make_job(workspace, "MM-9", "doc.pre-patch-g.20260620-135708", outcome="FAIL")
+            incomplete = workspace / "jobs" / "MM-10_missing"
+            incomplete.mkdir(parents=True)
+
+            payload = build_matrix(Args(workspace=str(workspace), inspect_existing=True, profile="historical"))
+            self.assertEqual(payload["summary"]["jobs_total"], 4)
+            self.assertTrue(all("historical" in r["corpus_profile"]["included_in_profiles"] for r in payload["records"]))
+
+    def test_manifest_include_and_exclude_override_heuristics(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix_manifest_") as td:
+            workspace = Path(td) / "workspace"
+            self.make_job(workspace, "TEST-001", "old-fixture", outcome="FAIL")
+            manifest = Path(td) / "manifest.json"
+            self.write_json(manifest, {
+                "version": "1.0.0",
+                "profiles": {"production": {"include_jobs": ["TEST-001_old-fixture"]}},
+                "jobs": {"TEST-001_old-fixture": {"source_kind": "private_local_or_representative_pdf", "profile": "production_corpus", "notes": "temporary manifest override"}},
+            })
+
+            payload = build_matrix(Args(workspace=str(workspace), inspect_existing=True, profile="production", manifest=str(manifest)))
+            self.assertEqual(payload["summary"]["jobs_total"], 1)
+            self.assertEqual(payload["records"][0]["source_kind"], "private_local_or_representative_pdf")
+            self.assertEqual(payload["records"][0]["corpus_profile"]["manifest_source"], "temporary manifest override")
+
+            manifest_exclude = Path(td) / "manifest_exclude.json"
+            self.write_json(manifest_exclude, {
+                "version": "1.0.0",
+                "profiles": {"production": {"exclude_jobs": ["TEST-001_old-fixture"]}},
+                "jobs": {"TEST-001_old-fixture": {"source_kind": "private_local_or_representative_pdf", "profile": "production_corpus"}},
+            })
+            payload = build_matrix(Args(workspace=str(workspace), inspect_existing=True, profile="production", manifest=str(manifest_exclude)))
+            self.assertEqual(payload["summary"]["jobs_total"], 0)
+
+    def test_blocker_priority_groups_rules_and_prioritizes_production_over_fixture(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix_blockers_") as td:
+            workspace = Path(td) / "workspace"
+            prod = self.make_job(workspace, "MM-1", "real-doc", outcome="ESCALATION")
+            self.stage_source_pdf(workspace, "MM-1", "real-doc")
+            self.write_json(prod / "audit" / "residual_analysis.json", {"targetable_residual_rules": ["PDF/UA-1/7.18.4"], "non_targetable_residual_rules": []})
+            self.write_json(prod / "audit" / "hermes_signals.json", [{"rule_id": "PDF/UA-1/7.18.4", "reason": "manual_no_strategies", "active_blocker": True}])
+            fixture = self.make_job(workspace, "WEBUI-E2E-001", "e2e-smoke", outcome="ESCALATION")
+            self.write_json(fixture / "audit" / "residual_analysis.json", {"targetable_residual_rules": ["PDF/UA-1/7.21.4.1"], "non_targetable_residual_rules": []})
+
+            prod_payload = build_matrix(Args(workspace=str(workspace), inspect_existing=True, profile="production"))
+            rules = prod_payload["blocker_priority_summary"]["rules"]
+            self.assertEqual(rules[0]["rule_id"], "PDF/UA-1/7.18.4")
+            self.assertEqual(rules[0]["priority_bucket"], "P1_single_production_blocker")
+            self.assertEqual(rules[0]["recommended_next_action"], "build_or_repair_strategy")
+
+            all_payload = build_matrix(Args(workspace=str(workspace), inspect_existing=True, profile="all"))
+            buckets = {r["rule_id"]: r["priority_bucket"] for r in all_payload["blocker_priority_summary"]["rules"]}
+            self.assertEqual(buckets["PDF/UA-1/7.18.4"], "P1_single_production_blocker")
+            self.assertEqual(buckets["PDF/UA-1/7.21.4.1"], "P2_fixture_only_blocker")
+
+    def test_rule_map_presence_reported_but_not_counted_as_proof_and_external_validators_not_run(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix_guardrails_") as td:
+            workspace = Path(td) / "workspace"
+            prod = self.make_job(workspace, "MM-1", "real-doc", outcome="ESCALATION")
+            self.stage_source_pdf(workspace, "MM-1", "real-doc")
+            self.write_json(prod / "audit" / "residual_analysis.json", {"targetable_residual_rules": ["PDF/UA-1/5"], "non_targetable_residual_rules": []})
+            payload = build_matrix(Args(workspace=str(workspace), inspect_existing=True, profile="production"))
+            record = payload["records"][0]
+            self.assertFalse(record["evidence_policy"]["rule_map_entries_count_as_proven_repairs"])
+            self.assertEqual(record["external_validators"]["axesCheck"], "NOT_RUN")
+            self.assertEqual(record["external_validators"]["PAC_2024"], "NOT_RUN")
+            rule = payload["blocker_priority_summary"]["rules"][0]
+            self.assertIn("present_in_rule_map", rule)
+            self.assertIn("mapped_strategies_count", rule)
+            self.assertEqual(payload["blocker_priority_summary"]["policy"]["rule_map_entries_count_as_proven_repairs"], False)
 
 
 if __name__ == "__main__":
