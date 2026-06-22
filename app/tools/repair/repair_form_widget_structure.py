@@ -24,7 +24,7 @@ from tools.audit.form_widget_structure_inspection import (
 )
 
 SCHEMA = "montefiore.form_widget_structure_repair"
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 H10_TERMINAL_DRY_RUN_BLOCKED = "MM17179_DRY_RUN_BLOCKED"
 H10_TERMINAL_ATTEMPTED_NOT_ADOPTED = "MM17179_REPAIR_ATTEMPTED_NOT_ADOPTED"
@@ -216,7 +216,39 @@ def _ensure_struct_tree_root(pdf: Any, pikepdf: Any) -> Any:
         struct_root["/ParentTree"] = parent_tree
     if parent_tree.get("/Nums") is None:
         parent_tree["/Nums"] = pikepdf.Array([])
+    # /ParentTreeNextKey belongs to /StructTreeRoot, not the number-tree
+    # dictionary. Remove the misplaced key if an earlier trial output left it
+    # on /ParentTree so new outputs do not trip structure-profile validators.
+    if parent_tree.get("/ParentTreeNextKey") is not None:
+        del parent_tree["/ParentTreeNextKey"]
     return struct_root
+
+
+def _sorted_parent_tree_nums(nums: Any, pikepdf: Any) -> Any:
+    pairs: list[tuple[int, Any]] = []
+    entries = list(nums)
+    for index in range(0, len(entries) - 1, 2):
+        try:
+            key = int(entries[index])
+        except Exception:
+            continue
+        pairs.append((key, entries[index + 1]))
+    sorted_nums = pikepdf.Array([])
+    for key, value in sorted(pairs, key=lambda item: item[0]):
+        sorted_nums.append(key)
+        sorted_nums.append(value)
+    return sorted_nums
+
+
+def _parent_tree_next_key(nums: Any) -> int:
+    keys: list[int] = []
+    entries = list(nums)
+    for index in range(0, len(entries) - 1, 2):
+        try:
+            keys.append(int(entries[index]))
+        except Exception:
+            continue
+    return max(keys) + 1 if keys else 0
 
 
 def apply_fixture_repair(input_pdf: Path, output_pdf: Path) -> dict[str, Any]:
@@ -233,16 +265,7 @@ def apply_fixture_repair(input_pdf: Path, output_pdf: Path) -> dict[str, Any]:
         root_k = struct_root["/K"]
         widgets = _iter_widget_annotations(pdf)
 
-        next_key = 0
-        existing_nums = list(nums)
-        if existing_nums:
-            keys = []
-            for index in range(0, len(existing_nums) - 1, 2):
-                try:
-                    keys.append(int(existing_nums[index]))
-                except Exception:
-                    continue
-            next_key = max(keys) + 1 if keys else 0
+        next_key = _parent_tree_next_key(nums)
 
         created = 0
         assigned = 0
@@ -275,13 +298,16 @@ def apply_fixture_repair(input_pdf: Path, output_pdf: Path) -> dict[str, Any]:
             nums.append(form_elem)
             created += 1
 
-        parent_tree["/ParentTreeNextKey"] = next_key
+        parent_tree["/Nums"] = _sorted_parent_tree_nums(nums, pikepdf)
+        struct_root["/ParentTreeNextKey"] = _parent_tree_next_key(parent_tree["/Nums"])
         pdf.save(output_pdf)
 
     return {
         "assigned_struct_parent_count": assigned,
         "created_form_struct_elements_count": created,
         "parent_tree_entries_created": created,
+        "parent_tree_next_key_location": "StructTreeRoot",
+        "parent_tree_nums_sorted": True,
     }
 
 
