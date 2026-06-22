@@ -284,5 +284,94 @@ class ProductionReadinessMatrixPolicyTests(unittest.TestCase):
             self.assertEqual(payload["blocker_priority_summary"]["policy"]["rule_map_entries_count_as_proven_repairs"], False)
 
 
+    def test_h5_pass_production_pre_repair_failure_is_contextual_not_p0_or_p1(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix_h5_pass_pre_") as td:
+            workspace = Path(td) / "workspace"
+            job = self.make_job(workspace, "MM-100", "passed-doc", outcome="PASS")
+            self.stage_source_pdf(workspace, "MM-100", "passed-doc")
+            (workspace / "output" / "MM-100_remediated" / "passed-doc_remediated.pdf").write_bytes(b"%PDF-pass")
+            self.write_json(job / "audit" / "verapdf_pre_pdfua1_summary.json", {"failures_by_rule": [{"rule_id": "PDF/UA-1/7.18.4", "failures": 1}]})
+            payload = build_matrix(Args(workspace=str(workspace), inspect_existing=True, profile="production"))
+            rule = payload["blocker_priority_summary"]["rules"][0]
+            self.assertFalse(rule["current_blocker"])
+            self.assertEqual(rule["current_production_blocker_rows"], 0)
+            self.assertEqual(rule["pre_repair_only_count"], 1)
+            self.assertNotIn(rule["priority_bucket"], {"P0_systemic_production_blocker", "P1_single_production_blocker"})
+
+    def test_h5_escalation_active_hermes_signal_creates_p1(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix_h5_p1_") as td:
+            workspace = Path(td) / "workspace"
+            job = self.make_job(workspace, "MM-101", "real-doc", outcome="ESCALATION")
+            self.stage_source_pdf(workspace, "MM-101", "real-doc")
+            self.write_json(job / "audit" / "hermes_signals.json", [{"rule_id": "PDF/UA-1/7.18.4", "reason": "manual_no_strategies", "active_blocker": True}])
+            payload = build_matrix(Args(workspace=str(workspace), inspect_existing=True, profile="production"))
+            rule = payload["blocker_priority_summary"]["rules"][0]
+            self.assertEqual(rule["priority_bucket"], "P1_single_production_blocker")
+            self.assertEqual(rule["current_production_blocker_rows"], 1)
+            self.assertIn("active_hermes_required_signals", rule["active_blocker_sources"])
+
+    def test_h5_two_production_rows_same_current_blocker_create_p0(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix_h5_p0_") as td:
+            workspace = Path(td) / "workspace"
+            for ticket in ("MM-201", "MM-202"):
+                job = self.make_job(workspace, ticket, "real-doc", outcome="ESCALATION")
+                self.stage_source_pdf(workspace, ticket, "real-doc")
+                self.write_json(job / "audit" / "residual_analysis.json", {"targetable_residual_rules": ["PDF/UA-1/7.21.7"], "non_targetable_residual_rules": []})
+            payload = build_matrix(Args(workspace=str(workspace), inspect_existing=True, profile="production"))
+            rule = payload["blocker_priority_summary"]["rules"][0]
+            self.assertEqual(rule["priority_bucket"], "P0_systemic_production_blocker")
+            self.assertEqual(rule["current_production_blocker_rows"], 2)
+
+    def test_h5_repair_plan_only_rule_is_contextual_not_active(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix_h5_plan_only_") as td:
+            workspace = Path(td) / "workspace"
+            job = self.make_job(workspace, "MM-301", "real-doc", outcome="ESCALATION")
+            self.stage_source_pdf(workspace, "MM-301", "real-doc")
+            self.write_json(job / "audit" / "repair_plan.json", {"result": "PLAN_READY", "repair_steps": [{"strategy": "planned", "rules_addressed": ["PDF/UA-1/7.3"]}], "hermes_required": []})
+            payload = build_matrix(Args(workspace=str(workspace), inspect_existing=True, profile="production"))
+            rule = payload["blocker_priority_summary"]["rules"][0]
+            self.assertEqual(rule["repair_plan_only_count"], 1)
+            self.assertFalse(rule["current_blocker"])
+            self.assertNotIn(rule["priority_bucket"], {"P0_systemic_production_blocker", "P1_single_production_blocker"})
+
+    def test_h5_fixture_only_current_blocker_is_p2_and_historical_only_is_p3(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix_h5_fixture_hist_") as td:
+            workspace = Path(td) / "workspace"
+            fixture = self.make_job(workspace, "WEBUI-E2E-001", "e2e-smoke", outcome="ESCALATION")
+            self.write_json(fixture / "audit" / "residual_analysis.json", {"targetable_residual_rules": ["PDF/UA-1/7.18.4"], "non_targetable_residual_rules": []})
+            hist = self.make_job(workspace, "PROBE-001", "trial", outcome="ESCALATION")
+            self.write_json(hist / "audit" / "residual_analysis.json", {"targetable_residual_rules": ["PDF/UA-1/7.21.7"], "non_targetable_residual_rules": []})
+            payload = build_matrix(Args(workspace=str(workspace), inspect_existing=True, profile="all"))
+            buckets = {r["rule_id"]: r["priority_bucket"] for r in payload["blocker_priority_summary"]["rules"]}
+            self.assertEqual(buckets["PDF/UA-1/7.18.4"], "P2_fixture_only_blocker")
+            self.assertEqual(buckets["PDF/UA-1/7.21.7"], "P3_historical_or_stale_only")
+
+    def test_h5_mapped_active_blocker_remains_active_not_mapped_but_unproven(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix_h5_mapped_active_") as td:
+            workspace = Path(td) / "workspace"
+            prod = self.make_job(workspace, "MM-401", "real-doc", outcome="ESCALATION")
+            self.stage_source_pdf(workspace, "MM-401", "real-doc")
+            self.write_json(prod / "audit" / "residual_analysis.json", {"targetable_residual_rules": ["PDF/UA-1/5"], "non_targetable_residual_rules": []})
+            payload = build_matrix(Args(workspace=str(workspace), inspect_existing=True, profile="production"))
+            rule = payload["blocker_priority_summary"]["rules"][0]
+            self.assertTrue(rule["present_in_rule_map"])
+            self.assertEqual(rule["priority_bucket"], "P1_single_production_blocker")
+            self.assertTrue(payload["blocker_priority_summary"]["policy"]["p0_p1_require_current_active_production_blocker_evidence"])
+
+    def test_h5_pass_row_with_current_evidence_is_risk_not_priority(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix_h5_pass_current_risk_") as td:
+            workspace = Path(td) / "workspace"
+            job = self.make_job(workspace, "MM-501", "passed-doc", outcome="PASS")
+            self.stage_source_pdf(workspace, "MM-501", "passed-doc")
+            (workspace / "output" / "MM-501_remediated" / "passed-doc_remediated.pdf").write_bytes(b"%PDF-pass")
+            self.write_json(job / "audit" / "residual_analysis.json", {"targetable_residual_rules": ["PDF/UA-1/7.18.4"], "non_targetable_residual_rules": []})
+            payload = build_matrix(Args(workspace=str(workspace), inspect_existing=True, profile="production"))
+            rule = payload["blocker_priority_summary"]["rules"][0]
+            self.assertFalse(rule["current_blocker"])
+            self.assertEqual(rule["pass_row_current_blocker_risk_count"], 1)
+            self.assertNotIn(rule["priority_bucket"], {"P0_systemic_production_blocker", "P1_single_production_blocker"})
+            self.assertEqual(payload["blocker_priority_summary"]["pass_row_current_blocker_risks"][0]["rule_id"], "PDF/UA-1/7.18.4")
+
+
 if __name__ == "__main__":
     unittest.main()

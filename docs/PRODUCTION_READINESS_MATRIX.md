@@ -210,3 +210,10 @@ bash scripts/run-production-readiness-matrix.sh --inspect-existing --profile act
 Each row includes `corpus_profile` with `primary_profile`, `included_in_profiles`, `excluded_from_production_reason`, `manifest_source`, and `profile_reason`. Matrix output also includes `corpus_summary` and `blocker_priority_summary`.
 
 For detailed corpus-selection policy, manifest usage, blocker priority buckets, MM-17179/H3 interpretation, and executive reporting guidance, see `docs/PRODUCTION_CORPUS_SELECTION.md`.
+
+
+## Patch H5 active blocker evidence-source audit
+
+Patch H5 tightens `blocker_priority_summary` so P0/P1 priority requires current active production blocker evidence. Pre-repair-only failures, repair-plan-only rules, and execution history remain visible as contextual evidence, but they do not independently create production-blocker priority.
+
+The strongest current-active sources are active `HERMES_REQUIRED` signals, post-repair rule failures, residual targetable rules, and residual non-targetable rules. PASS rows with contradictory current-active evidence are reported as risk records instead of being treated as normal production blockers.

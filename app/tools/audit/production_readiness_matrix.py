@@ -641,36 +641,93 @@ def _rule_ids_from_failures(items: Any) -> list[str]:
     return out
 
 
+def _source_list(flags: dict[str, Any], key: str) -> list[str]:
+    values = flags.setdefault(key, [])
+    if not isinstance(values, list):
+        values = []
+        flags[key] = values
+    return values
+
+
+def _append_unique(flags: dict[str, Any], key: str, value: str) -> None:
+    if not value:
+        return
+    values = _source_list(flags, key)
+    if value not in values:
+        values.append(value)
+
+
+def _row_is_success(row: dict[str, Any]) -> bool:
+    return str(row.get("final_matrix_classification") or "") in {"PASS", "REVIEW_REQUIRED"}
+
+
+def _finalize_rule_observation(flags: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
+    active_sources = set(flags.get("active_blocker_sources") or [])
+    context_sources = set(flags.get("historical_or_context_sources") or [])
+    has_current = bool(active_sources)
+    success_row = _row_is_success(row)
+    flags["rule_observation_sources"] = sorted(set(flags.get("rule_observation_sources") or []))
+    flags["active_blocker_sources"] = sorted(active_sources)
+    flags["historical_or_context_sources"] = sorted(context_sources)
+    flags["active_hermes_required"] = bool(flags.get("active_hermes_required"))
+    flags["post_repair_validator_failure"] = bool(flags.get("post_repair_validator_failure"))
+    flags["residual_targetable_current"] = bool(flags.get("residual_targetable_current"))
+    flags["residual_non_targetable_current"] = bool(flags.get("residual_non_targetable_current"))
+    flags["pre_repair_only"] = bool(flags.get("pre_validator_failure") and not has_current and not flags.get("repair_plan_rule") and not flags.get("repair_plan_hermes_required"))
+    flags["repair_plan_only"] = bool((flags.get("repair_plan_rule") or flags.get("repair_plan_hermes_required")) and not has_current and not flags.get("pre_validator_failure"))
+    flags["executed_and_cleared"] = bool(flags.get("executed_scripts") and not has_current)
+    flags["current_blocker"] = has_current and not success_row
+    flags["pass_row_current_blocker_risk"] = has_current and success_row
+    if flags.get("active_hermes_required"):
+        tier = "T1_active_hermes_required"
+    elif flags.get("post_repair_validator_failure"):
+        tier = "T2_post_repair_validator_failure"
+    elif flags.get("residual_targetable_current"):
+        tier = "T3_residual_targetable_current"
+    elif flags.get("residual_non_targetable_current"):
+        tier = "T4_residual_non_targetable_current"
+    elif flags.get("pre_validator_failure") or flags.get("repair_plan_rule") or flags.get("repair_plan_hermes_required"):
+        tier = "T5_contextual_pre_repair_or_plan"
+    elif flags.get("executed_scripts"):
+        tier = "T6_executed_without_current_blocker"
+    else:
+        tier = "T7_observed_without_priority_evidence"
+    flags["priority_evidence_tier"] = tier
+    return flags
+
+
 def _row_rule_observations(row: dict[str, Any]) -> dict[str, dict[str, Any]]:
     observations: dict[str, dict[str, Any]] = {}
-
-    def mark(rule_id: str, field: str, value: Any = True) -> None:
+    def mark(rule_id: str, field: str, value: Any = True, *, source: str, current: bool = False, context: bool = False) -> None:
         if not rule_id:
             return
-        observations.setdefault(rule_id, {})[field] = value
-
+        flags = observations.setdefault(rule_id, {})
+        flags[field] = value
+        _append_unique(flags, "rule_observation_sources", source)
+        if current:
+            _append_unique(flags, "active_blocker_sources", source)
+        if context:
+            _append_unique(flags, "historical_or_context_sources", source)
     for rule_id in _rule_ids_from_failures(row.get("pre_repair_validator_failures")):
-        mark(rule_id, "pre_validator_failure", True)
-    for gate in (row.get("post_repair_validator_outcomes") or {}).values():
+        mark(rule_id, "pre_validator_failure", True, source="pre_repair_validator_failures", context=True)
+    for gate_name, gate in (row.get("post_repair_validator_outcomes") or {}).items():
         if isinstance(gate, dict) and gate.get("available"):
-            # Current gate summaries usually expose the aggregate result only; rule-level
-            # post failures are captured when their JSON uses failures/failures_by_rule.
             path = gate.get("path")
             if path:
                 for rule_id in _rule_ids_from_failures(failures_from(Path(path))):
-                    mark(rule_id, "post_validator_failure", True)
+                    mark(rule_id, "post_repair_validator_failure", True, source=f"post_repair_validator_outcomes.{gate_name}", current=True)
     for rule_id in row.get("residual_targetable_rules") or []:
-        mark(str(rule_id), "residual_targetable", True)
+        mark(str(rule_id), "residual_targetable_current", True, source="residual_targetable_rules", current=True)
     for rule_id in row.get("non_targetable_rules") or []:
-        mark(str(rule_id), "residual_non_targetable", True)
+        mark(str(rule_id), "residual_non_targetable_current", True, source="non_targetable_rules", current=True)
     for rule_id in (row.get("repair_plan") or {}).get("rules", []) or []:
-        mark(str(rule_id), "repair_plan_rule", True)
+        mark(str(rule_id), "repair_plan_rule", True, source="repair_plan.rules", context=True)
     for item in (row.get("repair_plan") or {}).get("hermes_required", []) or []:
         if isinstance(item, dict):
-            mark(str(item.get("rule_id") or ""), "repair_plan_hermes_required", item.get("reason", True))
+            mark(str(item.get("rule_id") or ""), "repair_plan_hermes_required", item.get("reason", True), source="repair_plan.hermes_required", context=True)
     for item in row.get("active_hermes_required_signals") or []:
         if isinstance(item, dict):
-            mark(str(item.get("rule_id") or ""), "active_hermes_required", item.get("reason", True))
+            mark(str(item.get("rule_id") or ""), "active_hermes_required", item.get("reason", True), source="active_hermes_required_signals", current=True)
     for item in row.get("repair_scripts_executed") or []:
         if not isinstance(item, dict):
             continue
@@ -678,9 +735,13 @@ def _row_rule_observations(row: dict[str, Any]) -> dict[str, dict[str, Any]]:
         if isinstance(rules, str):
             rules = [rules]
         for rule_id in rules:
-            mark(str(rule_id), "executed_scripts", [])
-            observations[str(rule_id)].setdefault("executed_scripts", []).append(item.get("script", ""))
-    return observations
+            flags = observations.setdefault(str(rule_id), {})
+            _append_unique(flags, "rule_observation_sources", "repair_scripts_executed")
+            _append_unique(flags, "historical_or_context_sources", "repair_scripts_executed")
+            flags.setdefault("executed_scripts", [])
+            if item.get("script") and item.get("script") not in flags["executed_scripts"]:
+                flags["executed_scripts"].append(item.get("script", ""))
+    return {rule_id: _finalize_rule_observation(flags, row) for rule_id, flags in observations.items()}
 
 
 def _entry_resolvability(entry: dict[str, Any] | None) -> str:
@@ -696,17 +757,19 @@ def _entry_resolvability(entry: dict[str, Any] | None) -> str:
     return "repairable_unbuilt"
 
 
-def _priority_bucket(affected_production: int, affected_fixture: int, affected_historical: int, classifications: set[str], present_in_rule_map: bool, executed_count: int) -> str:
-    production_blocking = bool(classifications & {"ESCALATION", "FAIL", "MISMATCH", "BLOCKED", "INCOMPLETE_ARTIFACTS"}) and affected_production > 0
-    if production_blocking and affected_production > 1:
+def _priority_bucket(current_production: int, current_fixture: int, current_historical: int, affected_production: int, affected_fixture: int, affected_historical: int, present_in_rule_map: bool, executed_count: int) -> str:
+    del affected_fixture, executed_count
+    if current_production > 1:
         return "P0_systemic_production_blocker"
-    if production_blocking:
+    if current_production == 1:
         return "P1_single_production_blocker"
-    if affected_fixture and not affected_production:
+    if current_fixture and not current_production:
         return "P2_fixture_only_blocker"
+    if current_historical and not current_production:
+        return "P3_historical_or_stale_only"
     if affected_historical and not affected_production:
         return "P3_historical_or_stale_only"
-    if present_in_rule_map and executed_count == 0:
+    if present_in_rule_map:
         return "P4_mapped_but_unproven"
     return "P5_external_validation_gap"
 
@@ -727,87 +790,72 @@ def _recommended_next_action(bucket: str, present_in_rule_map: bool) -> str:
 def blocker_priority_summary(rows: list[dict[str, Any]], rule_map_path: Path | None = None) -> dict[str, Any]:
     rule_map = _rule_map_entries(rule_map_path)
     grouped: dict[str, dict[str, Any]] = {}
+    pass_row_current_blocker_risks: list[dict[str, Any]] = []
     for row in rows:
         job_name = row_job_name(row)
         primary = row.get("corpus_profile", {}).get("primary_profile", "unknown")
+        classification = str(row.get("final_matrix_classification") or "UNKNOWN")
         observations = _row_rule_observations(row)
         for rule_id, flags in observations.items():
             bucket = grouped.setdefault(rule_id, {
-                "rule_id": rule_id,
-                "affected_rows": set(),
-                "affected_production_rows": set(),
-                "affected_fixture_rows": set(),
-                "affected_historical_rows": set(),
-                "classifications_seen": set(),
-                "source_kinds_seen": set(),
-                "repair_scripts_seen_executed": set(),
-                "active_hermes_required_count": 0,
-                "unknown_rule_count": 0,
+                "rule_id": rule_id, "affected_rows": set(), "affected_production_rows": set(), "affected_fixture_rows": set(), "affected_historical_rows": set(),
+                "current_blocker_rows": set(), "current_production_blocker_rows": set(), "current_fixture_blocker_rows": set(), "current_historical_blocker_rows": set(), "contextual_only_rows": set(),
+                "classifications_seen": set(), "source_kinds_seen": set(), "repair_scripts_seen_executed": set(), "rule_observation_sources": set(), "active_blocker_sources": set(), "historical_or_context_sources": set(), "priority_evidence_tiers": set(),
+                "active_hermes_required_count": 0, "post_repair_validator_failure_count": 0, "residual_targetable_current_count": 0, "residual_non_targetable_current_count": 0, "pre_repair_only_count": 0, "repair_plan_only_count": 0, "executed_and_cleared_count": 0, "pass_row_current_blocker_risk_count": 0, "unknown_rule_count": 0,
             })
             bucket["affected_rows"].add(job_name)
-            if primary == "production_corpus":
-                bucket["affected_production_rows"].add(job_name)
-            elif primary in {"controlled_fixture", "synthetic_generated_fixture"}:
-                bucket["affected_fixture_rows"].add(job_name)
+            if primary == "production_corpus": bucket["affected_production_rows"].add(job_name)
+            elif primary in {"controlled_fixture", "synthetic_generated_fixture"}: bucket["affected_fixture_rows"].add(job_name)
+            else: bucket["affected_historical_rows"].add(job_name)
+            if flags.get("current_blocker"):
+                bucket["current_blocker_rows"].add(job_name)
+                if primary == "production_corpus": bucket["current_production_blocker_rows"].add(job_name)
+                elif primary in {"controlled_fixture", "synthetic_generated_fixture"}: bucket["current_fixture_blocker_rows"].add(job_name)
+                else: bucket["current_historical_blocker_rows"].add(job_name)
             else:
-                bucket["affected_historical_rows"].add(job_name)
-            bucket["classifications_seen"].add(str(row.get("final_matrix_classification") or "UNKNOWN"))
+                bucket["contextual_only_rows"].add(job_name)
+            if flags.get("pass_row_current_blocker_risk"):
+                bucket["pass_row_current_blocker_risk_count"] += 1
+                pass_row_current_blocker_risks.append({"rule_id": rule_id, "job": job_name, "classification": classification})
+            bucket["classifications_seen"].add(classification)
             bucket["source_kinds_seen"].add(str(row.get("source_kind") or "unknown"))
+            for source in flags.get("rule_observation_sources", []) or []: bucket["rule_observation_sources"].add(str(source))
+            for source in flags.get("active_blocker_sources", []) or []: bucket["active_blocker_sources"].add(str(source))
+            for source in flags.get("historical_or_context_sources", []) or []: bucket["historical_or_context_sources"].add(str(source))
+            if flags.get("priority_evidence_tier"): bucket["priority_evidence_tiers"].add(str(flags["priority_evidence_tier"]))
             for script in flags.get("executed_scripts", []) or []:
-                if script:
-                    bucket["repair_scripts_seen_executed"].add(str(script))
+                if script: bucket["repair_scripts_seen_executed"].add(str(script))
             if flags.get("active_hermes_required"):
                 bucket["active_hermes_required_count"] += 1
-                if flags.get("active_hermes_required") == "unknown_rule":
-                    bucket["unknown_rule_count"] += 1
-            if flags.get("repair_plan_hermes_required") == "unknown_rule":
-                bucket["unknown_rule_count"] += 1
-
+                if flags.get("active_hermes_required") == "unknown_rule": bucket["unknown_rule_count"] += 1
+            if flags.get("post_repair_validator_failure"): bucket["post_repair_validator_failure_count"] += 1
+            if flags.get("residual_targetable_current"): bucket["residual_targetable_current_count"] += 1
+            if flags.get("residual_non_targetable_current"): bucket["residual_non_targetable_current_count"] += 1
+            if flags.get("pre_repair_only"): bucket["pre_repair_only_count"] += 1
+            if flags.get("repair_plan_only"): bucket["repair_plan_only_count"] += 1
+            if flags.get("executed_and_cleared"): bucket["executed_and_cleared_count"] += 1
+            if flags.get("repair_plan_hermes_required") == "unknown_rule": bucket["unknown_rule_count"] += 1
     rules = []
     for rule_id, raw in grouped.items():
         entry = rule_map.get(rule_id)
         present = isinstance(entry, dict)
         strategies = entry.get("strategies", []) if isinstance(entry, dict) and isinstance(entry.get("strategies"), list) else []
         classifications = set(raw["classifications_seen"])
-        affected_production = len(raw["affected_production_rows"])
-        affected_fixture = len(raw["affected_fixture_rows"])
-        affected_historical = len(raw["affected_historical_rows"])
+        affected_production = len(raw["affected_production_rows"]); affected_fixture = len(raw["affected_fixture_rows"]); affected_historical = len(raw["affected_historical_rows"])
+        current_production = len(raw["current_production_blocker_rows"]); current_fixture = len(raw["current_fixture_blocker_rows"]); current_historical = len(raw["current_historical_blocker_rows"])
         executed = sorted(raw["repair_scripts_seen_executed"])
-        priority = _priority_bucket(affected_production, affected_fixture, affected_historical, classifications, present, len(executed))
+        priority = _priority_bucket(current_production, current_fixture, current_historical, affected_production, affected_fixture, affected_historical, present, len(executed))
         rules.append({
-            "rule_id": rule_id,
-            "affected_rows": sorted(raw["affected_rows"]),
-            "affected_production_rows": affected_production,
-            "affected_fixture_rows": affected_fixture,
-            "affected_historical_or_stale_rows": affected_historical,
-            "classifications_seen": sorted(classifications),
-            "source_kinds_seen": sorted(raw["source_kinds_seen"]),
-            "present_in_rule_map": present,
-            "rule_map_resolvability": _entry_resolvability(entry),
-            "mapped_strategies_count": len(strategies),
-            "repair_scripts_seen_executed": executed,
-            "active_hermes_required_count": raw["active_hermes_required_count"],
-            "unknown_rule_count": raw["unknown_rule_count"],
-            "priority_bucket": priority,
-            "recommended_next_action": _recommended_next_action(priority, present),
+            "rule_id": rule_id, "affected_rows": sorted(raw["affected_rows"]), "affected_production_rows": affected_production, "affected_fixture_rows": affected_fixture, "affected_historical_or_stale_rows": affected_historical,
+            "current_blocker_rows": sorted(raw["current_blocker_rows"]), "current_production_blocker_rows": current_production, "current_fixture_blocker_rows": current_fixture, "current_historical_or_stale_blocker_rows": current_historical, "contextual_only_rows": sorted(raw["contextual_only_rows"]),
+            "classifications_seen": sorted(classifications), "source_kinds_seen": sorted(raw["source_kinds_seen"]), "rule_observation_sources": sorted(raw["rule_observation_sources"]), "active_blocker_sources": sorted(raw["active_blocker_sources"]), "historical_or_context_sources": sorted(raw["historical_or_context_sources"]), "priority_evidence_tiers": sorted(raw["priority_evidence_tiers"]),
+            "present_in_rule_map": present, "rule_map_resolvability": _entry_resolvability(entry), "mapped_strategies_count": len(strategies), "repair_scripts_seen_executed": executed,
+            "active_hermes_required_count": raw["active_hermes_required_count"], "post_repair_validator_failure_count": raw["post_repair_validator_failure_count"], "residual_targetable_current_count": raw["residual_targetable_current_count"], "residual_non_targetable_current_count": raw["residual_non_targetable_current_count"], "pre_repair_only_count": raw["pre_repair_only_count"], "repair_plan_only_count": raw["repair_plan_only_count"], "executed_and_cleared_count": raw["executed_and_cleared_count"], "pass_row_current_blocker_risk_count": raw["pass_row_current_blocker_risk_count"], "unknown_rule_count": raw["unknown_rule_count"],
+            "current_blocker": bool(raw["current_blocker_rows"]), "priority_bucket": priority, "recommended_next_action": _recommended_next_action(priority, present),
         })
-    priority_order = {
-        "P0_systemic_production_blocker": 0,
-        "P1_single_production_blocker": 1,
-        "P2_fixture_only_blocker": 2,
-        "P3_historical_or_stale_only": 3,
-        "P4_mapped_but_unproven": 4,
-        "P5_external_validation_gap": 5,
-    }
+    priority_order = {"P0_systemic_production_blocker": 0, "P1_single_production_blocker": 1, "P2_fixture_only_blocker": 2, "P3_historical_or_stale_only": 3, "P4_mapped_but_unproven": 4, "P5_external_validation_gap": 5}
     rules.sort(key=lambda r: (priority_order.get(r["priority_bucket"], 99), r["rule_id"]))
-    return {
-        "rules": rules,
-        "policy": {
-            "rule_map_entries_count_as_proven_repairs": False,
-            "priority_uses_selected_corpus_profile": True,
-            "external_validators_default": EXTERNAL_VALIDATOR_STATUS,
-        },
-    }
+    return {"rules": rules, "pass_row_current_blocker_risks": pass_row_current_blocker_risks, "policy": {"rule_map_entries_count_as_proven_repairs": False, "priority_uses_selected_corpus_profile": True, "p0_p1_require_current_active_production_blocker_evidence": True, "pre_repair_and_repair_plan_only_are_contextual": True, "pass_rows_with_current_blockers_are_reported_as_risks": True, "external_validators_default": EXTERNAL_VALIDATOR_STATUS}}
 
 
 def build_matrix(args: argparse.Namespace) -> dict[str, Any]:

@@ -90,16 +90,25 @@ This is the section to use for executive reporting. It distinguishes production 
 
 ## Blocker priority summary
 
-The matrix includes `blocker_priority_summary.rules`, grouped by rule ID. It uses row evidence from:
+The matrix includes `blocker_priority_summary.rules`, grouped by rule ID. Patch H5 makes these rule observations source-aware so production priority is driven by current active blocker evidence, not by pre-repair-only or repair-plan-only context.
 
-- active `HERMES_REQUIRED` signals;
-- residual targetable and non-targetable rules;
-- `repair_plan.hermes_required`;
-- pre/post validator failure summaries where available;
-- repair scripts that actually executed;
-- rule-map lookup metadata.
+Current active blocker evidence includes:
 
-Rule-map presence is reported, but it is not proof of repair. The matrix preserves:
+- active `HERMES_REQUIRED` signals that were not reconciled as resolved, suppressed, or non-targetable;
+- post-repair validator rule failures when rule-level failure summaries are available;
+- residual targetable rules;
+- residual non-targetable rules.
+
+Contextual evidence remains visible but does not independently create P0/P1 production priority:
+
+- pre-repair validator failures only;
+- repair-plan rules only;
+- `repair_plan.hermes_required` without active signal, post-validator, or residual evidence;
+- repair scripts that executed when no current post-failure or residual evidence remains.
+
+Each priority row now reports `rule_observation_sources`, `active_blocker_sources`, `historical_or_context_sources`, `current_blocker`, `priority_evidence_tiers`, and counts for pre-repair-only, repair-plan-only, residual, post-validator, active-Hermes, and executed-and-cleared evidence.
+
+Rule-map presence is reported, but it is not proof of repair or proof that a rule is currently active. The matrix preserves:
 
 ```json
 {"rule_map_entries_count_as_proven_repairs": false}
@@ -109,14 +118,14 @@ A repair becomes production evidence only when execution and validator/residual 
 
 ## Priority buckets
 
-- `P0_systemic_production_blocker`: recurring blocking rule across more than one production row.
-- `P1_single_production_blocker`: blocking rule currently seen in one production row.
-- `P2_fixture_only_blocker`: blocker is fixture-only.
-- `P3_historical_or_stale_only`: blocker appears only in historical/stale rows.
-- `P4_mapped_but_unproven`: mapped rule exists but lacks selected-corpus execution proof.
-- `P5_external_validation_gap`: blocker prioritization depends on external validation evidence not yet ingested.
+- `P0_systemic_production_blocker`: current active blocker evidence recurs across more than one production row.
+- `P1_single_production_blocker`: current active blocker evidence appears in exactly one production row.
+- `P2_fixture_only_blocker`: current active blocker evidence is fixture-only.
+- `P3_historical_or_stale_only`: current active blocker evidence appears only in historical/stale rows, or the observation is historical/stale only.
+- `P4_mapped_but_unproven`: mapped rule exists but selected-corpus observations are contextual rather than current-active.
+- `P5_external_validation_gap`: prioritization depends on evidence not yet ingested, often including external validators.
 
-Recommended actions include `build_or_repair_strategy`, `audit_rule_map_and_tests`, `collect_more_corpus_evidence`, `exclude_stale_artifact`, and `external_validator_ingestion`.
+Recommended actions include `build_or_repair_strategy`, `audit_rule_map_and_tests`, `collect_more_corpus_evidence`, `exclude_stale_artifact`, and `external_validator_ingestion`. PASS rows with current active evidence are reported as risks via `pass_row_current_blocker_risks`; they do not normally create P0/P1 priority by themselves.
 
 ## MM-17179 / H3 interpretation
 
