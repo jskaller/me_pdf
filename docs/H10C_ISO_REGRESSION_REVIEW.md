@@ -3,7 +3,7 @@
 ## Terminal state
 
 ```text
-ISO_REVIEW_INCONCLUSIVE
+ISO_REGRESSION_REQUIRES_REPAIR_CHANGE
 ```
 
 ## Scope
@@ -52,12 +52,67 @@ after: FAIL
 classification: informational
 ```
 
-H10C keeps metadata adoption deferred unless runtime ISO sidecar evidence can prove that this PASS→FAIL change is benign, an accounting artifact, a validator interpretation issue, or fixed by a repair adjustment.
-
-This repository commit does not include the generated `/tmp` validator XML sidecars, profile-accounting JSON, repair report JSON, or regenerated PDFs needed to classify the live MM-17179 ISO regression. Those artifacts must remain uncommitted. Therefore the repository-level terminal state remains:
+H10C reproduced and reviewed that ISO PASS→FAIL regression with runtime sidecar evidence. The review classified the regression as:
 
 ```text
-ISO_REVIEW_INCONCLUSIVE
+STRUCTURAL_SIDE_EFFECT
+```
+
+Therefore guarded metadata adoption remains blocked, and the form-widget repair needs a targeted structural adjustment before any metadata adoption or runtime integration can proceed.
+
+## Runtime ISO evidence reviewed
+
+The runtime evidence used the uncommitted `/tmp` sidecars generated inside the Hermes container:
+
+```text
+/tmp/h10c-verapdf-before/verapdf_iso_32000_1_tagged.xml
+/tmp/h10c-verapdf-after/verapdf_iso_32000_1_tagged.xml
+/tmp/h10c-verapdf-before/profile_accounting.json
+/tmp/h10c-verapdf-after/profile_accounting.json
+/tmp/h10c-verapdf-delta.json
+/tmp/h10c-iso-regression-review.json
+```
+
+These generated validator and review artifacts are runtime evidence only and must not be committed.
+
+The ISO review recorded:
+
+```text
+before_iso_result: PASS
+after_iso_result: FAIL
+classification: STRUCTURAL_SIDE_EFFECT
+blocks_metadata_adoption: true
+blocks_runtime_activation: true
+```
+
+The new ISO rule ID was:
+
+```text
+ISO 19005-2:2011/Annex_L
+```
+
+The changed check was:
+
+```text
+before_failed_checks: 0
+after_failed_checks: 1
+delta: 1
+```
+
+The helper found these correlations:
+
+```text
+correlation_to_form_widget_objects: true
+correlation_to_struct_tree_root: true
+correlation_to_parent_tree: true
+correlation_to_objr: false
+correlation_to_struct_parent: false
+```
+
+Recommendation from the runtime ISO review:
+
+```text
+New or increased ISO checks correlate with form-widget or structure-construction evidence.
 ```
 
 ## Added helper
@@ -140,7 +195,7 @@ No active executable strategy is added.
 
 ## Lookup safety
 
-H10C must preserve the H10B lookup safety rule:
+H10C preserves the H10B lookup safety rule:
 
 ```text
 lookup_repair_plan.py must not emit tools/repair/repair_form_widget_structure.py as an executable production repair step.
@@ -166,35 +221,34 @@ H10C does not commit private PDFs, generated PDFs, workspace artifacts, validato
 
 ## Required next action
 
-Run the H10C runtime evidence commands locally inside the Hermes container to generate:
+The next patch must inspect and adjust the form-widget repair structure construction so it clears `PDF/UA-1/7.18.4` without introducing the ISO profile regression.
+
+The next patch must rerun:
 
 ```text
-/tmp/h10c-verapdf-before/verapdf_iso_32000_1_tagged.xml
-/tmp/h10c-verapdf-after/verapdf_iso_32000_1_tagged.xml
-/tmp/h10c-verapdf-before/profile_accounting.json
-/tmp/h10c-verapdf-after/profile_accounting.json
-/tmp/h10c-verapdf-delta.json
-/tmp/h10c-iso-regression-review.json
+H10A isolated apply
+qpdf
+before/after object diagnostics
+preservation
+repo-approved veraPDF profiles
+profile accounting
+ISO regression review
+lookup safety
 ```
 
-Then inspect `/tmp/h10c-iso-regression-review.json`.
+Required target:
 
-If the classification is `BENIGN_INFORMATIONAL`, `PROFILE_ACCOUNTING_ARTIFACT`, or `VALIDATOR_INTERPRETATION_ONLY` and the recommendation does not block metadata adoption, a follow-up patch may add guarded non-runtime metadata.
-
-If the classification is `STRUCTURAL_SIDE_EFFECT`, the form-widget repair must be adjusted before adoption.
-
-If the classification remains `INCONCLUSIVE`, adoption remains blocked and the evidence extractor should be improved.
+```text
+PDF/UA-1/7.18.4: 204 → 0
+ISO-32000-1-Tagged: no PASS→FAIL regression
+no authoritative PDF/UA-1/WCAG regression
+lookup still does not emit repair_form_widget_structure.py as executable production strategy
+```
 
 ## Recommended next patch
 
 ```text
-H10D — Runtime ISO Evidence Application and Conditional Guarded Metadata Adoption
+H10D — Repair Form-Widget Structure Construction ISO Side Effect
 ```
 
-H10D should use the runtime ISO review output to either:
-
-```text
-adopt guarded non-runtime metadata if ISO is cleared;
-fix the repair if ISO is caused by structure construction;
-or keep adoption blocked with exact ISO evidence if unresolved.
-```
+H10D should fix the structural side effect before reconsidering guarded metadata adoption. If H10D fixes the ISO regression and preserves target-rule clearance, a later guarded metadata patch may add non-runtime strategy metadata while keeping active `strategies[]` unchanged.
