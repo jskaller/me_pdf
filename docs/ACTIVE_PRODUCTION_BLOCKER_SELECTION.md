@@ -4,7 +4,7 @@ Patch: H6 - Active Production Blocker Selection Report
 
 Starting baseline requested by operator: `9aa44cd Prioritize active blocker evidence in matrix`
 
-Report status: `EVIDENCE_UNAVAILABLE_IN_THIS_EXECUTION_ENVIRONMENT`
+Report status: `MATRIX_EVIDENCE_RECORDED`
 
 ## Scope guardrail
 
@@ -27,9 +27,9 @@ The H6 review read the current `master` versions of the H5 matrix and surroundin
 - `app/tools/packaging/status_json_writer.py`
 - `app/tools/packaging/package_deliverables.py`
 
-## Matrix commands requested for H6
+## Matrix commands run
 
-These are the required commands for a local operator with the actual workspace artifacts:
+Production profile:
 
 ```bash
 bash scripts/run-production-readiness-matrix.sh \
@@ -39,6 +39,8 @@ bash scripts/run-production-readiness-matrix.sh \
   --out /tmp/h6-production-matrix.json
 ```
 
+Actionable profile:
+
 ```bash
 bash scripts/run-production-readiness-matrix.sh \
   --inspect-existing \
@@ -47,135 +49,155 @@ bash scripts/run-production-readiness-matrix.sh \
   --out /tmp/h6-actionable-matrix.json
 ```
 
-## Matrix execution result in this environment
-
-The commands above were not run to completion in this ChatGPT/GitHub-connector environment because the required local evidence was unavailable.
-
-Unavailable required evidence:
-
-- local repository checkout with executable working tree;
-- `workspace/jobs/*` artifacts;
-- `workspace/output/*` package artifacts;
-- private/representative PDFs under `workspace/input/*`;
-- existing `STATUS.json`, `audit/orchestrator_outcome.json`, `audit/residual_analysis.json`, `audit/hermes_signals.json`, and validator sidecars for the representative production jobs;
-- generated matrix outputs `/tmp/h6-production-matrix.json` and `/tmp/h6-actionable-matrix.json`.
-
-Because this evidence was absent, H6 cannot truthfully select a production blocker from actual current-active local evidence in this execution.
-
 ## Manifest load status
 
-The manifest file exists in the repository at `docs/examples/corpus_manifest.example.json` and names two production-corpus candidates:
-
-| Job | Manifest profile | Source kind | Notes |
-|---|---:|---|---|
-| `MM-17161_FinancialAidMMVPolicyRevised_06032026_TinaM` | `production_corpus` | `private_local_or_representative_pdf` | Representative local PDF; private source not committed. |
-| `MM-17179_ROI4987_English_1-26_rev_Fillable` | `production_corpus` | `private_local_or_representative_pdf` | Representative local PDF; private source not committed. |
-
-The manifest also excludes `TEST-001_Montefiore_ROI_form_instructions-English` from production and identifies `WEBUI-E2E-001_e2e-smoke` as a controlled fixture.
-
-Actual matrix manifest-load confirmation must come from the matrix payload fields:
+Both H6 matrix runs loaded the reviewed manifest successfully:
 
 ```json
 "manifest": {
-  "path": "docs/examples/corpus_manifest.example.json",
+  "error": "",
   "loaded": true,
-  "error": ""
+  "path": "docs/examples/corpus_manifest.example.json"
 }
 ```
 
-That payload was not produced in this environment.
+The manifest identified two representative production-corpus rows and excluded fixture/historical rows from production readiness counting.
 
 ## Production corpus rows selected
 
-Not available in this execution because `/tmp/h6-production-matrix.json` was not generated.
+The production profile selected 2 rows, both `production_corpus` with `source_kind=private_local_or_representative_pdf`.
 
-Expected local source of truth after running the production command:
+| Job | Classification | Included profiles | Notes |
+|---|---|---|---|
+| `MM-17161_FinancialAidMMVPolicyRevised_06032026_TinaM` | `PASS` | `all`, `production` | PASS with matched top-level remediated PDF, audit report, and checksum evidence. |
+| `MM-17179_ROI4987_English_1-26_rev_Fillable` | `ESCALATION` | `all`, `production`, `actionable` | Current active production blocker row with residual targetable rules and active HERMES_REQUIRED signals. |
 
-```bash
-jq '.records[] | {job: (.job_dir | split("/")[-1]), ticket, basename, final_matrix_classification, corpus_profile}' /tmp/h6-production-matrix.json
-```
+Production corpus summary:
+
+| Field | Value |
+|---|---:|
+| selected_profile | `production` |
+| selected_rows_count | 2 |
+| production_rows_count | 2 |
+| representative_real_pdf_coverage_count | 2 |
+| production_pass_count | 1 |
+| production_escalation_count | 1 |
+| production_fail_count | 0 |
+| production_review_required_count | 0 |
+| production_incomplete_count | 0 |
+| production_mismatch_count | 0 |
+| fixture_rows_count | 0 |
+| historical_probe_rows_count | 0 |
+| stale_or_incomplete_rows_count | 0 |
 
 ## Actionable rows selected
 
-Not available in this execution because `/tmp/h6-actionable-matrix.json` was not generated.
+The actionable profile selected 1 row:
 
-Expected local source of truth after running the actionable command:
+| Job | Classification | Included profiles | Notes |
+|---|---|---|---|
+| `MM-17179_ROI4987_English_1-26_rev_Fillable` | `ESCALATION` | `all`, `production`, `actionable` | Single representative production escalation row. |
 
-```bash
-jq '.records[] | {job: (.job_dir | split("/")[-1]), ticket, basename, final_matrix_classification, corpus_profile}' /tmp/h6-actionable-matrix.json
-```
+Actionable corpus summary:
 
-## H5 blocker priority summary table
+| Field | Value |
+|---|---:|
+| selected_profile | `actionable` |
+| selected_rows_count | 1 |
+| production_rows_count | 1 |
+| representative_real_pdf_coverage_count | 1 |
+| production_escalation_count | 1 |
+| production_pass_count | 0 |
 
-No actual `blocker_priority_summary.rules` table can be reported from absent local matrix output.
-
-When the local production matrix exists, populate this table directly from:
-
-```bash
-jq '.blocker_priority_summary.rules[] | {
-  rule_id,
-  priority_bucket,
-  recommended_next_action,
-  affected_production_rows,
-  current_production_blocker_rows,
-  active_blocker_sources,
-  historical_or_context_sources,
-  priority_evidence_tiers,
-  active_hermes_required_count,
-  post_repair_validator_failure_count,
-  residual_targetable_current_count,
-  residual_non_targetable_current_count,
-  pre_repair_only_count,
-  repair_plan_only_count,
-  executed_and_cleared_count
-}' /tmp/h6-production-matrix.json
-```
+## H5 blocker priority summary: production profile
 
 | rule_id | priority_bucket | recommended_next_action | affected_production_rows | current_production_blocker_rows | active_blocker_sources | historical_or_context_sources | priority_evidence_tiers | active_hermes_required_count | post_repair_validator_failure_count | residual_targetable_current_count | residual_non_targetable_current_count | pre_repair_only_count | repair_plan_only_count | executed_and_cleared_count |
 |---|---|---|---:|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|
-| Not available | Not available | Not available | 0 | 0 | Not available | Not available | Not available | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `PDF/UA-1/7.18.1` | `P1_single_production_blocker` | `build_or_repair_strategy` | 1 | 1 | `residual_targetable_rules` | `repair_plan.rules`, `repair_scripts_executed` | `T3_residual_targetable_current` | 0 | 0 | 1 | 0 | 0 | 0 | 0 |
+| `PDF/UA-1/7.18.4` | `P1_single_production_blocker` | `build_or_repair_strategy` | 1 | 1 | `active_hermes_required_signals`, `residual_targetable_rules` | `repair_plan.hermes_required` | `T1_active_hermes_required` | 1 | 0 | 1 | 0 | 0 | 0 | 0 |
+| `PDF/UA-1/7.21.4.1` | `P1_single_production_blocker` | `build_or_repair_strategy` | 1 | 1 | `active_hermes_required_signals`, `residual_targetable_rules` | `repair_plan.hermes_required` | `T1_active_hermes_required` | 1 | 0 | 1 | 0 | 0 | 0 | 0 |
+| `PDF/UA-1/7.21.7` | `P1_single_production_blocker` | `build_or_repair_strategy` | 1 | 1 | `active_hermes_required_signals`, `residual_targetable_rules` | `repair_plan.hermes_required` | `T1_active_hermes_required` | 1 | 0 | 1 | 0 | 0 | 0 | 0 |
+| `PDF/UA-1/5` | `P4_mapped_but_unproven` | `audit_rule_map_and_tests` | 2 | 0 | none | `repair_plan.rules`, `repair_scripts_executed` | `T5_contextual_pre_repair_or_plan` | 0 | 0 | 0 | 0 | 0 | 2 | 1 |
+| `PDF/UA-1/7.1` | `P4_mapped_but_unproven` | `audit_rule_map_and_tests` | 2 | 0 | none | `repair_plan.rules`, `repair_scripts_executed` | `T5_contextual_pre_repair_or_plan` | 0 | 0 | 0 | 0 | 0 | 2 | 1 |
+| `PDF/UA-1/7.10` | `P4_mapped_but_unproven` | `audit_rule_map_and_tests` | 1 | 0 | none | `repair_plan.rules`, `repair_scripts_executed` | `T5_contextual_pre_repair_or_plan` | 0 | 0 | 0 | 0 | 0 | 1 | 1 |
+| `PDF/UA-1/7.21.4.2` | `P4_mapped_but_unproven` | `audit_rule_map_and_tests` | 1 | 0 | none | `repair_plan.rules`, `repair_scripts_executed` | `T5_contextual_pre_repair_or_plan` | 0 | 0 | 0 | 0 | 0 | 1 | 1 |
+| `PDF/UA-1/7.3` | `P4_mapped_but_unproven` | `audit_rule_map_and_tests` | 2 | 0 | none | `repair_plan.rules`, `repair_scripts_executed` | `T5_contextual_pre_repair_or_plan` | 0 | 0 | 0 | 0 | 0 | 2 | 1 |
 
-## Rules excluded from P0/P1 in this execution
+## Current active production blockers
 
-No concrete exclusion list can be derived without actual matrix output.
+H6 found no `P0_systemic_production_blocker` because no rule recurred as a current active blocker across more than one production row.
 
-The local H6 report should derive exclusions from `blocker_priority_summary.rules` as follows:
+H6 found four `P1_single_production_blocker` rules, all on `MM-17179_ROI4987_English_1-26_rev_Fillable`:
 
-- `pre-repair-only`: rules whose `pre_repair_only_count > 0` and `current_production_blocker_rows == 0`;
-- `repair-plan-only`: rules whose `repair_plan_only_count > 0` and `current_production_blocker_rows == 0`;
-- `fixture-only`: rules with `priority_bucket == "P2_fixture_only_blocker"`;
-- `historical/stale-only`: rules with `priority_bucket == "P3_historical_or_stale_only"`;
-- `mapped-but-unproven`: rules with `priority_bucket == "P4_mapped_but_unproven"`;
-- `executed-and-cleared`: rules whose `executed_and_cleared_count > 0` and `current_production_blocker_rows == 0`.
+- `PDF/UA-1/7.18.1`: current blocker via `residual_targetable_rules`; mapped strategy count is 1 and `fix_link_annotation_descriptions.py` appears in executed-script context, so this needs audit before becoming a design target.
+- `PDF/UA-1/7.18.4`: current blocker via `active_hermes_required_signals` and `residual_targetable_rules`; `rule_map_resolvability=repairable_unbuilt`; active signal reports 204 failures for widget annotations not nested within a `/Form` structure element.
+- `PDF/UA-1/7.21.4.1`: current blocker via `active_hermes_required_signals` and `residual_targetable_rules`; `rule_map_resolvability=missing_map_entry`; active signal reports 2 failures and `reason=unknown_rule`.
+- `PDF/UA-1/7.21.7`: current blocker via `active_hermes_required_signals` and `residual_targetable_rules`; `rule_map_resolvability=repairable_unbuilt`; active signal reports 4 failures for missing `/ToUnicode` map.
+
+MM-17179 is therefore a single representative production blocker candidate, not a systemic corpus-wide blocker.
+
+## Rules excluded from P0/P1
+
+The following rules were visible but excluded from P0/P1 because H5 evidence showed contextual/mapped-but-unproven evidence only, with `current_production_blocker_rows=0`:
+
+| rule_id | Exclusion reason | Evidence |
+|---|---|---|
+| `PDF/UA-1/5` | mapped-but-unproven / repair-plan-only / executed-and-cleared context | `P4_mapped_but_unproven`, `repair_plan_only_count=2`, `executed_and_cleared_count=1` |
+| `PDF/UA-1/7.1` | mapped-but-unproven / repair-plan-only / executed-and-cleared context | `P4_mapped_but_unproven`, `repair_plan_only_count=2`, `executed_and_cleared_count=1` |
+| `PDF/UA-1/7.10` | mapped-but-unproven / repair-plan-only / executed-and-cleared context | `P4_mapped_but_unproven`, `repair_plan_only_count=1`, `executed_and_cleared_count=1` |
+| `PDF/UA-1/7.21.4.2` | mapped-but-unproven / repair-plan-only / executed-and-cleared context | `P4_mapped_but_unproven`, `repair_plan_only_count=1`, `executed_and_cleared_count=1` |
+| `PDF/UA-1/7.3` | mapped-but-unproven / repair-plan-only / executed-and-cleared context | `P4_mapped_but_unproven`, `repair_plan_only_count=2`, `executed_and_cleared_count=1` |
+
+No fixture-only or historical/stale-only production blockers were selected in the production/actionable H6 profiles.
 
 ## H7 recommendation
 
-No H7 implementation-design target is selected by this report.
+H6 recommends `PDF/UA-1/7.18.4` as the next implementation-design target.
 
-Reason: H6 acceptance requires current-active production evidence. In this environment, no production or actionable matrix payload was generated from local workspace artifacts, so selecting `PDF/UA-1/7.18.4`, `PDF/UA-1/7.21.7`, `PDF/UA-1/7.21.4.1`, MM-17179, or any other family would be unsupported.
+Reasoning:
 
-Recommended next action: run the two H6 matrix commands locally with the reviewed manifest and private workspace artifacts. If the resulting production matrix contains no P0/P1 current-active production blocker, collect more representative corpus evidence and/or ingest external validator outputs rather than implementing a repair.
+- It is a current active production blocker with `P1_single_production_blocker` priority.
+- It has the strongest H5 evidence tier: `T1_active_hermes_required`.
+- It is supported by both `active_hermes_required_signals` and `residual_targetable_rules`.
+- The active signal reports 204 failures on the single representative production escalation row.
+- It is known from the MM-17179 analysis as the form-widget nesting blocker family.
 
-If the local matrix does produce a P0/P1 blocker, H7 must remain design-first:
+H7 must be design-first and must not implement a repair until object-level evidence proves a safe deterministic transformation.
 
-- For `PDF/UA-1/7.18.4`, inspect ParentTree, StructParent, `/Form` structure, AcroForm preservation, tab order, field values, and object identity before any repair.
-- For `PDF/UA-1/7.21.7`, prove deterministic character-code-to-Unicode mapping before any CMap generation.
-- For `PDF/UA-1/7.21.4.1`, distinguish Base-14 substitution, embedded subsets, font descriptors, visual preservation, and text extraction before implementation.
+H7 for `PDF/UA-1/7.18.4` must inspect at minimum:
+
+- `/StructTreeRoot` and `/ParentTree` availability and consistency;
+- page-level `/StructParents` and widget annotation `/StructParent` values;
+- existing `/Form` structure elements or safe insertion points;
+- AcroForm field tree, field names, field values, widget annotation identities, and tab order;
+- page boxes and visual/layout preservation requirements;
+- whether object identity and field behavior survive any proposed structure edit;
+- before/after validator delta requirements and package-routing behavior if the job remains `ESCALATION`.
+
+Secondary design candidates remain blocked behind evidence-first inspection:
+
+- `PDF/UA-1/7.21.7`: design-first only; prove deterministic character-code-to-Unicode mapping before any CMap generation.
+- `PDF/UA-1/7.21.4.1`: design-first only; distinguish Base-14 substitution, embedded subsets, font descriptors, visual preservation, and text extraction before any rule-map entry or implementation.
 
 ## Test status
 
-Not run in this execution environment because there is no executable local checkout/workspace.
+Local operator reported:
 
-Required local test command remains:
-
-```bash
+```text
 PYTHONPATH=app python3 -m unittest app/tools/tests/test_production_readiness_matrix_policy.py
+.....................
+----------------------------------------------------------------------
+Ran 21 tests in 0.083s
+
+OK
 ```
 
-If a future H6-specific report-generation test is added, run it in the same gate and list it here.
+After this report update is pulled locally, rerun the same test command and rerun the two H6 matrix commands above to verify the committed report remains aligned with current matrix behavior.
 
 ## Final H6 conclusion
 
-H6 did not identify a P0/P1 current active production blocker in this execution. This is not evidence that no blocker exists; it is evidence that the required local workspace/private PDF artifacts were absent from this environment.
+H6 identifies no systemic `P0` production blocker.
 
-No production-readiness claim is made.
+H6 identifies four `P1_single_production_blocker` rules, all on the single representative production escalation row `MM-17179_ROI4987_English_1-26_rev_Fillable`.
+
+The recommended H7 target is a design-first investigation of `PDF/UA-1/7.18.4` form-widget nesting. This is not a production-readiness claim and not authorization to implement a repair in H6.
