@@ -3,17 +3,7 @@
 ## Terminal state
 
 ```text
-PENDING_RUNTIME_VALIDATION
-```
-
-H10E must be finalized as exactly one of:
-
-```text
 ISO_SIDE_EFFECT_FIXED_TARGET_RULE_STILL_CLEARS
-ISO_SIDE_EFFECT_PARTIALLY_FIXED_ADOPTION_BLOCKED
-ISO_SIDE_EFFECT_NOT_FIXED_REPAIR_BLOCKED
-ISO_SIDE_EFFECT_FIX_UNSAFE
-FORM_WIDGET_REPAIR_PATH_REJECTED_WITH_EVIDENCE
 ```
 
 ## Baseline
@@ -70,8 +60,6 @@ blocks_runtime_activation: True
 recommendation: New or increased ISO checks correlate with form-widget or structure-construction evidence.
 ```
 
-H10E should extract more detailed ISO XML failed-check context during runtime validation if the regression remains.
-
 ## Repair change attempted in H10E
 
 H10E changes only:
@@ -95,8 +83,8 @@ Reasoning:
 
 ```text
 H10D fixed key placement and number-tree ordering but ISO Annex_L still failed.
-The remaining likely hierarchy issue is direct /Form children under /StructTreeRoot.
-H10E tests the smallest hierarchy change: add a /Document container while keeping annotation ParentTree mapping to /Form elements.
+The remaining likely hierarchy issue was direct /Form children under /StructTreeRoot.
+H10E tested the smallest hierarchy change: add a /Document container while keeping annotation ParentTree mapping to /Form elements.
 ```
 
 ## Fixture coverage added or updated
@@ -128,6 +116,102 @@ Existing H10D fixture coverage still proves:
 /ParentTreeNextKey equals max(/Nums keys) + 1.
 ```
 
+## Runtime validation result
+
+H10E runtime validation was run against MM-17179 in Hermes, using `/tmp` output only.
+
+Apply result:
+
+```text
+result: APPLIED
+terminal_state: MM17179_REPAIR_VALIDATED
+repair_performed: True
+```
+
+Mutation summary:
+
+```text
+assigned_struct_parent_count: 102
+created_document_struct_element: True
+created_form_struct_elements_count: 102
+form_struct_parent_type: Document
+parent_tree_entries_created: 102
+parent_tree_next_key_location: StructTreeRoot
+parent_tree_nums_sorted: True
+top_level_structure_type: Document
+```
+
+Preservation summary:
+
+```text
+field_count_preserved: True
+field_names_preserved: True
+field_types_preserved: True
+field_value_presence_preserved: True
+field_values_not_dumped: True
+page_boxes_preserved: True
+page_count_preserved: True
+semantic_widget_identity_preserved: True
+widget_count_preserved: True
+widget_page_membership_preserved: True
+exact_object_identity_claimed: False
+```
+
+qpdf result:
+
+```text
+PASS
+```
+
+veraPDF profile result:
+
+```text
+before PDF/UA-1: FAIL
+after PDF/UA-1: FAIL
+before WCAG-2-2-Machine pinned: FAIL
+after WCAG-2-2-Machine pinned: FAIL
+before ISO-32000-1-Tagged: PASS
+after ISO-32000-1-Tagged: PASS
+```
+
+Profile accounting result:
+
+```text
+schema: montefiore.verapdf_delta
+terminal_state: VERAPDF_DELTA_VALIDATED
+verdict_candidate: VALIDATED_FOR_ADOPTION_CONSIDERATION
+target_rule: PDF/UA-1/7.18.4
+target_rule_before_count: 204
+target_rule_after_count: 0
+target_rule_delta: -204
+target_rule_status: CLEARED
+total_failures_before: 3656
+total_failures_after: 3450
+pdfua1_profile_result_before: FAIL
+pdfua1_profile_result_after: FAIL
+wcag_profile_result_before: FAIL
+wcag_profile_result_after: FAIL
+iso_profile_result_before: PASS
+iso_profile_result_after: PASS
+new_rule_ids: []
+increased_rule_ids: []
+accounting_blockers: []
+```
+
+ISO regression review result:
+
+```text
+before_iso_result: PASS
+after_iso_result: PASS
+new_iso_rule_ids: []
+increased_iso_rule_ids: []
+new_or_increased_iso_checks: []
+classification: BENIGN_INFORMATIONAL
+blocks_metadata_adoption: False
+blocks_runtime_activation: True
+recommendation: ISO sidecars show no new or increased failed checks.
+```
+
 ## Rule map and production path status
 
 H10E does not change:
@@ -146,57 +230,23 @@ H10E does not activate runtime repair.
 
 H10E does not claim production readiness.
 
-## Runtime validation required
+## H10E conclusion
 
-Runtime validation must be run against MM-17179 in Hermes, using `/tmp` output only.
-
-Success requires:
+H10E fixed the H10D ISO side effect while preserving target-rule clearance:
 
 ```text
-qpdf passes.
-Object diagnostics pass.
-Preservation passes.
-PDF/UA-1/7.18.4 remains cleared: before 204, after 0.
-Required PDF/UA-1 and pinned WCAG profiles run and parse.
-No new authoritative PDF/UA-1/WCAG regression appears.
-ISO-32000-1-Tagged does not regress PASS → FAIL.
-ISO regression review is BENIGN_INFORMATIONAL or no-regression equivalent.
-lookup_repair_plan.py does not emit repair_form_widget_structure.py.
-rule_repair_map.json is unchanged.
-orchestrator is unchanged.
-packaging/status is unchanged.
-docs/PRODUCTION_REMEDIATION_STATUS.md is updated.
-No private/generated/workspace artifacts are committed.
+PDF/UA-1/7.18.4: 204 -> 0
+ISO-32000-1-Tagged: PASS -> PASS
 ```
 
-## Pending decision
-
-If runtime validation proves the ISO side effect is fixed while `PDF/UA-1/7.18.4` still clears, finalize H10E as:
+The correct H10E terminal state is:
 
 ```text
 ISO_SIDE_EFFECT_FIXED_TARGET_RULE_STILL_CLEARS
 ```
 
-If the ISO side effect remains after the /Document hierarchy correction, finalize H10E as:
+## Required next action
 
-```text
-ISO_SIDE_EFFECT_NOT_FIXED_REPAIR_BLOCKED
-```
+The next patch may proceed to guarded non-runtime metadata adoption for `PDF/UA-1/7.18.4`, followed immediately by guarded runtime integration only after the metadata gate is proven safe.
 
-If the ISO evidence improves but still blocks adoption, finalize H10E as:
-
-```text
-ISO_SIDE_EFFECT_PARTIALLY_FIXED_ADOPTION_BLOCKED
-```
-
-If evidence shows a safe focused fix is not realistic, finalize H10E as:
-
-```text
-ISO_SIDE_EFFECT_FIX_UNSAFE
-```
-
-If evidence proves the form-widget repair approach is unsuitable for production adoption, finalize H10E as:
-
-```text
-FORM_WIDGET_REPAIR_PATH_REJECTED_WITH_EVIDENCE
-```
+Production readiness is still not claimed until the full WebUI `PDF:` production path through Hermes, orchestrator, validation, status, and deliverables is proven.
