@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Policy tests for guarded H9/H10/H10A form-widget structure construction."""
+"""Policy tests for guarded H9/H10/H10A/H10D form-widget structure construction."""
 from __future__ import annotations
 
 import hashlib
@@ -171,6 +171,51 @@ class FormWidgetStructureRepairPolicyTests(unittest.TestCase):
             self.assertFalse(report["workspace_artifacts_mutated"])
             self.assertFalse(report["safe_to_claim_production_ready"])
             self.assertFalse(report["decision"]["production_default_activation_allowed"])
+
+    def test_trial_apply_places_parent_tree_next_key_on_struct_tree_root_and_sorts_nums(self) -> None:
+        import pikepdf  # type: ignore
+
+        with tempfile.TemporaryDirectory(prefix="h10d_form_widget_parent_tree_") as td:
+            root = Path(td)
+            input_pdf = root / "input.pdf"
+            output_pdf = root / "output.pdf"
+            field_count = 3
+            generate_fixture(input_pdf, field_count=field_count)
+
+            report = build_report(
+                input_pdf,
+                output_pdf=output_pdf,
+                apply=True,
+                fixture_mode=False,
+                allow_structure_construction_trial=True,
+                max_widgets=MAX_WIDGETS_DEFAULT + 10,
+            )
+
+            self.assertTrue(output_pdf.exists())
+            self.assertEqual(report["mutation_summary"]["parent_tree_next_key_location"], "StructTreeRoot")
+            self.assertTrue(report["mutation_summary"]["parent_tree_nums_sorted"])
+            with pikepdf.Pdf.open(output_pdf) as pdf:
+                struct_root = pdf.Root["/StructTreeRoot"]
+                parent_tree = struct_root["/ParentTree"]
+                nums = list(parent_tree["/Nums"])
+                keys = [int(nums[index]) for index in range(0, len(nums), 2)]
+                values = [nums[index + 1] for index in range(0, len(nums), 2)]
+                root_k = list(struct_root["/K"])
+
+                self.assertNotIn("/ParentTreeNextKey", parent_tree)
+                self.assertEqual(int(struct_root["/ParentTreeNextKey"]), max(keys) + 1)
+                self.assertEqual(keys, sorted(keys))
+                self.assertEqual(len(keys), field_count)
+                self.assertEqual(len(root_k), field_count)
+                self.assertEqual(len(values), field_count)
+                for value in values:
+                    self.assertEqual(value.get("/Type"), "/StructElem")
+                    self.assertEqual(value.get("/S"), "/Form")
+                    self.assertEqual(value.get("/P"), struct_root)
+                    self.assertIsNotNone(value.get("/Pg"))
+                    objr = value.get("/K")
+                    self.assertEqual(objr.get("/Type"), "/OBJR")
+                    self.assertEqual(objr.get("/Obj").get("/Subtype"), "/Widget")
 
     def test_after_diagnostic_uses_same_higher_bound_for_large_trial_apply(self) -> None:
         with tempfile.TemporaryDirectory(prefix="h10a_form_widget_large_apply_") as td:
