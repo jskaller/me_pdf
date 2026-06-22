@@ -6,6 +6,10 @@ AcroForm metadata, StructParent values, ParentTree mappings, and /Form structure
 presence so a later patch can decide whether a deterministic repair is safe.
 It never mutates PDFs, workspace artifacts, repair scripts, rule maps, status
 files, or deliverable packages.
+
+Patch H10A keeps the default bounded report behavior, but records explicit
+widget evidence completeness fields so guarded repair dry-runs can request a
+higher bound and refuse to apply when widget records are still truncated.
 """
 from __future__ import annotations
 
@@ -16,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA = "montefiore.form_widget_structure_inspection"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 TARGET_RULE = "PDF/UA-1/7.18.4"
 MAX_WIDGETS_DEFAULT = 100
 MAX_FIELDS_DEFAULT = 100
@@ -261,6 +265,7 @@ def _collect_acroform_fields(acroform: Any, limit: int) -> tuple[int, list[dict[
 
 
 def inspect_pdf_with_pikepdf(pdf_path: Path, *, max_widgets: int = MAX_WIDGETS_DEFAULT) -> dict[str, Any]:
+    max_widgets = max(1, int(max_widgets or MAX_WIDGETS_DEFAULT))
     if not pdf_path.exists():
         return {
             "available": False,
@@ -368,6 +373,9 @@ def inspect_pdf_with_pikepdf(pdf_path: Path, *, max_widgets: int = MAX_WIDGETS_D
                         "page_annotation_membership": True,
                     })
 
+        widgets_bounded_count = len(widgets)
+        widgets_truncated = total_widgets > widgets_bounded_count
+        widget_evidence_complete = (not widgets_truncated) and widgets_bounded_count == total_widgets
         return {
             "available": True,
             "result": "INSPECTED",
@@ -398,8 +406,11 @@ def inspect_pdf_with_pikepdf(pdf_path: Path, *, max_widgets: int = MAX_WIDGETS_D
             "widgets_without_parent_tree_mapping_count": without_mapping,
             "widgets_already_nested_in_form_count": already_nested_count,
             "widgets_referenced_from_non_form_count": non_form_reference_count,
-            "widgets_bounded_count": len(widgets),
-            "widgets_truncated": total_widgets > len(widgets),
+            "widgets_bounded_count": widgets_bounded_count,
+            "bounded_widget_records_count": widgets_bounded_count,
+            "widgets_truncated": widgets_truncated,
+            "widget_evidence_complete": widget_evidence_complete,
+            "max_widgets_requested": max_widgets,
             "widgets": widgets,
             "adding_form_elements_would_require_parent_tree_mutation": total_widgets > with_mapping or len(form_struct_objects) == 0,
             "adding_form_elements_would_require_k_array_mutation": total_widgets > already_nested_count,
@@ -415,6 +426,8 @@ def decide_from_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
         blockers.append("pikepdf object inspection unavailable")
     if evidence.get("widget_annotation_count", 0) == 0:
         blockers.append("no widget annotations found")
+    if evidence.get("widgets_truncated"):
+        blockers.append("widget evidence is truncated")
     if evidence.get("widget_annotation_count", 0) > 0 and evidence.get("widgets_with_struct_parent_count", 0) == 0:
         blockers.append("widgets lack /StructParent values")
     if not evidence.get("struct_tree_root_present"):
@@ -469,6 +482,7 @@ def build_report(pdf_path: Path, job_dir: Path | None = None, *, max_widgets: in
         "target_rule": TARGET_RULE,
         "pdf_path": str(pdf_path),
         "job_dir": str(job_dir) if job_dir else "",
+        "max_widgets": max(1, int(max_widgets or MAX_WIDGETS_DEFAULT)),
         **POLICY,
         "pdf_object_evidence": evidence,
         "decision": decision,
