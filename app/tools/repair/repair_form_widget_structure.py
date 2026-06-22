@@ -24,7 +24,7 @@ from tools.audit.form_widget_structure_inspection import (
 )
 
 SCHEMA = "montefiore.form_widget_structure_repair"
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 H10_TERMINAL_DRY_RUN_BLOCKED = "MM17179_DRY_RUN_BLOCKED"
 H10_TERMINAL_ATTEMPTED_NOT_ADOPTED = "MM17179_REPAIR_ATTEMPTED_NOT_ADOPTED"
@@ -102,6 +102,7 @@ def planned_changes(before: dict[str, Any]) -> dict[str, Any]:
         "planned_parent_tree_entries": widget_count,
         "planned_struct_tree_root_creation": not bool(before.get("struct_tree_root_present")),
         "planned_parent_tree_creation": not bool(before.get("parent_tree_present")),
+        "planned_document_struct_element_creation": not bool(before.get("document_struct_element_present")),
     }
 
 
@@ -121,6 +122,7 @@ def _mm17179_summary(before: dict[str, Any]) -> dict[str, Any]:
         "planned_parent_tree_entries": int(before.get("widget_annotation_count", 0) or 0),
         "planned_struct_tree_root_creation": not bool(before.get("struct_tree_root_present")),
         "planned_parent_tree_creation": not bool(before.get("parent_tree_present")),
+        "planned_document_struct_element_creation": not bool(before.get("document_struct_element_present")),
         "field_count": int(before.get("acroform_field_count", 0) or 0),
         "field_names_types_value_presence_preservation_inputs": _field_signature(before),
         "page_count": int(before.get("page_count", 0) or 0),
@@ -224,6 +226,57 @@ def _ensure_struct_tree_root(pdf: Any, pikepdf: Any) -> Any:
     return struct_root
 
 
+def _as_array(value: Any, pikepdf: Any) -> Any:
+    if value is None:
+        return pikepdf.Array([])
+    try:
+        if isinstance(value, pikepdf.Array):
+            return value
+    except TypeError:
+        pass
+    arr = pikepdf.Array([])
+    arr.append(value)
+    return arr
+
+
+def _ensure_document_element(pdf: Any, pikepdf: Any, struct_root: Any) -> tuple[Any, bool]:
+    """Ensure generated form elements sit below a top-level /Document element.
+
+    The previous trial attached /Form elements directly to /StructTreeRoot /K.
+    H10E tests the smallest hierarchy change likely to address the ISO Annex_L
+    side effect: use one top-level /Document StructElem and append generated
+    /Form children beneath it while ParentTree entries still map to /Form.
+    """
+    root_k = struct_root.get("/K")
+    if root_k is None:
+        root_k = pikepdf.Array([])
+        struct_root["/K"] = root_k
+
+    candidates = list(root_k) if isinstance(root_k, pikepdf.Array) else [root_k]
+    for candidate in candidates:
+        try:
+            if candidate.get("/Type") == "/StructElem" and candidate.get("/S") == "/Document":
+                candidate["/P"] = struct_root
+                candidate["/K"] = _as_array(candidate.get("/K"), pikepdf)
+                if not isinstance(root_k, pikepdf.Array):
+                    struct_root["/K"] = candidate
+                return candidate, False
+        except Exception:
+            continue
+
+    document_k = pikepdf.Array([])
+    for existing in candidates:
+        document_k.append(existing)
+    document_elem = pdf.make_indirect(pikepdf.Dictionary({
+        "/Type": pikepdf.Name("/StructElem"),
+        "/S": pikepdf.Name("/Document"),
+        "/P": struct_root,
+        "/K": document_k,
+    }))
+    struct_root["/K"] = document_elem
+    return document_elem, True
+
+
 def _sorted_parent_tree_nums(nums: Any, pikepdf: Any) -> Any:
     pairs: list[tuple[int, Any]] = []
     entries = list(nums)
@@ -260,9 +313,11 @@ def apply_fixture_repair(input_pdf: Path, output_pdf: Path) -> dict[str, Any]:
     pdf = pikepdf.Pdf.open(input_pdf)
     with pdf:
         struct_root = _ensure_struct_tree_root(pdf, pikepdf)
+        document_elem, document_created = _ensure_document_element(pdf, pikepdf, struct_root)
         parent_tree = struct_root["/ParentTree"]
         nums = parent_tree["/Nums"]
-        root_k = struct_root["/K"]
+        document_k = _as_array(document_elem.get("/K"), pikepdf)
+        document_elem["/K"] = document_k
         widgets = _iter_widget_annotations(pdf)
 
         next_key = _parent_tree_next_key(nums)
@@ -289,11 +344,11 @@ def apply_fixture_repair(input_pdf: Path, output_pdf: Path) -> dict[str, Any]:
             form_elem = pdf.make_indirect(pikepdf.Dictionary({
                 "/Type": pikepdf.Name("/StructElem"),
                 "/S": pikepdf.Name("/Form"),
-                "/P": struct_root,
+                "/P": document_elem,
                 "/Pg": page_obj,
                 "/K": objr,
             }))
-            root_k.append(form_elem)
+            document_k.append(form_elem)
             nums.append(struct_parent)
             nums.append(form_elem)
             created += 1
@@ -305,9 +360,12 @@ def apply_fixture_repair(input_pdf: Path, output_pdf: Path) -> dict[str, Any]:
     return {
         "assigned_struct_parent_count": assigned,
         "created_form_struct_elements_count": created,
+        "created_document_struct_element": document_created,
         "parent_tree_entries_created": created,
         "parent_tree_next_key_location": "StructTreeRoot",
         "parent_tree_nums_sorted": True,
+        "top_level_structure_type": "Document",
+        "form_struct_parent_type": "Document",
     }
 
 
