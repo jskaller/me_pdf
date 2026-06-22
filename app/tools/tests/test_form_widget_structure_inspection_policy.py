@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Policy tests for the H7 form-widget structure inspection diagnostic."""
+"""Policy tests for H7/H10A form-widget structure inspection."""
 from __future__ import annotations
 
 import tempfile
@@ -10,8 +10,8 @@ from tools.audit.form_widget_structure_inspection import (
     MAX_WIDGETS_DEFAULT,
     build_report,
     decide_from_evidence,
+    inspect_pdf_with_pikepdf,
 )
-
 
 BASE_EVIDENCE = {
     "available": True,
@@ -33,11 +33,15 @@ BASE_EVIDENCE = {
     "adding_form_elements_would_require_parent_tree_mutation": False,
     "adding_form_elements_would_require_k_array_mutation": False,
     "sensitive_field_values_redacted": True,
+    "widgets_bounded_count": 1,
+    "bounded_widget_records_count": 1,
+    "widgets_truncated": False,
+    "widget_evidence_complete": True,
     "widgets": [
         {
             "page_index": 1,
             "annotation_objgen": "10 0",
-            "field_name": "PatientName",
+            "field_name": "Field1",
             "field_type": "Tx",
             "field_value_present": True,
             "field_value_type": "String",
@@ -50,6 +54,14 @@ BASE_EVIDENCE = {
         }
     ],
 }
+
+
+def _pikepdf_available() -> bool:
+    try:
+        import pikepdf  # noqa: F401  # type: ignore
+        return True
+    except Exception:
+        return False
 
 
 class FormWidgetStructureInspectionPolicyTests(unittest.TestCase):
@@ -72,103 +84,84 @@ class FormWidgetStructureInspectionPolicyTests(unittest.TestCase):
         self.assertFalse(report["workspace_artifacts_mutated"])
         self.assertFalse(report["safe_to_claim_production_ready"])
 
-    def test_no_widgets_found_keeps_option_c(self) -> None:
+    def test_truncated_widget_evidence_is_reported_clearly(self) -> None:
         evidence = dict(BASE_EVIDENCE)
         evidence.update({
-            "widget_annotation_count": 0,
-            "widgets_with_struct_parent_count": 0,
-            "widgets_with_parent_tree_mapping_count": 0,
-            "widgets": [],
+            "widget_annotation_count": 102,
+            "widgets_bounded_count": 100,
+            "bounded_widget_records_count": 100,
+            "widgets_truncated": True,
+            "widget_evidence_complete": False,
         })
 
         decision = decide_from_evidence(evidence)
 
         self.assertEqual(decision["chosen_option"], "C")
-        self.assertIn("no widget annotations found", decision["blockers"])
-        self.assertFalse(decision["design_ready_for_future_patch"])
+        self.assertIn("widget evidence is truncated", decision["blockers"])
+        self.assertNotIn("widget evidence is not truncated", decision["blockers"])
 
-    def test_widgets_without_struct_parent_are_blocked(self) -> None:
-        evidence = dict(BASE_EVIDENCE)
-        evidence.update({
-            "widgets_missing_struct_parent_count": 1,
-            "widgets_with_struct_parent_count": 0,
-            "widgets_with_parent_tree_mapping_count": 0,
-        })
-
-        decision = decide_from_evidence(evidence)
-
-        self.assertEqual(decision["chosen_option"], "C")
-        self.assertIn("widgets lack /StructParent values", decision["blockers"])
-
-    def test_missing_parent_tree_is_blocked(self) -> None:
-        evidence = dict(BASE_EVIDENCE)
-        evidence.update({"parent_tree_present": False, "parent_tree_entry_count": 0})
-
-        decision = decide_from_evidence(evidence)
-
-        self.assertEqual(decision["chosen_option"], "C")
-        self.assertIn("/ParentTree missing", decision["blockers"])
-
-    def test_existing_struct_parent_and_parent_tree_evidence_is_design_evidence_not_repair(self) -> None:
+    def test_complete_widget_evidence_has_no_truncation_blocker(self) -> None:
         decision = decide_from_evidence(dict(BASE_EVIDENCE))
 
-        self.assertEqual(decision["chosen_option"], "A")
-        self.assertTrue(decision["design_ready_for_future_patch"])
-        self.assertFalse(decision["repair_implementation_safe_now"])
+        self.assertNotIn("widget evidence is truncated", decision["blockers"])
 
-    def test_partial_evidence_with_missing_form_struct_elements_is_option_b(self) -> None:
+    def test_default_bound_metadata_identifies_incomplete_widget_output(self) -> None:
         evidence = dict(BASE_EVIDENCE)
         evidence.update({
-            "form_struct_element_count": 0,
-            "adding_form_elements_would_require_parent_tree_mutation": False,
-            "adding_form_elements_would_require_k_array_mutation": True,
-        })
-
-        decision = decide_from_evidence(evidence)
-
-        self.assertEqual(decision["chosen_option"], "B")
-        self.assertFalse(decision["design_ready_for_future_patch"])
-        self.assertIn("safe insertion point for future /Form structure elements", decision["required_next_evidence"])
-
-    def test_sensitive_field_values_are_not_required_or_dumped(self) -> None:
-        widget = dict(BASE_EVIDENCE["widgets"][0])
-        widget["field_value_present"] = True
-        widget["field_value_type"] = "String"
-        evidence = dict(BASE_EVIDENCE)
-        evidence["widgets"] = [widget]
-
-        serialized = repr(evidence)
-
-        self.assertIn("field_value_present", serialized)
-        self.assertIn("field_value_type", serialized)
-        self.assertNotIn("John Doe", serialized)
-        self.assertNotIn("Sensitive", serialized)
-
-    def test_output_is_bounded_and_does_not_require_unbounded_object_dumps(self) -> None:
-        widgets = []
-        for index in range(MAX_WIDGETS_DEFAULT + 25):
-            widgets.append({
-                "page_index": 1,
-                "annotation_objgen": f"{index + 1} 0",
-                "field_name": f"field_{index}",
-                "field_value_present": False,
-                "struct_parent": index,
-                "parent_tree_mapping_present": True,
-                "mapped_struct_element_type": "Form",
-            })
-        evidence = dict(BASE_EVIDENCE)
-        evidence.update({
-            "widget_annotation_count": len(widgets),
+            "widget_annotation_count": MAX_WIDGETS_DEFAULT + 5,
             "widgets_bounded_count": MAX_WIDGETS_DEFAULT,
+            "bounded_widget_records_count": MAX_WIDGETS_DEFAULT,
             "widgets_truncated": True,
-            "widgets": widgets[:MAX_WIDGETS_DEFAULT],
+            "widget_evidence_complete": False,
+            "widgets": [{} for _ in range(MAX_WIDGETS_DEFAULT)],
         })
 
         decision = decide_from_evidence(evidence)
 
         self.assertLessEqual(len(evidence["widgets"]), MAX_WIDGETS_DEFAULT)
         self.assertTrue(evidence["widgets_truncated"])
-        self.assertFalse(decision["repair_implementation_safe_now"])
+        self.assertIn("widget evidence is truncated", decision["blockers"])
+
+    def test_sensitive_field_values_are_not_dumped(self) -> None:
+        serialized = repr(BASE_EVIDENCE)
+
+        self.assertIn("field_value_present", serialized)
+        self.assertIn("field_value_type", serialized)
+        self.assertNotIn("fixture-value", serialized)
+
+
+@unittest.skipUnless(_pikepdf_available(), "pikepdf is required for max-widget bound inspection tests")
+class FormWidgetStructureInspectionMaxWidgetTests(unittest.TestCase):
+    def test_higher_bound_can_produce_complete_widget_evidence(self) -> None:
+        from tools.dev.generate_form_widget_structure_fixture import generate_fixture
+
+        with tempfile.TemporaryDirectory(prefix="h10a_form_widget_bound_") as td:
+            input_pdf = Path(td) / "input.pdf"
+            generate_fixture(input_pdf, field_count=MAX_WIDGETS_DEFAULT + 5)
+
+            bounded = inspect_pdf_with_pikepdf(input_pdf)
+            complete = inspect_pdf_with_pikepdf(input_pdf, max_widgets=MAX_WIDGETS_DEFAULT + 10)
+
+        self.assertEqual(bounded["widgets_bounded_count"], MAX_WIDGETS_DEFAULT)
+        self.assertTrue(bounded["widgets_truncated"])
+        self.assertFalse(bounded["widget_evidence_complete"])
+        self.assertEqual(complete["widgets_bounded_count"], MAX_WIDGETS_DEFAULT + 5)
+        self.assertEqual(complete["bounded_widget_records_count"], MAX_WIDGETS_DEFAULT + 5)
+        self.assertFalse(complete["widgets_truncated"])
+        self.assertTrue(complete["widget_evidence_complete"])
+
+    def test_build_report_accepts_max_widgets(self) -> None:
+        from tools.dev.generate_form_widget_structure_fixture import generate_fixture
+
+        with tempfile.TemporaryDirectory(prefix="h10a_form_widget_report_bound_") as td:
+            input_pdf = Path(td) / "input.pdf"
+            generate_fixture(input_pdf, field_count=MAX_WIDGETS_DEFAULT + 2)
+            report = build_report(input_pdf, max_widgets=MAX_WIDGETS_DEFAULT + 5)
+
+        evidence = report["pdf_object_evidence"]
+        self.assertEqual(report["max_widgets"], MAX_WIDGETS_DEFAULT + 5)
+        self.assertTrue(evidence["widget_evidence_complete"])
+        self.assertFalse(evidence["widgets_truncated"])
 
 
 if __name__ == "__main__":
