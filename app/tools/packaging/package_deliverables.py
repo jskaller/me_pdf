@@ -4,6 +4,9 @@
 Assembles final deliverables. Authoritative routing is orchestrator_outcome.json
 first, then STATUS.json, then shared verdict_input.json. FAIL/ESCALATION are
 report-only; REVIEW_REQUIRED still passes through with PDF for human review.
+H10I adds guarded-candidate package routing so an intermediate guarded output
+cannot be labeled as a successful final PDF unless acceptance explicitly allows
+promotion.
 """
 from __future__ import annotations
 
@@ -21,6 +24,7 @@ if __name__ == "__main__" and str(Path(__file__).resolve().parents[2]) not in sy
 
 from tools.lib.verdict import VerdictInput, verdict
 from tools.lib.residual_verdict import summarize_residual_analysis, summarize_strategy_indexing
+from tools.orchestrate.guarded_acceptance import package_routing
 
 
 parser = argparse.ArgumentParser()
@@ -59,6 +63,17 @@ def _load_json(path: Path):
         return None
 
 
+def _guarded_decision_from(outcome: dict, status: dict, audit_dir: Path) -> dict | None:
+    for candidate in (
+        outcome.get("guarded_acceptance") if isinstance(outcome, dict) else None,
+        status.get("guarded_acceptance") if isinstance(status, dict) else None,
+    ):
+        if isinstance(candidate, dict):
+            return candidate
+    sidecar = _load_json(audit_dir / "guarded_acceptance.json")
+    return sidecar if isinstance(sidecar, dict) else None
+
+
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -68,7 +83,7 @@ def sha256(path: Path) -> str:
 
 
 # Keep the internal package complete; final handoff routing below decides whether
-# the PDF is copied to the deliverables directory.
+the PDF is copied to the deliverables directory.
 dest_pdf_internal = job_dir / "pdf" / pdf_src.name
 shutil.copy2(pdf_src, dest_pdf_internal)
 
@@ -114,6 +129,7 @@ outcome_path = audit_dir / "orchestrator_outcome.json"
 verdict_input_path = audit_dir / "verdict_input.json"
 residual = summarize_residual_analysis(job_dir)
 strategy = summarize_strategy_indexing(job_dir)
+outcome = {}
 
 authoritative_overall = None
 routing_source = "none"
@@ -154,14 +170,35 @@ if authoritative_overall is None and verdict_input_path.exists():
     except Exception:
         pass
 
+guarded_decision = _guarded_decision_from(outcome, status, audit_dir)
+guarded_routing = package_routing(guarded_decision) if guarded_decision else None
+if guarded_routing:
+    guarded_overall = guarded_routing.get("overall_result")
+    if authoritative_overall == "PASS" and guarded_overall != "PASS":
+        authoritative_overall = guarded_overall
+        routing_source = f"{routing_source}+guarded_acceptance"
+    if guarded_overall in ("FAIL", "ESCALATION"):
+        authoritative_overall = guarded_overall
+        routing_source = f"{routing_source}+guarded_acceptance"
+    elif guarded_overall == "REVIEW_REQUIRED" and authoritative_overall == "PASS":
+        authoritative_overall = "REVIEW_REQUIRED"
+        routing_source = f"{routing_source}+guarded_acceptance"
+
 overall = authoritative_overall or "UNKNOWN"
 effective_skip_pdf = args.skip_pdf or overall in ("FAIL", "ESCALATION")
-if overall in ("FAIL", "ESCALATION") and not args.skip_pdf:
+if guarded_routing:
+    if guarded_routing.get("package_policy") == "REPORT_ONLY":
+        effective_skip_pdf = True
+    if overall == "PASS" and not guarded_routing.get("promote_candidate_to_final"):
+        effective_skip_pdf = True
+
+if effective_skip_pdf and not args.skip_pdf:
     print(json.dumps({
         "result": "WARN",
         "warning": f"overall={overall}; producing report-only output (PDF not copied).",
         "overall_result": overall,
         "job_dir": str(job_dir),
+        "guarded_package_routing": guarded_routing,
     }, indent=2), file=sys.stderr)
 
 if args.source_pdf:
@@ -178,6 +215,19 @@ def gate_row(name: str, display: str) -> str:
     icon = "PASS" if result in ("PASS", "FIXED", "ALREADY_CORRECT", "PASS_WITH_MIXED_PAGES", "SKIPPED") else "WARN" if result in ("REVIEW_REQUIRED", "WARN", "NEEDS_REVIEW") else "FAIL" if result == "FAIL" else "-"
     return f"| {display} | {icon} {result} |\n"
 
+
+guarded_section = ""
+if guarded_routing:
+    guarded_section = f"""
+---
+
+## Guarded Candidate Routing
+
+- Guarded package policy: {guarded_routing.get('package_policy')}
+- Guarded package label: {guarded_routing.get('label')}
+- Candidate promoted to final: {guarded_routing.get('promote_candidate_to_final')}
+- PDF copied to deliverables: {guarded_routing.get('copy_pdf_to_deliverables') and not effective_skip_pdf}
+"""
 
 audit_report = f"""# Montefiore PDF/UA Remediation Audit Report
 
@@ -205,7 +255,7 @@ audit_report = f"""# Montefiore PDF/UA Remediation Audit Report
 - Pending review rules: {len(residual.get('pending_review_rules', []))}
 - Strategy indexing available: {strategy.get('available')}
 - Proposed rule-map changes referenced only: {strategy.get('proposed_rule_map_changes_count', 0)}
-
+{guarded_section}
 ---
 
 ## External Validators
@@ -255,5 +305,6 @@ print(json.dumps({
     "routing_source": routing_source,
     "residual_analysis": residual,
     "strategy_indexing": strategy,
+    "guarded_package_routing": guarded_routing,
 }, indent=2, sort_keys=True))
 sys.exit(0)
