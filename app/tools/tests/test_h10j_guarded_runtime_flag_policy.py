@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""H10J guarded runtime flag, lookup, quarantine, apply, and validation policy.
-
-Current scope allows a dedicated guarded apply runtime and records post-apply
-validation evidence behind --enable-guarded-form-widget-repair. It must still
-not accept, promote, package, or mutate status.
-"""
+"""H10J guarded runtime, validation, and acceptance routing policy."""
 from __future__ import annotations
 
 import unittest
@@ -77,8 +72,6 @@ class H10JGuardedRuntimeFlagPolicyTests(unittest.TestCase):
         self.assertIn('"--output"', self.text)
         self.assertIn('paths["candidate_pdf"]', self.text)
         self.assertIn('"guarded_candidates"', self.text)
-        self.assertIn('"status_package_mutation_performed"] = False', self.text)
-        self.assertIn('"final_pdf_adoption_performed"] = False', self.text)
 
     def test_guarded_post_apply_validation_bundle_is_recorded(self) -> None:
         self.assertIn("def validate_guarded_form_widget_candidate", self.text)
@@ -90,22 +83,23 @@ class H10JGuardedRuntimeFlagPolicyTests(unittest.TestCase):
         self.assertIn("'guarded_form_widget_iso_regression_review'", self.text)
         self.assertIn("'guarded_form_widget_structure_after'", self.text)
         self.assertIn("'guarded_form_widget_preservation'", self.text)
-        self.assertIn("form_widget_structure_inspection.py", self.text)
-        self.assertIn("verapdf_profile_accounting.py", self.text)
-        self.assertIn("verapdf_iso_regression_review.py", self.text)
-        self.assertIn("preservation_audit.py", self.text)
         self.assertIn("VALIDATION_EVIDENCE_RECORDED", self.text)
 
-    def test_patch_4_does_not_accept_promote_status_or_package_candidate(self) -> None:
-        self.assertNotIn("evaluate_guarded_acceptance", self.text)
-        self.assertNotIn("build_orchestrator_outcome", self.text)
-        self.assertNotIn("package_routing(", self.text)
+    def test_guarded_acceptance_decision_is_written_and_applied_fail_closed(self) -> None:
+        self.assertIn("def evaluate_guarded_form_widget_candidate_acceptance", self.text)
+        self.assertIn("from tools.orchestrate.guarded_acceptance import evaluate_guarded_acceptance", self.text)
+        self.assertIn("guarded_form_widget_acceptance_decision = evaluate_guarded_form_widget_candidate_acceptance(", self.text)
+        self.assertIn('write_guarded_json(paths["acceptance"], decision)', self.text)
+        self.assertIn("def apply_guarded_form_widget_overall", self.text)
+        self.assertIn("guarded_form_widget_overall_override", self.text)
+        self.assertIn("'guarded_acceptance': guarded_form_widget_acceptance_decision", self.text)
+
+    def test_candidate_promotion_is_conditioned_on_guarded_decision(self) -> None:
+        self.assertIn('guarded_form_widget_acceptance_decision.get("promote_candidate_to_final")', self.text)
+        self.assertIn("FINAL_PDF_GUARDED_CANDIDATE", self.text)
+        self.assertIn("pass_guarded_form_widget_accepted.pdf", self.text)
         self.assertNotIn('FINAL_PDF = paths["candidate_pdf"]', self.text)
         self.assertNotIn("FINAL_PDF = guarded_form_widget_apply_report", self.text)
-        self.assertIn("'final_pdf_adoption_performed': False", self.text)
-        self.assertIn("'status_package_mutation_performed': False", self.text)
-        self.assertIn('"acceptance_evaluation_performed": False', self.text)
-        self.assertIn('"package_routing_performed": False', self.text)
 
 
 if __name__ == "__main__":

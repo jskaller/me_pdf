@@ -675,6 +675,76 @@ def validate_guarded_form_widget_candidate(input_pdf, candidate_pdf, apply_repor
     return evidence
 
 
+
+def evaluate_guarded_form_widget_candidate_acceptance(validation_evidence):
+    """Evaluate H10J guarded candidate acceptance and write guarded sidecars.
+
+    The decision is authoritative for whether the guarded candidate may be
+    promoted, held for review, or treated as report-only. This function writes
+    guarded_acceptance.json but does not itself mutate STATUS.json or package
+    deliverables.
+    """
+    from tools.orchestrate.guarded_acceptance import evaluate_guarded_acceptance
+
+    paths = guarded_form_widget_paths()
+    evidence = dict(validation_evidence or {})
+    evidence.setdefault("target_rule", GUARDED_FORM_WIDGET_RULE)
+    evidence.setdefault("repair_strategy_id", GUARDED_FORM_WIDGET_STRATEGY_ID)
+    evidence.setdefault("input_pdf", evidence.get("input_pdf") or "")
+    evidence.setdefault("candidate_pdf", evidence.get("candidate_pdf") or str(paths["candidate_pdf"]))
+    evidence.setdefault("final_pdf", str(REPAIR_DIR / "final.pdf"))
+    evidence.setdefault("status_path", str(JOB / "STATUS.json"))
+    evidence.setdefault("package_path", str(OUT))
+    evidence.setdefault("orchestrator_outcome_path", str(AUDIT_DIR / "orchestrator_outcome.json"))
+
+    decision = evaluate_guarded_acceptance(evidence)
+    write_guarded_json(paths["acceptance"], decision)
+
+    emit(
+        'VALIDATE',
+        'guarded_form_widget_acceptance',
+        decision.get("terminal_state", "UNKNOWN"),
+        data={
+            'guarded_acceptance': str(paths["acceptance"]),
+            'status_result': decision.get("status_result"),
+            'package_policy': decision.get("package_policy"),
+            'promote_candidate_to_final': bool(decision.get("promote_candidate_to_final")),
+            'pass_allowed': bool(decision.get("pass_allowed")),
+            'review_required': bool(decision.get("review_required")),
+        },
+    )
+    return decision
+
+
+def guarded_status_result(decision):
+    """Return fail-closed status result from a guarded acceptance decision."""
+    if not isinstance(decision, dict):
+        return None
+    status_result = str(decision.get("status_result") or "UNKNOWN")
+    if status_result == "PASS" and not bool(decision.get("pass_allowed")):
+        return "REVIEW_REQUIRED"
+    return status_result
+
+
+def apply_guarded_form_widget_overall(overall, guarded_decision):
+    """Apply guarded acceptance to orchestrator overall before packaging.
+
+    This mirrors the fail-closed contract already enforced by status_json_writer
+    and package_deliverables: a guarded candidate cannot leave the orchestrator
+    as PASS unless the guarded decision explicitly allows PASS.
+    """
+    guarded_result = guarded_status_result(guarded_decision)
+    if not guarded_result:
+        return overall
+    if guarded_result in ("FAIL", "ESCALATION"):
+        return guarded_result
+    if overall == "PASS" and guarded_result != "PASS":
+        return guarded_result
+    if guarded_result == "REVIEW_REQUIRED" and overall == "PASS":
+        return "REVIEW_REQUIRED"
+    return overall
+
+
 def generate_guarded_form_widget_precondition(input_pdf):
     """Generate and write the H10J guarded lookup precondition report.
 
@@ -2676,6 +2746,18 @@ if args.enable_guarded_form_widget_repair:
             guarded_form_widget_apply_report,
             failures_path,
         )
+        guarded_form_widget_acceptance_decision = evaluate_guarded_form_widget_candidate_acceptance(
+            guarded_form_widget_validation_evidence,
+        )
+        if guarded_form_widget_acceptance_decision.get("promote_candidate_to_final"):
+            accepted_pdf = guarded_form_widget_paths()["accepted_final_pdf"]
+            shutil.copy2(
+                guarded_form_widget_acceptance_decision.get("candidate_pdf"),
+                accepted_pdf,
+            )
+            FINAL_PDF_GUARDED_CANDIDATE = accepted_pdf
+        else:
+            FINAL_PDF_GUARDED_CANDIDATE = None
     else:
         emit(
             'PLAN',
@@ -3243,6 +3325,8 @@ if total_iterations >= JOB_HARD_CAP:
                                    strategy_attempts.get(r, []))
 
 FINAL_PDF = current_pdf
+if 'FINAL_PDF_GUARDED_CANDIDATE' in globals() and FINAL_PDF_GUARDED_CANDIDATE:
+    FINAL_PDF = FINAL_PDF_GUARDED_CANDIDATE
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PHASE 6 — Post-repair validation
@@ -3646,6 +3730,26 @@ escalation_upgrade = bool(critical_fails and active_hermes_signals)
 if escalation_upgrade and overall == 'FAIL':
     overall = 'ESCALATION'
 
+if 'guarded_form_widget_acceptance_decision' in globals():
+    guarded_overall = apply_guarded_form_widget_overall(
+        overall,
+        guarded_form_widget_acceptance_decision,
+    )
+    if guarded_overall != overall:
+        emit(
+            'PACKAGE',
+            'guarded_form_widget_overall_override',
+            guarded_overall,
+            data={
+                'from': overall,
+                'to': guarded_overall,
+                'guarded_acceptance_terminal_state': guarded_form_widget_acceptance_decision.get('terminal_state'),
+                'package_policy': guarded_form_widget_acceptance_decision.get('package_policy'),
+                'promote_candidate_to_final': bool(guarded_form_widget_acceptance_decision.get('promote_candidate_to_final')),
+            },
+        )
+    overall = guarded_overall
+
 emit('PACKAGE', 'overall_result', overall,
      data={'critical_fails':           critical_fails,
            'blocking_qa':              [str(g) for g in verdict_result.blocking_qa],
@@ -3679,6 +3783,9 @@ try:
             'has_hermes':     len(active_hermes_signals) > 0,
             'escalation_upgrade': escalation_upgrade,
             'verdict': verdict_result.as_dict(), 'residual_analysis': residual_verdict_summary if 'residual_verdict_summary' in globals() else summarize_residual_analysis(JOB), 'strategy_indexing': strategy_indexing_summary if 'strategy_indexing_summary' in globals() else summarize_strategy_indexing(JOB), 'hermes_reconciliation': hermes_reconciliation if 'hermes_reconciliation' in globals() else {},
+            'guarded_acceptance': guarded_form_widget_acceptance_decision if 'guarded_form_widget_acceptance_decision' in globals() else None,
+            'guarded_acceptance_terminal_state': guarded_form_widget_acceptance_decision.get('terminal_state') if 'guarded_form_widget_acceptance_decision' in globals() else None,
+            'guarded_candidate_promoted_to_final': bool(guarded_form_widget_acceptance_decision.get('promote_candidate_to_final')) if 'guarded_form_widget_acceptance_decision' in globals() else False,
         }, indent=2)
     )
 except Exception:
