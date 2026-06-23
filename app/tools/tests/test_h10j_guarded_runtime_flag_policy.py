@@ -101,6 +101,10 @@ class H10JGuardedRuntimeFlagPolicyTests(unittest.TestCase):
         self.assertNotIn('FINAL_PDF = paths["candidate_pdf"]', self.text)
         self.assertNotIn("FINAL_PDF = guarded_form_widget_apply_report", self.text)
 
+    def test_guarded_overall_does_not_downgrade_escalation_to_fail(self) -> None:
+        self.assertIn('if overall == "ESCALATION":', self.text)
+        self.assertIn('return "ESCALATION"', self.text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -731,13 +731,18 @@ def apply_guarded_form_widget_overall(overall, guarded_decision):
 
     This mirrors the fail-closed contract already enforced by status_json_writer
     and package_deliverables: a guarded candidate cannot leave the orchestrator
-    as PASS unless the guarded decision explicitly allows PASS.
+    as PASS unless the guarded decision explicitly allows PASS. It must also
+    preserve ESCALATION, which is more severe than FAIL.
     """
     guarded_result = guarded_status_result(guarded_decision)
     if not guarded_result:
         return overall
-    if guarded_result in ("FAIL", "ESCALATION"):
-        return guarded_result
+    if overall == "ESCALATION":
+        return "ESCALATION"
+    if guarded_result == "ESCALATION":
+        return "ESCALATION"
+    if guarded_result == "FAIL":
+        return "FAIL"
     if overall == "PASS" and guarded_result != "PASS":
         return guarded_result
     if guarded_result == "REVIEW_REQUIRED" and overall == "PASS":
