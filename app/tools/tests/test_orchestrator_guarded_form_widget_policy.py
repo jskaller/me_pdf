@@ -22,11 +22,13 @@ class OrchestratorGuardedFormWidgetPolicyTests(unittest.TestCase):
         self.status_text = STATUS_DOC.read_text()
         self.rule_map = json.loads(RULE_MAP.read_text())
 
-    def test_h10h_terminal_state_is_blocked_not_integrated(self) -> None:
+    def test_h10h_history_and_h10j_terminal_state_are_documented(self) -> None:
         self.assertIn("ORCHESTRATOR_RUNTIME_BLOCKED_BY_STATUS_PACKAGE_CONTRACT", self.status_text)
-        self.assertIn("orchestrator guarded runtime implemented: false", self.status_text)
-        self.assertIn("guarded runtime default-on: false", self.status_text)
+        self.assertIn("GUARDED_FORM_WIDGET_RUNTIME_DOCKER_SMOKE_VALIDATED", self.status_text)
+        self.assertIn("explicit orchestrator flag: --enable-guarded-form-widget-repair", self.status_text)
+        self.assertIn("runtime smoke ticket: MM-17179-H10J-SMOKE2", self.status_text)
         self.assertTrue(H10H_DOC.exists())
+        self.assertTrue((REPO_ROOT / "docs" / "H10J_GUARDED_FORM_WIDGET_RUNTIME_INTEGRATION.md").exists())
 
     def test_default_orchestrator_keeps_guarded_lookup_opt_in(self) -> None:
         self.assertIn("--enable-guarded-form-widget-repair", self.orchestrator_text)
@@ -63,10 +65,12 @@ class OrchestratorGuardedFormWidgetPolicyTests(unittest.TestCase):
         self.assertFalse(bool(guarded[0].get("runtime_active")))
         self.assertFalse(bool(guarded[0].get("production_default")))
 
-    def test_production_readiness_not_claimed_until_docs_are_updated(self) -> None:
+    def test_h10j_docs_claim_docker_runtime_evidence_not_webui_production_readiness(self) -> None:
         self.assertIn("Production readiness is not claimed", self.status_text)
         self.assertIn("WebUI production-path evidence collected: false", self.status_text)
-        self.assertIn("STATUS/package behavior validated end-to-end: false", self.status_text)
+        self.assertIn("Docker CLI guarded-runtime evidence collected: true", self.status_text)
+        self.assertIn("STATUS/package behavior validated end-to-end in Docker CLI smoke: true", self.status_text)
+        self.assertIn("H10K - WebUI PDF: End-to-End Production Path Evidence", self.status_text)
 
 
 if __name__ == "__main__":
