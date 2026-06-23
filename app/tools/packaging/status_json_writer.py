@@ -4,7 +4,9 @@
 Assembles STATUS.json for a remediation job. The orchestrator outcome remains
 authoritative when present; otherwise the shared verdict on verdict_input.json
 is used, followed by the legacy gate sidecar scan. Patch 5 adds residual and
-strategy-indexing references without changing the CLI contract.
+strategy-indexing references without changing the CLI contract. H10I adds a
+fail-closed guarded acceptance overlay so STATUS.json cannot claim PASS when a
+guarded intermediate candidate is only review-required or rejected.
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ if __name__ == "__main__" and str(Path(__file__).resolve().parents[2]) not in sy
 from tools.lib.gates import GATE_REGISTRY, canonicalize_gate_key
 from tools.lib.verdict import VerdictInput, verdict
 from tools.lib.residual_verdict import summarize_residual_analysis, summarize_strategy_indexing
+from tools.orchestrate.guarded_acceptance import status_fragment
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -57,6 +60,25 @@ def _vi_from_raw(raw: dict, residual: dict, strategy: dict) -> VerdictInput:
     )
 
 
+def _guarded_decision_from(outcome: dict, audit_dir: Path) -> dict | None:
+    for candidate in (
+        outcome.get("guarded_acceptance") if isinstance(outcome, dict) else None,
+        outcome.get("guarded_acceptance_result") if isinstance(outcome, dict) else None,
+    ):
+        if isinstance(candidate, dict):
+            return candidate
+    sidecar = audit_dir / "guarded_acceptance.json"
+    data = _load_json(sidecar)
+    return data if isinstance(data, dict) else None
+
+
+def _guarded_status_result(decision: dict) -> str:
+    status_result = str(decision.get("status_result") or "UNKNOWN")
+    if status_result == "PASS" and not bool(decision.get("pass_allowed")):
+        return "REVIEW_REQUIRED"
+    return status_result
+
+
 def _run(args: argparse.Namespace) -> int:
     job_dir = Path(args.job_dir)
     audit_dir = job_dir / "audit"
@@ -82,12 +104,16 @@ def _run(args: argparse.Namespace) -> int:
     verdict_result_source = "none"
     collected: dict[str, object] = {}
     outcome = None
+    guarded_decision = None
 
     if outcome_path.exists():
         outcome = _load_json(outcome_path) or {}
         authoritative_overall = outcome.get("overall_result", "UNKNOWN")
         status["orchestrator_outcome"] = outcome
         verdict_result_source = "orchestrator_outcome.json"
+        guarded_decision = _guarded_decision_from(outcome, audit_dir)
+    else:
+        guarded_decision = _guarded_decision_from({}, audit_dir)
 
     if verdict_input_path.exists():
         try:
@@ -146,6 +172,21 @@ def _run(args: argparse.Namespace) -> int:
 
     if authoritative_overall is None:
         authoritative_overall = "NO_RESULTS"
+
+    if guarded_decision:
+        guarded_result = _guarded_status_result(guarded_decision)
+        status.update(status_fragment(guarded_decision))
+        if authoritative_overall == "PASS" and guarded_result != "PASS":
+            status["guarded_acceptance_overrode_pass"] = {
+                "from": authoritative_overall,
+                "to": guarded_result,
+                "reason": "guarded_acceptance_pass_not_allowed",
+            }
+            authoritative_overall = guarded_result
+        if guarded_result in ("FAIL", "ESCALATION"):
+            authoritative_overall = guarded_result
+        elif guarded_result == "REVIEW_REQUIRED" and authoritative_overall == "PASS":
+            authoritative_overall = "REVIEW_REQUIRED"
 
     status["overall_result"] = authoritative_overall
     status["result"] = authoritative_overall
