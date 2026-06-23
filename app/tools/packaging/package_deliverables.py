@@ -83,7 +83,7 @@ def sha256(path: Path) -> str:
 
 
 # Keep the internal package complete; final handoff routing below decides whether
-the PDF is copied to the deliverables directory.
+# the PDF is copied to the deliverables directory.
 dest_pdf_internal = job_dir / "pdf" / pdf_src.name
 shutil.copy2(pdf_src, dest_pdf_internal)
 
