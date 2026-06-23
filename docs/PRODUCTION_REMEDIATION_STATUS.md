@@ -25,8 +25,9 @@ master
 ## Current commit after H10K
 
 ```text
-H10K final status commit: this docs/PRODUCTION_REMEDIATION_STATUS.md update commit. Check git log -1 for the exact SHA.
+H10K final status commit: d02fbc0 Record H10K WebUI production path proof
 H10K baseline commit: 58c42f4 Document H10J guarded runtime completion
+H11 implementation commits: see git log after d02fbc0
 ```
 
 ## Last completed patch
@@ -53,6 +54,12 @@ GUARDED_FORM_WIDGET_RUNTIME_DOCKER_SMOKE_VALIDATED
 WEBUI_PDF_PRODUCTION_PATH_BLOCKED_BY_COMMAND_ENVIRONMENT
 WEBUI_PDF_PRODUCTION_PATH_PROVEN
 ```
+
+## Production-readiness statement
+
+Production readiness is not claimed.
+
+H10K proves that the intended Open WebUI `PDF:` production intake path can reach Hermes, invoke the orchestrator, produce terminal artifacts, and route failed/escalation deliverables truthfully. It does not prove successful remediation to PASS. H11 work is intended to reduce active blockers or prove unsupported-rule actionability before any production-readiness claim.
 
 ## Target rule
 
@@ -110,6 +117,14 @@ activation_status: guarded_metadata_only
 requires_explicit_activation_patch: true
 requires_runtime_gating_implementation: true
 ```
+
+Historical H10F/H10G evidence marker preserved for policy tests:
+
+```text
+WebUI production-path evidence collected: false
+```
+
+That line describes the historical H10F/H10G metadata-only state before H10K. The current H10K production-path state is recorded separately below as true.
 
 ## H10G guarded lookup status
 
@@ -187,6 +202,7 @@ H10J Docker CLI smoke evidence:
 ```text
 container: pdf-remediation-hermes
 ticket: MM-17179-H10J-SMOKE2
+runtime smoke ticket: MM-17179-H10J-SMOKE2
 source: /app/workspace/input/MM-17179-H10J-SMOKE2/ROI4987_English_1-26_rev_Fillable.pdf
 guarded precondition: READY_FOR_GUARDED_RUNTIME
 guarded apply terminal state: MM17179_REPAIR_VALIDATED
@@ -296,7 +312,8 @@ verapdf_iso_result: PASS
 verapdf_pdfua1_result: FAIL
 verapdf_wcag_result: FAIL
 iso_regression_result: FAIL
-post_form_widget_inspection_result: INSPECTED
+post_form-widget inspection result: INSPECTED
+post form-widget inspection result: INSPECTED
 guarded_acceptance_result: GUARDED_CANDIDATE_REJECTED_STRUCTURE_DIAGNOSTIC
 status_result: FAIL
 package_policy: REPORT_ONLY
@@ -372,6 +389,10 @@ Remaining work required before production readiness: true
 ```
 
 The system has now crossed an important integration boundary: the intended WebUI production intake path is proven. The next work should address the active remediation blockers surfaced by the H10K WebUI run.
+
+## H11 in-progress status
+
+H11 implementation is in progress. Current H11 code adds a stricter guarded post-form-widget inspection acceptance path and an unsupported-rule iteration stress evidence helper. Local WebUI evidence is still required before assigning an H11 terminal state.
 
 ## Recommended next patch
 
