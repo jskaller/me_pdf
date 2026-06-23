@@ -151,6 +151,19 @@ active strategies[] changed by H10H: false
 
 H10H did not add `--enable-guarded-form-widget-repair` to `app/tools/orchestrate/remediate.py`.
 
+H10H blocked runtime because these post-repair acceptance checks were not yet authoritative in the orchestrator/status/package path:
+
+```text
+qpdf after guarded repair
+veraPDF PDF/UA-1 after guarded repair
+pinned WCAG profile after guarded repair
+ISO no-regression review
+profile accounting
+after-repair form-widget diagnostic
+preservation / equivalent QA
+truthful STATUS/package behavior for residual failures and intermediate guarded output routing
+```
+
 ## H10I guarded acceptance/status/package contract status
 
 H10I implements the missing contract layer without enabling guarded runtime execution.
@@ -281,6 +294,7 @@ repair_form_widget_structure.py added to active strategies[]: false
 ```text
 WebUI production-path evidence collected: false
 orchestrator end-to-end guarded-runtime evidence collected: false
+STATUS/package behavior validated end-to-end: false
 STATUS/package behavior validated by H10I policy tests: true
 STATUS.json production truthfulness verified end-to-end: false
 orchestrator_outcome.json production truthfulness verified end-to-end: false
