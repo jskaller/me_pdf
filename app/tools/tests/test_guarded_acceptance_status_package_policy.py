@@ -222,6 +222,15 @@ class GuardedAcceptanceStatusPackagePolicyTests(unittest.TestCase):
             report = Path(payload["deliverables"]["audit_report"]).read_text()
             self.assertIn("Guarded package label: review-required candidate", report)
 
+    def test_status_and_package_preserve_escalation_over_guarded_fail(self) -> None:
+        status_writer = (REPO_ROOT / "app" / "tools" / "packaging" / "status_json_writer.py").read_text()
+        package_writer = (REPO_ROOT / "app" / "tools" / "packaging" / "package_deliverables.py").read_text()
+
+        self.assertIn('if authoritative_overall == "ESCALATION":', status_writer)
+        self.assertIn('if authoritative_overall == "ESCALATION":', package_writer)
+        self.assertIn('elif guarded_result == "FAIL":', status_writer)
+        self.assertIn('elif guarded_overall == "FAIL":', package_writer)
+
 
 if __name__ == "__main__":
     unittest.main()

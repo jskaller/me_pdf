@@ -183,8 +183,12 @@ def _run(args: argparse.Namespace) -> int:
                 "reason": "guarded_acceptance_pass_not_allowed",
             }
             authoritative_overall = guarded_result
-        if guarded_result in ("FAIL", "ESCALATION"):
-            authoritative_overall = guarded_result
+        if authoritative_overall == "ESCALATION":
+            authoritative_overall = "ESCALATION"
+        elif guarded_result == "ESCALATION":
+            authoritative_overall = "ESCALATION"
+        elif guarded_result == "FAIL":
+            authoritative_overall = "FAIL"
         elif guarded_result == "REVIEW_REQUIRED" and authoritative_overall == "PASS":
             authoritative_overall = "REVIEW_REQUIRED"
 

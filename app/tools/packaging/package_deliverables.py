@@ -177,8 +177,13 @@ if guarded_routing:
     if authoritative_overall == "PASS" and guarded_overall != "PASS":
         authoritative_overall = guarded_overall
         routing_source = f"{routing_source}+guarded_acceptance"
-    if guarded_overall in ("FAIL", "ESCALATION"):
-        authoritative_overall = guarded_overall
+    if authoritative_overall == "ESCALATION":
+        authoritative_overall = "ESCALATION"
+    elif guarded_overall == "ESCALATION":
+        authoritative_overall = "ESCALATION"
+        routing_source = f"{routing_source}+guarded_acceptance"
+    elif guarded_overall == "FAIL":
+        authoritative_overall = "FAIL"
         routing_source = f"{routing_source}+guarded_acceptance"
     elif guarded_overall == "REVIEW_REQUIRED" and authoritative_overall == "PASS":
         authoritative_overall = "REVIEW_REQUIRED"
