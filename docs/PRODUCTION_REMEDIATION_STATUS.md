@@ -34,6 +34,7 @@ H11 implementation commits: see git log after d02fbc0
 
 ```text
 H10K - WebUI PDF Production Path Evidence Pass
+H10K - WebUI PDF: End-to-End Production Path Evidence
 ```
 
 H10K terminal state:
