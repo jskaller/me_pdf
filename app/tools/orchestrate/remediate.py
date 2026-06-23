@@ -341,6 +341,97 @@ def guarded_form_widget_step_from_plan(plan_data):
     return None
 
 
+
+def execute_guarded_form_widget_runtime(input_pdf, guarded_step):
+    """Run the H10J guarded form-widget apply branch.
+
+    This function is only called after explicit opt-in and after guarded lookup
+    emits the target guarded step. It writes an intermediate candidate PDF to the
+    safe guarded_candidates tree. It does not promote the candidate, update the
+    final PDF, mutate STATUS.json/orchestrator_outcome.json, or package output.
+    """
+    paths = guarded_form_widget_paths()
+    paths["base"].mkdir(parents=True, exist_ok=True)
+
+    repair_script = APP / GUARDED_FORM_WIDGET_SCRIPT
+    emit(
+        'REPAIR',
+        'guarded_form_widget_repair_apply',
+        'RUNNING',
+        data={
+            'target_rule': GUARDED_FORM_WIDGET_RULE,
+            'repair_script': GUARDED_FORM_WIDGET_SCRIPT,
+            'strategy': (guarded_step or {}).get('strategy') or (guarded_step or {}).get('strategy_id'),
+            'input_pdf': str(input_pdf),
+            'candidate_pdf': str(paths["candidate_pdf"]),
+            'final_pdf_adoption_performed': False,
+            'status_package_mutation_performed': False,
+        },
+    )
+
+    rc, out, err = run(
+        [
+            REMEDIATION_PYTHON,
+            repair_script,
+            "--input", input_pdf,
+            "--output", paths["candidate_pdf"],
+            "--dry-run-report", paths["apply_report"],
+            "--apply",
+            "--allow-structure-construction-trial",
+            "--max-widgets", str(GUARDED_FORM_WIDGET_MAX_WIDGETS),
+        ],
+        'guarded_form_widget_repair_apply',
+        env={"PYTHONPATH": str(APP)},
+    )
+
+    report = load_json(paths["apply_report"]) or {}
+    if not report:
+        try:
+            report = json.loads(out)
+        except Exception:
+            report = {
+                "schema": "montefiore.form_widget_runtime_apply",
+                "result": "ERROR",
+                "terminal_state": "GUARDED_FORM_WIDGET_APPLY_ERROR",
+                "returncode": rc,
+                "stdout": (out or "")[-2000:],
+                "stderr": (err or "")[-2000:],
+            }
+
+    report.setdefault("target_rule", GUARDED_FORM_WIDGET_RULE)
+    report.setdefault("repair_strategy_id", GUARDED_FORM_WIDGET_STRATEGY_ID)
+    report["guarded_runtime_execution"] = True
+    report["normal_repair_loop_execution"] = False
+    report["final_pdf_adoption_performed"] = False
+    report["status_package_mutation_performed"] = False
+    report["candidate_pdf"] = str(paths["candidate_pdf"])
+    report["input_pdf"] = str(input_pdf)
+    report["guarded_lookup_step"] = guarded_step or {}
+    report["apply_returncode"] = rc
+
+    if rc != 0:
+        report["result"] = report.get("result") or "ERROR"
+        report["terminal_state"] = report.get("terminal_state") or "GUARDED_FORM_WIDGET_APPLY_ERROR"
+        report.setdefault("blockers", []).append("guarded_apply_exit_nonzero")
+
+    write_guarded_json(paths["apply_report"], report)
+
+    emit(
+        'REPAIR',
+        'guarded_form_widget_repair_apply',
+        report.get("terminal_state") or report.get("result", "UNKNOWN"),
+        data={
+            'apply_report': str(paths["apply_report"]),
+            'candidate_pdf': str(paths["candidate_pdf"]),
+            'candidate_exists': paths["candidate_pdf"].exists(),
+            'final_pdf_adoption_performed': False,
+            'status_package_mutation_performed': False,
+            'returncode': rc,
+        },
+    )
+    return report
+
+
 def generate_guarded_form_widget_precondition(input_pdf):
     """Generate and write the H10J guarded lookup precondition report.
 
@@ -2327,8 +2418,14 @@ if args.enable_guarded_form_widget_repair:
                 'strategy': guarded_form_widget_step.get('strategy') or guarded_form_widget_step.get('strategy_id'),
                 'rules_addressed': guarded_form_widget_step.get('rules_addressed', []),
                 'normal_repair_loop_execution': False,
-                'guarded_runtime_execution': False,
+                'guarded_runtime_execution': True,
+                'final_pdf_adoption_performed': False,
+                'status_package_mutation_performed': False,
             },
+        )
+        guarded_form_widget_apply_report = execute_guarded_form_widget_runtime(
+            PASS0,
+            guarded_form_widget_step,
         )
     else:
         emit(

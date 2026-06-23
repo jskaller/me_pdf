@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""H10H policy tests for guarded form-widget orchestrator runtime status.
+"""H10H/H10J policy tests for guarded form-widget orchestrator runtime status.
 
-H10H did not enable guarded form-widget runtime because the current
-orchestrator acceptance/status/package path is not yet sufficient for this
-repair family. These tests lock the safe blocked state: default orchestrator
-behavior remains unchanged, lookup is not called with guarded-candidate flags,
-and the form-widget repair is not reachable through remediate.py until the
-missing post-validation/status-package contract is implemented.
+The orchestrator may now expose an explicit H10J guarded apply runtime behind
+--enable-guarded-form-widget-repair, but default production readiness is still
+not claimed and acceptance/status/package adoption remains blocked until the
+full post-validation contract is integrated.
 """
 from __future__ import annotations
 
@@ -44,20 +42,21 @@ class OrchestratorGuardedFormWidgetPolicyTests(unittest.TestCase):
         self.assertGreater(self.orchestrator_text.index("--enable-guarded-candidates"), flag_branch)
         self.assertGreater(self.orchestrator_text.index("--precondition-report"), flag_branch)
 
-    def test_orchestrator_does_not_apply_form_widget_repair(self) -> None:
+    def test_orchestrator_runs_dedicated_guarded_apply_but_not_acceptance_or_package(self) -> None:
         self.assertIn("repair_form_widget_structure.py", self.orchestrator_text)
         self.assertIn("guarded_form_widget_precondition_dry_run", self.orchestrator_text)
 
         self.assertIn("DETECTED_DEFERRED_TO_GUARDED_RUNTIME", self.orchestrator_text)
         self.assertIn("'normal_repair_loop_execution': False", self.orchestrator_text)
-        self.assertIn("'guarded_runtime_execution': False", self.orchestrator_text)
+        self.assertIn("'guarded_runtime_execution': True", self.orchestrator_text)
+        self.assertIn("guarded_form_widget_repair_apply", self.orchestrator_text)
+        self.assertIn('"--apply"', self.orchestrator_text)
 
-        self.assertNotIn("guarded_form_widget_repair_apply", self.orchestrator_text)
         self.assertNotIn("guarded_form_widget_repair_runtime", self.orchestrator_text)
-        self.assertNotIn("'--apply'", self.orchestrator_text)
-        self.assertNotIn('"--apply"', self.orchestrator_text)
         self.assertNotIn("evaluate_guarded_acceptance", self.orchestrator_text)
         self.assertNotIn("package_routing", self.orchestrator_text)
+        self.assertIn("'final_pdf_adoption_performed': False", self.orchestrator_text)
+        self.assertIn("'status_package_mutation_performed': False", self.orchestrator_text)
 
     def test_active_rule_map_strategy_remains_unchanged(self) -> None:
         entry = self.rule_map.get("rules", {}).get(TARGET_RULE, {})
@@ -70,8 +69,8 @@ class OrchestratorGuardedFormWidgetPolicyTests(unittest.TestCase):
 
     def test_missing_runtime_acceptance_gates_are_not_silently_claimed(self) -> None:
         # These strings would be expected in remediate.py before the guarded
-        # runtime can be considered integrated. Their absence is why H10H is
-        # intentionally blocked rather than half-enabled.
+        # runtime can be considered fully integrated. Their absence is why H10J
+        # is still not a production-ready adoption/status/package path.
         self.assertNotIn("verapdf_profile_accounting.py", self.orchestrator_text)
         self.assertNotIn("verapdf_iso_regression_review.py", self.orchestrator_text)
         self.assertNotIn("form_widget_structure_inspection.py", self.orchestrator_text)
