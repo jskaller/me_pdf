@@ -97,6 +97,12 @@ app/tools/audit/rule_repair_map.json
 rules["PDF/UA-1/7.18.4"].guarded_strategy_candidates[0]
 ```
 
+H10F terminal state:
+
+```text
+GUARDED_METADATA_ADOPTED_RUNTIME_NOT_ACTIVE
+```
+
 Current metadata status:
 
 ```text
