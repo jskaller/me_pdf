@@ -74,9 +74,297 @@ parser.add_argument('--learned-production-readiness', action='store_true', help=
 parser.add_argument('--learned-production-test', action='store_true', help='Patch 19A: opt-in controlled production-testing diagnostics; requires dry-run, replacement trial, and production readiness; never adopted')
 parser.add_argument('--learned-replacement-trial', action='store_true', help='Patch 17A: opt-in isolated learned replacement trial; requires --learned-execution-dry-run')
 parser.add_argument('--learned-replacement-trial-allow-manual-review', action='store_true', help='Patch 17A smoke-only diagnostic bypass for needs_manual_review candidates')
+parser.add_argument('--enable-guarded-form-widget-repair', action='store_true', help='H10J: explicitly opt into guarded PDF/UA-1/7.18.4 form-widget runtime; default remains off')
+
+# H10J guarded form-widget runtime constants.
+# These constants do not enable runtime behavior. They only name the guarded
+# strategy and its safe intermediate candidate artifact paths for the later
+# opt-in runtime branch.
+GUARDED_FORM_WIDGET_RULE = "PDF/UA-1/7.18.4"
+GUARDED_FORM_WIDGET_SCRIPT = "tools/repair/repair_form_widget_structure.py"
+GUARDED_FORM_WIDGET_STRATEGY_ID = "form_widget_structure_construction_v1"
+GUARDED_FORM_WIDGET_REPAIR_VERSION = "1.4.0"
+GUARDED_FORM_WIDGET_MAX_WIDGETS = 100000
+
+
+def guarded_form_widget_paths():
+    """Return job-local H10J guarded form-widget artifact paths.
+
+    The candidate PDF path is intentionally outside workspace/jobs so it cannot
+    collide with STATUS.json, orchestrator_outcome.json, final outputs, or the
+    existing repair tool's trial-output safety checks.
+    """
+    base = WORKSPACE / "guarded_candidates" / JOB_NAME / "form_widget_structure"
+    return {
+        "base": base,
+        "candidate_pdf": base / "output.pdf",
+        "precondition_dry_run_report": AUDIT_DIR / "guarded_form_widget_precondition_dry_run.json",
+        "precondition_report": AUDIT_DIR / "guarded_form_widget_precondition_report.json",
+        "apply_report": AUDIT_DIR / "guarded_form_widget_apply_report.json",
+        "acceptance_evidence": AUDIT_DIR / "guarded_form_widget_acceptance_evidence.json",
+        "acceptance": AUDIT_DIR / "guarded_acceptance.json",
+        "validation_dir": AUDIT_DIR / "guarded_form_widget_validation",
+        "post_failures": AUDIT_DIR / "guarded_form_widget_failures_after.json",
+        "post_inspection": AUDIT_DIR / "guarded_form_widget_structure_after.json",
+        "preservation": AUDIT_DIR / "guarded_form_widget_preservation.json",
+        "qpdf": AUDIT_DIR / "guarded_form_widget_qpdf_after.json",
+        "profile_accounting": AUDIT_DIR / "guarded_form_widget_profile_accounting.json",
+        "iso_review": AUDIT_DIR / "guarded_form_widget_iso_regression_review.json",
+        "accepted_final_pdf": REPAIR_DIR / "pass_guarded_form_widget_accepted.pdf",
+    }
+
+
+def write_guarded_json(path, data):
+    """Write guarded-runtime JSON evidence with stable formatting."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    return data
+
+
+def guarded_result_value(value, default="UNKNOWN"):
+    """Normalize mixed helper output into a guarded acceptance result string."""
+    if isinstance(value, dict):
+        for key in ("result", "status", "verdict", "terminal_state", "target_rule_status"):
+            if value.get(key) is not None:
+                return str(value.get(key)).strip().upper()
+        return default
+    if value is True:
+        return "PASS"
+    if value is False or value is None:
+        return default
+    return str(value).strip().upper() or default
+
+
+def guarded_rule_failure_counts(parsed_summary):
+    """Return rule_id -> failure-count from parsed veraPDF summary JSON."""
+    if not isinstance(parsed_summary, dict):
+        return {}
+    counts = {}
+    for item in parsed_summary.get("failures_by_rule", []) or []:
+        if not isinstance(item, dict) or not item.get("rule_id"):
+            continue
+        try:
+            counts[str(item.get("rule_id"))] = int(item.get("failures") or 0)
+        except Exception:
+            counts[str(item.get("rule_id"))] = 0
+    return counts
+
+
+def guarded_new_or_increased_failures(before_summary, after_summary):
+    """Return authoritative rule failures that are new or increased after repair."""
+    before = guarded_rule_failure_counts(before_summary)
+    after = guarded_rule_failure_counts(after_summary)
+    new_failures = []
+    increased_failures = []
+    for rule_id, after_count in sorted(after.items()):
+        before_count = before.get(rule_id, 0)
+        if before_count == 0 and after_count > 0:
+            new_failures.append({"rule_id": rule_id, "failures": after_count})
+        elif after_count > before_count:
+            increased_failures.append({
+                "rule_id": rule_id,
+                "before": before_count,
+                "after": after_count,
+            })
+    return new_failures, increased_failures
+
+
+def guarded_build_precondition_report(dry_run_report, *, input_pdf, candidate_pdf, job_dir):
+    """Build the guarded lookup precondition report from repair dry-run evidence.
+
+    This helper is pure: it does not inspect, repair, validate, mutate the rule
+    map, or write deliverables. The later opt-in runtime branch will write the
+    returned object to the precondition_report path before guarded lookup.
+    """
+    dry_run = dry_run_report if isinstance(dry_run_report, dict) else {}
+    before = dry_run.get("before_object_evidence") or dry_run.get("before") or {}
+    planned = dry_run.get("planned_changes") or {}
+    summary = dry_run.get("mm17179_evidence_summary") or {}
+
+    def pick(key, default=None):
+        if key in before:
+            return before.get(key)
+        if key in summary:
+            return summary.get(key)
+        if key in planned:
+            return planned.get(key)
+        return default
+
+    def as_int(value, default=0):
+        try:
+            return int(value or default)
+        except Exception:
+            return default
+
+    widget_count = as_int(pick("widget_annotation_count", 0))
+    bounded_count = as_int(pick("widgets_bounded_count", pick("bounded_widget_records_count", 0)))
+    missing_struct_parent_count = as_int(pick("widgets_missing_struct_parent_count", 0))
+    planned_struct_parent_assignments = as_int(
+        planned.get(
+            "planned_struct_parent_assignments",
+            planned.get("assign_struct_parent_count", missing_struct_parent_count),
+        )
+    )
+    planned_form_struct_elements = as_int(
+        planned.get(
+            "planned_form_struct_elements",
+            planned.get("create_form_struct_elements_count", widget_count),
+        )
+    )
+
+    parent_tree_present = bool(pick("parent_tree_present", False))
+    struct_tree_root_present = bool(pick("struct_tree_root_present", False))
+    planned_parent_tree_creation = bool(
+        planned.get("planned_parent_tree_creation", planned.get("create_parent_tree", not parent_tree_present))
+    )
+    planned_struct_tree_root_creation = bool(
+        planned.get(
+            "planned_struct_tree_root_creation",
+            planned.get("create_struct_tree_root", not struct_tree_root_present),
+        )
+    )
+
+    blockers = []
+    if not bool(pick("acroform_present", False)):
+        blockers.append("acroform_not_present")
+    if widget_count <= 0:
+        blockers.append("no_widget_annotations")
+    if bounded_count != widget_count:
+        blockers.append("bounded_widget_count_mismatch")
+    if bool(pick("widgets_truncated", True)):
+        blockers.append("widgets_truncated")
+    if not bool(pick("widget_evidence_complete", False)):
+        blockers.append("widget_evidence_incomplete")
+    if missing_struct_parent_count <= 0:
+        blockers.append("no_affected_widget_evidence")
+    if planned_struct_parent_assignments <= 0:
+        blockers.append("no_planned_struct_parent_assignments")
+    if planned_form_struct_elements <= 0:
+        blockers.append("no_planned_form_struct_elements")
+    if not bool(pick("sensitive_field_values_redacted", True)):
+        blockers.append("field_values_not_proven_redacted")
+
+    return {
+        "schema": "montefiore.form_widget_structure_inspection",
+        "version": "h10j-precondition-v1",
+        "result": "READY_FOR_GUARDED_RUNTIME" if not blockers else "INSUFFICIENT_EVIDENCE",
+        "target_rule": GUARDED_FORM_WIDGET_RULE,
+        "rule_id": GUARDED_FORM_WIDGET_RULE,
+        "strategy_id": GUARDED_FORM_WIDGET_STRATEGY_ID,
+        "repair_strategy_id": GUARDED_FORM_WIDGET_STRATEGY_ID,
+        "repair_script": GUARDED_FORM_WIDGET_SCRIPT,
+        "repair_version": GUARDED_FORM_WIDGET_REPAIR_VERSION,
+        "pdf_path": str(input_pdf),
+        "input_pdf": str(input_pdf),
+        "job_dir": str(job_dir),
+        "candidate_output_pdf": str(candidate_pdf),
+        "read_only": True,
+        "repair_performed": False,
+        "rule_map_mutation_performed": False,
+        "field_values_not_dumped": True,
+        "sensitive_field_values_redacted": True,
+        "source_overwrite_allowed": False,
+        "explicit_output_path": True,
+        "output_path_policy": "explicit_safe_intermediate_required",
+        "acroform_present": bool(pick("acroform_present", False)),
+        "widget_annotation_count": widget_count,
+        "widgets_bounded_count": bounded_count,
+        "bounded_widget_records_count": bounded_count,
+        "widgets_truncated": bool(pick("widgets_truncated", True)),
+        "widget_evidence_complete": bool(pick("widget_evidence_complete", False)) and bounded_count == widget_count,
+        "widgets_missing_struct_parent_count": missing_struct_parent_count,
+        "struct_tree_root_present": struct_tree_root_present,
+        "parent_tree_present": parent_tree_present,
+        "planned_struct_parent_assignments": planned_struct_parent_assignments,
+        "planned_form_struct_elements": planned_form_struct_elements,
+        "planned_parent_tree_creation": planned_parent_tree_creation,
+        "planned_struct_tree_root_creation": planned_struct_tree_root_creation,
+        "guarded_runtime_preconditions": {
+            "source_overwrite_allowed": False,
+            "explicit_output_path": True,
+            "output_path_policy": "explicit_safe_intermediate_required",
+            "field_values_not_dumped": True,
+            "planned_struct_parent_assignments": planned_struct_parent_assignments,
+            "planned_form_struct_elements": planned_form_struct_elements,
+            "planned_parent_tree_creation": planned_parent_tree_creation,
+            "planned_struct_tree_root_creation": planned_struct_tree_root_creation,
+        },
+        "pdf_object_evidence": before,
+        "repair_dry_run_summary": {
+            "terminal_state": dry_run.get("terminal_state", ""),
+            "result": dry_run.get("result", ""),
+            "apply_allowed": dry_run.get("apply_allowed"),
+            "apply_blockers": dry_run.get("apply_blockers", []),
+            "preconditions_failed": dry_run.get("preconditions_failed", []),
+        },
+        "blockers": blockers,
+    }
+
+
+def generate_guarded_form_widget_precondition(input_pdf):
+    """Generate and write the H10J guarded lookup precondition report.
+
+    This function runs repair_form_widget_structure.py in dry-run mode only.
+    It is intentionally not called unless a later opt-in runtime branch wires it
+    behind --enable-guarded-form-widget-repair.
+    """
+    paths = guarded_form_widget_paths()
+    paths["base"].mkdir(parents=True, exist_ok=True)
+    repair_script = APP / GUARDED_FORM_WIDGET_SCRIPT
+
+    rc, out, err = run(
+        [
+            REMEDIATION_PYTHON,
+            repair_script,
+            "--input", input_pdf,
+            "--output", paths["candidate_pdf"],
+            "--dry-run-report", paths["precondition_dry_run_report"],
+            "--allow-structure-construction-trial",
+            "--max-widgets", str(GUARDED_FORM_WIDGET_MAX_WIDGETS),
+        ],
+        "guarded_form_widget_precondition_dry_run",
+        env={"PYTHONPATH": str(APP)},
+    )
+
+    dry_run_report = load_json(paths["precondition_dry_run_report"]) or {}
+    if not dry_run_report:
+        try:
+            dry_run_report = json.loads(out)
+        except Exception:
+            dry_run_report = {
+                "result": "ERROR",
+                "terminal_state": "GUARDED_PRECONDITION_DRY_RUN_ERROR",
+                "stdout": (out or "")[-2000:],
+                "stderr": (err or "")[-2000:],
+                "returncode": rc,
+            }
+
+    precondition = guarded_build_precondition_report(
+        dry_run_report,
+        input_pdf=input_pdf,
+        candidate_pdf=paths["candidate_pdf"],
+        job_dir=JOB,
+    )
+    precondition["precondition_dry_run_exit_code"] = rc
+    if rc != 0:
+        precondition.setdefault("blockers", []).append("precondition_dry_run_exit_nonzero")
+        precondition["result"] = "INSUFFICIENT_EVIDENCE"
+
+    write_guarded_json(paths["precondition_report"], precondition)
+    emit(
+        "PLAN",
+        "guarded_form_widget_precondition",
+        precondition.get("result", "UNKNOWN"),
+        data={
+            "precondition_report": str(paths["precondition_report"]),
+            "candidate_pdf": str(paths["candidate_pdf"]),
+            "blockers": precondition.get("blockers", []),
+        },
+    )
+    return paths["precondition_report"]
+
 args = parser.parse_args()
-
-
 
 if getattr(args, 'learned_production_test', False) and not (
     getattr(args, 'learned_execution_dry_run', False)
@@ -1934,6 +2222,13 @@ lookup_cmd = [REMEDIATION_PYTHON, TOOLS/'audit'/'lookup_repair_plan.py',
               failures_path, '--map', RULE_MAP, '--taxonomy', TAXONOMY]
 if doc_tags:
     lookup_cmd.extend(['--doc-tags', ','.join(doc_tags)])
+if args.enable_guarded_form_widget_repair:
+    guarded_precondition_report = generate_guarded_form_widget_precondition(PASS0)
+    lookup_cmd.extend([
+        '--enable-guarded-candidates',
+        '--precondition-report',
+        str(guarded_precondition_report),
+    ])
 rc, out, _ = run(lookup_cmd, 'lookup_repair_plan')
 plan_path = AUDIT_DIR / 'repair_plan.json'
 try:
