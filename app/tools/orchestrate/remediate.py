@@ -432,6 +432,249 @@ def execute_guarded_form_widget_runtime(input_pdf, guarded_step):
     return report
 
 
+
+def validate_guarded_form_widget_candidate(input_pdf, candidate_pdf, apply_report, before_failures_path):
+    """Run H10J post-apply validation evidence for the guarded candidate.
+
+    This records validation evidence only. It does not accept, promote, package,
+    update STATUS.json, or update orchestrator_outcome.json.
+    """
+    paths = guarded_form_widget_paths()
+    paths["validation_dir"].mkdir(parents=True, exist_ok=True)
+
+    candidate_pdf = Path(candidate_pdf)
+    evidence = {
+        "schema": "montefiore.guarded_form_widget_validation_evidence",
+        "target_rule": GUARDED_FORM_WIDGET_RULE,
+        "repair_strategy_id": GUARDED_FORM_WIDGET_STRATEGY_ID,
+        "input_pdf": str(input_pdf),
+        "candidate_pdf": str(candidate_pdf),
+        "apply_report": str(paths["apply_report"]),
+        "candidate_exists": candidate_pdf.exists(),
+        "final_pdf_adoption_performed": False,
+        "status_package_mutation_performed": False,
+        "acceptance_evaluation_performed": False,
+        "package_routing_performed": False,
+        "validation_dir": str(paths["validation_dir"]),
+    }
+
+    if not candidate_pdf.exists():
+        evidence.update({
+            "result": "CANDIDATE_MISSING",
+            "qpdf_result": "NOT_RUN",
+            "verapdf_pdfua1_result": "NOT_RUN",
+            "verapdf_wcag_result": "NOT_RUN",
+            "verapdf_iso_result": "NOT_RUN",
+            "profile_accounting_result": "NOT_RUN",
+            "iso_regression_result": "NOT_RUN",
+            "post_form_widget_inspection_result": "NOT_RUN",
+            "preservation_result": "NOT_RUN",
+        })
+        write_guarded_json(paths["acceptance_evidence"], evidence)
+        emit(
+            'VALIDATE',
+            'guarded_form_widget_validation',
+            'CANDIDATE_MISSING',
+            data={
+                'candidate_pdf': str(candidate_pdf),
+                'acceptance_evidence': str(paths["acceptance_evidence"]),
+                'final_pdf_adoption_performed': False,
+                'status_package_mutation_performed': False,
+            },
+        )
+        return evidence
+
+    qpdf_cmd = ['qpdf', '--check', str(candidate_pdf)]
+    rc_qpdf, out_qpdf, err_qpdf = run(
+        qpdf_cmd,
+        'guarded_form_widget_qpdf_after',
+    )
+    qpdf_data = {
+        "schema": "montefiore.qpdf_check",
+        "command": qpdf_cmd,
+        "result": "PASS" if rc_qpdf == 0 else "FAIL",
+        "returncode": rc_qpdf,
+        "stdout": out_qpdf,
+        "stderr": err_qpdf,
+    }
+    write_guarded_json(paths["qpdf"], qpdf_data)
+
+    run(
+        ['bash', TOOLS/'audit'/'run_verapdf_profiles.sh',
+         VERAPDF_BIN, PROFILES, candidate_pdf, paths["validation_dir"]],
+        'guarded_form_widget_verapdf_after',
+    )
+
+    post_pdfua = paths["validation_dir"] / 'verapdf_pdfua_ua1.xml'
+    post_wcag = paths["validation_dir"] / 'verapdf_wcag_2_2_machine.xml'
+    post_iso = paths["validation_dir"] / 'verapdf_iso_32000_1_tagged.xml'
+
+    rc_parse, out_parse, err_parse = run(
+        [
+            REMEDIATION_PYTHON,
+            TOOLS/'audit'/'parse_verapdf_summary.py',
+            post_pdfua,
+            post_wcag,
+        ],
+        'guarded_form_widget_parse_after',
+    )
+    try:
+        post_failures = json.loads(out_parse)
+    except Exception:
+        post_failures = {
+            "result": "ERROR",
+            "failures_by_rule": [],
+            "parse_error": (err_parse or out_parse or "")[-2000:],
+            "returncode": rc_parse,
+        }
+    write_guarded_json(paths["post_failures"], post_failures)
+
+    rc_inspect, _, _ = run(
+        [
+            REMEDIATION_PYTHON,
+            TOOLS/'audit'/'form_widget_structure_inspection.py',
+            candidate_pdf,
+            '--job-dir', JOB,
+            '--out', paths["post_inspection"],
+            '--max-widgets', str(GUARDED_FORM_WIDGET_MAX_WIDGETS),
+        ],
+        'guarded_form_widget_structure_after',
+    )
+    post_inspection = load_json(paths["post_inspection"]) or {
+        "result": "ERROR",
+        "returncode": rc_inspect,
+    }
+
+    rc_pres, _, _ = run(
+        [
+            REMEDIATION_PYTHON,
+            TOOLS/'qa'/'preservation_audit.py',
+            input_pdf,
+            candidate_pdf,
+            '--out', paths["preservation"],
+        ],
+        'guarded_form_widget_preservation',
+    )
+    preservation = load_json(paths["preservation"]) or {
+        "result": "ERROR",
+        "returncode": rc_pres,
+    }
+
+    rc_profile, _, _ = run(
+        [
+            REMEDIATION_PYTHON,
+            TOOLS/'audit'/'verapdf_profile_accounting.py',
+            '--profiles-root', PROFILES,
+            '--before-dir', AUDIT_DIR,
+            '--after-dir', paths["validation_dir"],
+            '--before-parsed', before_failures_path,
+            '--after-parsed', paths["post_failures"],
+            '--target-rule', GUARDED_FORM_WIDGET_RULE,
+            '--verapdf-bin', VERAPDF_BIN,
+            '--before-pdf', input_pdf,
+            '--after-pdf', candidate_pdf,
+            '--out', paths["profile_accounting"],
+        ],
+        'guarded_form_widget_profile_accounting',
+    )
+    profile_accounting = load_json(paths["profile_accounting"]) or {
+        "terminal_state": "VERAPDF_PROFILE_ACCOUNTING_FAILED",
+        "returncode": rc_profile,
+    }
+
+    before_accounting = AUDIT_DIR / 'profile_accounting.json'
+    after_accounting = paths["validation_dir"] / 'profile_accounting.json'
+    rc_iso, _, _ = run(
+        [
+            REMEDIATION_PYTHON,
+            TOOLS/'audit'/'verapdf_iso_regression_review.py',
+            '--before-xml', AUDIT_DIR/'verapdf_iso_32000_1_tagged.xml',
+            '--after-xml', post_iso,
+            '--before-accounting', before_accounting,
+            '--after-accounting', after_accounting,
+            '--repair-report', paths["apply_report"],
+            '--out', paths["iso_review"],
+        ],
+        'guarded_form_widget_iso_regression_review',
+    )
+    iso_review = load_json(paths["iso_review"]) or {
+        "classification": "INCONCLUSIVE",
+        "returncode": rc_iso,
+    }
+
+    before_counts = guarded_rule_failure_counts(load_json(before_failures_path) or {})
+    after_counts = guarded_rule_failure_counts(post_failures)
+    new_authoritative, increased_authoritative = guarded_new_or_increased_failures(
+        load_json(before_failures_path) or {},
+        post_failures,
+    )
+
+    target_before = before_counts.get(GUARDED_FORM_WIDGET_RULE, 0)
+    target_after = after_counts.get(GUARDED_FORM_WIDGET_RULE, 0)
+    if target_before == 0 and target_after == 0:
+        target_status = "NOT_PRESENT_BEFORE"
+    elif target_after == 0:
+        target_status = "CLEARED"
+    elif target_after < target_before:
+        target_status = "IMPROVED"
+    elif target_after == target_before:
+        target_status = "UNCHANGED"
+    else:
+        target_status = "REGRESSED"
+
+    evidence.update({
+        "result": "VALIDATION_EVIDENCE_RECORDED",
+        "qpdf_result": qpdf_data.get("result"),
+        "verapdf_pdfua1_result": profile_accounting.get("pdfua1_profile_result_after", "UNKNOWN"),
+        "verapdf_wcag_result": profile_accounting.get("wcag_profile_result_after", "UNKNOWN"),
+        "verapdf_iso_result": profile_accounting.get("iso_profile_result_after", "UNKNOWN"),
+        "profile_accounting_result": "PASS" if profile_accounting.get("terminal_state") == "VERAPDF_DELTA_VALIDATED" else "FAIL",
+        "iso_regression_result": "PASS" if not bool(iso_review.get("blocks_runtime_activation")) else "FAIL",
+        "post_form_widget_inspection_result": guarded_result_value(post_inspection),
+        "preservation_result": guarded_result_value(preservation),
+        "target_rule_before_count": target_before,
+        "target_rule_after_count": target_after,
+        "target_rule_status": target_status,
+        "residual_failures": post_failures.get("failures_by_rule", []),
+        "new_authoritative_failures": new_authoritative,
+        "increased_authoritative_failures": increased_authoritative,
+        "new_iso_rule_ids": iso_review.get("new_iso_rule_ids", []),
+        "increased_iso_rule_ids": iso_review.get("increased_iso_rule_ids", []),
+        "new_or_increased_iso_checks": iso_review.get("new_or_increased_iso_checks", []),
+        "artifacts": {
+            "qpdf": str(paths["qpdf"]),
+            "post_failures": str(paths["post_failures"]),
+            "post_inspection": str(paths["post_inspection"]),
+            "preservation": str(paths["preservation"]),
+            "profile_accounting": str(paths["profile_accounting"]),
+            "iso_review": str(paths["iso_review"]),
+            "validation_dir": str(paths["validation_dir"]),
+        },
+    })
+
+    write_guarded_json(paths["acceptance_evidence"], evidence)
+    emit(
+        'VALIDATE',
+        'guarded_form_widget_validation',
+        evidence.get("result", "UNKNOWN"),
+        data={
+            'acceptance_evidence': str(paths["acceptance_evidence"]),
+            'candidate_pdf': str(candidate_pdf),
+            'qpdf_result': evidence.get("qpdf_result"),
+            'target_rule_status': evidence.get("target_rule_status"),
+            'profile_accounting_result': evidence.get("profile_accounting_result"),
+            'iso_regression_result': evidence.get("iso_regression_result"),
+            'post_form_widget_inspection_result': evidence.get("post_form_widget_inspection_result"),
+            'preservation_result': evidence.get("preservation_result"),
+            'final_pdf_adoption_performed': False,
+            'status_package_mutation_performed': False,
+            'acceptance_evaluation_performed': False,
+            'package_routing_performed': False,
+        },
+    )
+    return evidence
+
+
 def generate_guarded_form_widget_precondition(input_pdf):
     """Generate and write the H10J guarded lookup precondition report.
 
@@ -2426,6 +2669,12 @@ if args.enable_guarded_form_widget_repair:
         guarded_form_widget_apply_report = execute_guarded_form_widget_runtime(
             PASS0,
             guarded_form_widget_step,
+        )
+        guarded_form_widget_validation_evidence = validate_guarded_form_widget_candidate(
+            PASS0,
+            guarded_form_widget_apply_report.get("candidate_pdf"),
+            guarded_form_widget_apply_report,
+            failures_path,
         )
     else:
         emit(

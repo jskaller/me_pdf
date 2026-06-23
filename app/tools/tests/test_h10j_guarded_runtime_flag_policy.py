@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""H10J guarded runtime flag, lookup, quarantine, and apply policy.
+"""H10J guarded runtime flag, lookup, quarantine, apply, and validation policy.
 
-Current scope allows a dedicated guarded apply runtime only behind
---enable-guarded-form-widget-repair and only after guarded lookup emits the
-target step. It must still not accept, promote, package, or mutate status.
+Current scope allows a dedicated guarded apply runtime and records post-apply
+validation evidence behind --enable-guarded-form-widget-repair. It must still
+not accept, promote, package, or mutate status.
 """
 from __future__ import annotations
 
@@ -80,14 +80,32 @@ class H10JGuardedRuntimeFlagPolicyTests(unittest.TestCase):
         self.assertIn('"status_package_mutation_performed"] = False', self.text)
         self.assertIn('"final_pdf_adoption_performed"] = False', self.text)
 
-    def test_patch_3_does_not_accept_promote_status_or_package_candidate(self) -> None:
+    def test_guarded_post_apply_validation_bundle_is_recorded(self) -> None:
+        self.assertIn("def validate_guarded_form_widget_candidate", self.text)
+        self.assertIn("guarded_form_widget_validation_evidence = validate_guarded_form_widget_candidate(", self.text)
+        self.assertIn("'guarded_form_widget_qpdf_after'", self.text)
+        self.assertIn("'guarded_form_widget_verapdf_after'", self.text)
+        self.assertIn("'guarded_form_widget_parse_after'", self.text)
+        self.assertIn("'guarded_form_widget_profile_accounting'", self.text)
+        self.assertIn("'guarded_form_widget_iso_regression_review'", self.text)
+        self.assertIn("'guarded_form_widget_structure_after'", self.text)
+        self.assertIn("'guarded_form_widget_preservation'", self.text)
+        self.assertIn("form_widget_structure_inspection.py", self.text)
+        self.assertIn("verapdf_profile_accounting.py", self.text)
+        self.assertIn("verapdf_iso_regression_review.py", self.text)
+        self.assertIn("preservation_audit.py", self.text)
+        self.assertIn("VALIDATION_EVIDENCE_RECORDED", self.text)
+
+    def test_patch_4_does_not_accept_promote_status_or_package_candidate(self) -> None:
         self.assertNotIn("evaluate_guarded_acceptance", self.text)
         self.assertNotIn("build_orchestrator_outcome", self.text)
-        self.assertNotIn("package_routing", self.text)
+        self.assertNotIn("package_routing(", self.text)
         self.assertNotIn('FINAL_PDF = paths["candidate_pdf"]', self.text)
         self.assertNotIn("FINAL_PDF = guarded_form_widget_apply_report", self.text)
         self.assertIn("'final_pdf_adoption_performed': False", self.text)
         self.assertIn("'status_package_mutation_performed': False", self.text)
+        self.assertIn('"acceptance_evaluation_performed": False', self.text)
+        self.assertIn('"package_routing_performed": False', self.text)
 
 
 if __name__ == "__main__":
