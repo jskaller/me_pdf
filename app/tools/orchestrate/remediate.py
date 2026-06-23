@@ -302,6 +302,45 @@ def guarded_build_precondition_report(dry_run_report, *, input_pdf, candidate_pd
     }
 
 
+
+def is_guarded_form_widget_step(step):
+    """Return True only for the H10J guarded form-widget lookup step.
+
+    This helper does not execute the repair. It identifies the guarded lookup
+    candidate so the generic positional-argument repair loop cannot run it.
+    """
+    if not isinstance(step, dict):
+        return False
+
+    script = str(step.get("repair_script") or "")
+    strategy = str(step.get("strategy") or step.get("strategy_id") or "")
+    rules = [str(rule) for rule in step.get("rules_addressed", []) or []]
+    guarded = bool(step.get("guarded") or step.get("requires_guarded_runtime"))
+
+    return (
+        script == GUARDED_FORM_WIDGET_SCRIPT
+        and (not strategy or strategy == GUARDED_FORM_WIDGET_STRATEGY_ID)
+        and GUARDED_FORM_WIDGET_RULE in rules
+        and guarded
+    )
+
+
+def guarded_form_widget_step_from_plan(plan_data):
+    """Return the guarded form-widget repair step from lookup output, if present.
+
+    This does not execute the step. It only detects the H10J guarded candidate
+    so a later dedicated guarded runtime branch can decide what to do with it.
+    """
+    if not isinstance(plan_data, dict):
+        return None
+
+    for step in plan_data.get("repair_steps", []) or []:
+        if is_guarded_form_widget_step(step):
+            return step
+
+    return None
+
+
 def generate_guarded_form_widget_precondition(input_pdf):
     """Generate and write the H10J guarded lookup precondition report.
 
@@ -2266,6 +2305,41 @@ else:
 repair_steps       = plan_data.get('repair_steps', [])
 hermes_required  = plan_data.get('hermes_required', [])
 unknown_rules      = plan_data.get('unknown_rules', [])
+
+guarded_form_widget_step = None
+if args.enable_guarded_form_widget_repair:
+    guarded_form_widget_step = guarded_form_widget_step_from_plan(plan_data)
+    if guarded_form_widget_step:
+        # H10J safety invariant: the form-widget guarded candidate must never
+        # be executed by the generic positional repair loop. It requires a
+        # dedicated guarded runtime branch with explicit --apply, safe output,
+        # post-validation, and guarded acceptance routing.
+        repair_steps = [
+            step for step in repair_steps
+            if not is_guarded_form_widget_step(step)
+        ]
+        emit(
+            'PLAN',
+            'guarded_form_widget_step',
+            'DETECTED_DEFERRED_TO_GUARDED_RUNTIME',
+            data={
+                'repair_script': guarded_form_widget_step.get('repair_script'),
+                'strategy': guarded_form_widget_step.get('strategy') or guarded_form_widget_step.get('strategy_id'),
+                'rules_addressed': guarded_form_widget_step.get('rules_addressed', []),
+                'normal_repair_loop_execution': False,
+                'guarded_runtime_execution': False,
+            },
+        )
+    else:
+        emit(
+            'PLAN',
+            'guarded_form_widget_step',
+            'NOT_EMITTED_BY_LOOKUP',
+            data={
+                'normal_repair_loop_execution': False,
+                'guarded_runtime_execution': False,
+            },
+        )
 
 # Inject table headers fix if TH scope issues found and not already in plan
 table_headers_script = 'tools/repair/fix_table_headers.py'

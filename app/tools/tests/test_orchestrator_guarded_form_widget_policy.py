@@ -48,6 +48,10 @@ class OrchestratorGuardedFormWidgetPolicyTests(unittest.TestCase):
         self.assertIn("repair_form_widget_structure.py", self.orchestrator_text)
         self.assertIn("guarded_form_widget_precondition_dry_run", self.orchestrator_text)
 
+        self.assertIn("DETECTED_DEFERRED_TO_GUARDED_RUNTIME", self.orchestrator_text)
+        self.assertIn("'normal_repair_loop_execution': False", self.orchestrator_text)
+        self.assertIn("'guarded_runtime_execution': False", self.orchestrator_text)
+
         self.assertNotIn("guarded_form_widget_repair_apply", self.orchestrator_text)
         self.assertNotIn("guarded_form_widget_repair_runtime", self.orchestrator_text)
         self.assertNotIn("'--apply'", self.orchestrator_text)

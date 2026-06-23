@@ -59,6 +59,15 @@ class H10JGuardedRuntimeFlagPolicyTests(unittest.TestCase):
         self.assertGreater(self.text.index("'--enable-guarded-candidates'"), flag_branch)
         self.assertGreater(self.text.index("'--precondition-report'"), flag_branch)
 
+    def test_guarded_lookup_step_is_deferred_from_normal_repair_loop(self) -> None:
+        self.assertIn("def is_guarded_form_widget_step", self.text)
+        self.assertIn("def guarded_form_widget_step_from_plan", self.text)
+        self.assertIn("guarded_form_widget_step = guarded_form_widget_step_from_plan(plan_data)", self.text)
+        self.assertIn("DETECTED_DEFERRED_TO_GUARDED_RUNTIME", self.text)
+        self.assertIn("'normal_repair_loop_execution': False", self.text)
+        self.assertIn("'guarded_runtime_execution': False", self.text)
+        self.assertIn("if not is_guarded_form_widget_step(step)", self.text)
+
     def test_patch_1e_does_not_execute_guarded_repair_or_acceptance(self) -> None:
         self.assertNotIn("execute_guarded_form_widget_runtime", self.text)
         self.assertNotIn("guarded_form_widget_repair_apply", self.text)
