@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Guarded repair acceptance contract.
 
-This module is intentionally pure and side-effect free. H10I does not execute
-or activate the guarded form-widget repair; it defines the acceptance/status/
-package contract that H10J can call after an explicitly opted-in guarded
-runtime produces an intermediate candidate PDF.
+This module is intentionally mutation-free. H10I does not execute or activate
+the guarded form-widget repair; it defines the acceptance/status/package
+contract that H10J/H11 can call after an explicitly opted-in guarded runtime
+produces an intermediate candidate PDF.
 """
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping
@@ -92,6 +93,120 @@ def _same_path(left: Any, right: Any) -> bool:
         return Path(left_text) == Path(right_text)
     except Exception:
         return left_text == right_text
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _load_json_object(path_value: Any) -> Mapping[str, Any]:
+    path_text = _path_text(path_value)
+    if not path_text:
+        return {}
+    try:
+        data = json.loads(Path(path_text).read_text())
+    except Exception:
+        return {}
+    return data if isinstance(data, Mapping) else {}
+
+
+def _post_form_widget_inspection_report(data: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return the detailed post-repair form-widget inspection evidence.
+
+    H10K exposed a result-string contract mismatch: the inspection tool reports
+    successful read-only inspection as INSPECTED, while guarded acceptance needs
+    to know whether the inspected structure is acceptable. Do not treat
+    INSPECTED as a global pass token. It is acceptable only for this gate and
+    only when the detailed object evidence proves all widgets are represented by
+    complete Form structure evidence with no diagnostic blockers.
+    """
+    for key in (
+        "post_form_widget_inspection",
+        "post_form_widget_inspection_report",
+        "form_widget_structure_after",
+    ):
+        report = _as_mapping(data.get(key))
+        if report:
+            return report
+
+    artifacts = _as_mapping(data.get("artifacts"))
+    for key in ("post_inspection", "post_form_widget_inspection"):
+        report = _load_json_object(artifacts.get(key))
+        if report:
+            return report
+
+    return _load_json_object(data.get("post_form_widget_inspection_path"))
+
+
+def _post_form_widget_inspection_blockers(data: Mapping[str, Any]) -> list[str]:
+    result = _result_value(data.get("post_form_widget_inspection_result"))
+    if result in PASS_RESULTS:
+        return []
+    if result != "INSPECTED":
+        return ["post_form_widget_inspection_result_not_pass"]
+
+    report = _post_form_widget_inspection_report(data)
+    if not report:
+        return ["post_form_widget_inspection_evidence_missing"]
+
+    blockers: list[str] = []
+    if _result_value(report) != "INSPECTED":
+        blockers.append("post_form_widget_inspection_report_not_inspected")
+
+    decision = _as_mapping(report.get("decision"))
+    decision_blockers = _as_list(decision.get("blockers"))
+    if decision_blockers:
+        blockers.append("post_form_widget_inspection_decision_blockers")
+    required_next = _as_list(decision.get("required_next_evidence"))
+    if required_next:
+        blockers.append("post_form_widget_inspection_requires_more_evidence")
+
+    evidence = _as_mapping(report.get("pdf_object_evidence")) or report
+    if evidence.get("available") is not True:
+        blockers.append("post_form_widget_inspection_unavailable")
+    if evidence.get("widget_evidence_complete") is not True:
+        blockers.append("post_form_widget_inspection_evidence_incomplete")
+    if evidence.get("widgets_truncated") is not False:
+        blockers.append("post_form_widget_inspection_widgets_truncated")
+
+    widget_count = _safe_int(evidence.get("widget_annotation_count"), 0)
+    if widget_count <= 0:
+        blockers.append("post_form_widget_inspection_no_widgets")
+
+    if _safe_int(evidence.get("widgets_with_struct_parent_count"), -1) != widget_count:
+        blockers.append("post_form_widget_inspection_struct_parent_mismatch")
+    if _safe_int(evidence.get("widgets_with_parent_tree_mapping_count"), -1) != widget_count:
+        blockers.append("post_form_widget_inspection_parent_tree_mapping_mismatch")
+    if _safe_int(evidence.get("widgets_referenced_from_non_form_count"), 0) != 0:
+        blockers.append("post_form_widget_inspection_non_form_references")
+    if _safe_int(evidence.get("form_struct_element_count"), 0) <= 0:
+        blockers.append("post_form_widget_inspection_no_form_structure")
+
+    widgets = evidence.get("widgets")
+    if isinstance(widgets, list) and len(widgets) == widget_count:
+        bad_widgets = [
+            widget for widget in widgets
+            if isinstance(widget, Mapping)
+            and (
+                widget.get("already_nested_in_form") is not True
+                or widget.get("referenced_from_non_form_element") is True
+                or widget.get("parent_tree_mapping_present") is not True
+                or widget.get("struct_parent") is None
+            )
+        ]
+        if bad_widgets:
+            blockers.append("post_form_widget_inspection_widget_records_not_form_nested")
+    elif _safe_int(evidence.get("widgets_already_nested_in_form_count"), -1) != widget_count:
+        blockers.append("post_form_widget_inspection_form_nesting_count_mismatch")
+
+    return blockers
 
 
 def _decision(
@@ -224,8 +339,8 @@ def evaluate_guarded_acceptance(evidence: Mapping[str, Any]) -> dict[str, Any]:
             evidence=data,
         )
 
-    post_inspection_result = _result_value(data.get("post_form_widget_inspection_result"))
-    if post_inspection_result not in PASS_RESULTS:
+    post_inspection_blockers = _post_form_widget_inspection_blockers(data)
+    if post_inspection_blockers:
         return _decision(
             terminal_state="GUARDED_CANDIDATE_REJECTED_STRUCTURE_DIAGNOSTIC",
             status_result="FAIL",
@@ -234,7 +349,7 @@ def evaluate_guarded_acceptance(evidence: Mapping[str, Any]) -> dict[str, Any]:
             review_required=False,
             pass_allowed=False,
             failure_reason="post_form_widget_inspection_failed",
-            blockers=["post_form_widget_inspection_result_not_pass"],
+            blockers=post_inspection_blockers,
             evidence=data,
         )
 
