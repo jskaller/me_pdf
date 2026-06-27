@@ -1,6 +1,7 @@
 import unittest
 
 from tools.audit.font_tounicode_diagnostics import (
+    GATE_READY_FOR_CANDIDATE_CREATION,
     TARGET_RULE,
     TERMINAL_BLOCKED_BY_MISSING_EVIDENCE,
     build_tounicode_repair_readiness_report,
@@ -31,6 +32,7 @@ class FontToUnicodeDiagnosticsPolicyTests(unittest.TestCase):
         self.assertEqual(report["target_rule"], TARGET_RULE)
         self.assertFalse(report["repair_allowed"])
         self.assertFalse(report["candidate_creation_allowed"])
+        self.assertEqual(report["candidate_gate_state"], TERMINAL_BLOCKED_BY_MISSING_EVIDENCE)
         self.assertEqual(
             report["terminal_state_if_stopped_here"],
             TERMINAL_BLOCKED_BY_MISSING_EVIDENCE,
@@ -103,7 +105,7 @@ class FontToUnicodeDiagnosticsPolicyTests(unittest.TestCase):
         self.assertEqual(missing[0]["subtype"], "TrueType")
         self.assertTrue(missing[0]["widths_present"])
 
-    def test_complete_authoritative_evidence_can_open_candidate_creation_gate(self):
+    def test_complete_authoritative_evidence_opens_gate_but_does_not_claim_pass(self):
         report = build_tounicode_repair_readiness_report(
             font_records=[
                 {
@@ -125,7 +127,10 @@ class FontToUnicodeDiagnosticsPolicyTests(unittest.TestCase):
 
         self.assertTrue(report["repair_allowed"])
         self.assertTrue(report["candidate_creation_allowed"])
-        self.assertEqual(report["terminal_state_if_stopped_here"], "AGENT_CANDIDATE_REPAIR_VALIDATED")
+        self.assertEqual(report["candidate_gate_state"], GATE_READY_FOR_CANDIDATE_CREATION)
+        self.assertIsNone(report["terminal_state_if_stopped_here"])
+        self.assertFalse(report["safe_to_claim_pass"])
+        self.assertFalse(report["safe_to_claim_production_ready"])
 
 
 if __name__ == "__main__":
