@@ -200,7 +200,7 @@ Historical H10F/H10G evidence marker preserved for policy tests:
 WebUI production-path evidence collected: false
 ```
 
-That line describes the historical H10F/H10G metadata-only state before H10K. The current H10K production-path state is recorded separately as true in H10K documentation.
+That line describes the historical H10F/H10G metadata-only state before H10K. The current H10K production-path state is recorded separately below as true.
 
 ## H10G guarded lookup status
 
@@ -293,6 +293,197 @@ guarded acceptance terminal state: GUARDED_CANDIDATE_REJECTED_STRUCTURE_DIAGNOST
 guarded package policy: REPORT_ONLY
 guarded candidate promoted to final: false
 orchestrator_outcome.json overall_result: ESCALATION
+STATUS.json overall_result: ESCALATION
+package behavior: report-only; no successful PDF deliverable copied
+```
+
+This is valid Docker-runtime evidence for the guarded orchestrator path. It was not WebUI E2E proof until H10K.
+
+## Runtime activation status after H10J
+
+```text
+guarded runtime execution activated by explicit orchestrator flag: true
+guarded runtime default-on: false
+explicit orchestrator guarded runtime flag added: true
+explicit flag name: --enable-guarded-form-widget-repair
+orchestrator invokes repair_form_widget_structure.py when explicitly enabled and guarded lookup emits the step: true
+orchestrator passes --enable-guarded-candidates by default: false
+orchestrator passes --precondition-report by default: false
+default lookup behavior changed: false
+rule_repair_map.json changed by H10J: false
+active strategies[] changed by H10J: false
+candidate promotion requires guarded acceptance promote_candidate_to_final: true
+```
+
+H10J adds `--enable-guarded-form-widget-repair` to `app/tools/orchestrate/remediate.py`, but the guarded path remains opt-in and fail-closed. The default production path does not execute guarded form-widget repair.
+
+## H10K WebUI production-path evidence status
+
+H10K completed a live Open WebUI run through Hermes and the orchestrator.
+
+```text
+terminal state: WEBUI_PDF_PRODUCTION_PATH_PROVEN
+Open WebUI prompt submitted: true
+Open WebUI prompt began with PDF:: true
+Hermes runbook/workflow path observed: true
+Hermes remediate.py invocation observed: true
+orchestrator start observed: true
+orchestrator terminal completion observed: true
+STATUS.json terminal state observed: true
+orchestrator_outcome.json observed: true
+guarded_acceptance.json observed: true
+package output observed: true
+final WebUI response/artifact comparison performed: true
+unsupported PASS claim observed: false
+production-readiness claim observed: false
+```
+
+The H10K live runtime input was:
+
+```text
+job_id: MM-17179-H10K-WEBUI2
+source_pdf: /app/workspace/input/MM-17179-H10K-WEBUI2/ROI4987_English_1-26_rev_Fillable.pdf
+job directory: /app/workspace/jobs/MM-17179-H10K-WEBUI2_ROI4987_English_1-26_rev_Fillable
+```
+
+The first WebUI attempt reached the orchestrator but failed prereq_check because the PDF had not been staged under `/app/workspace/input/<TICKET>/`. The source was then staged under the H10K ticket directory and the WebUI test was rerun successfully through terminal artifact generation.
+
+H10K authoritative runtime artifacts:
+
+```text
+/app/workspace/jobs/MM-17179-H10K-WEBUI2_ROI4987_English_1-26_rev_Fillable/STATUS.json
+/app/workspace/jobs/MM-17179-H10K-WEBUI2_ROI4987_English_1-26_rev_Fillable/audit/orchestrator_outcome.json
+/app/workspace/jobs/MM-17179-H10K-WEBUI2_ROI4987_English_1-26_rev_Fillable/audit/guarded_acceptance.json
+/app/workspace/jobs/MM-17179-H10K-WEBUI2_ROI4987_English_1-26_rev_Fillable/audit/hermes_strategy_request.json
+/app/workspace/guarded_candidates/MM-17179-H10K-WEBUI2_ROI4987_English_1-26_rev_Fillable/form_widget_structure/output.pdf
+/app/workspace/output/MM-17179-H10K-WEBUI2_remediated/failed/ESCALATION_REPORT.md
+/app/workspace/output/MM-17179-H10K-WEBUI2_remediated/failed/ROI4987_English_1-26_rev_Fillable_AUDIT_REPORT.md
+/app/workspace/output/MM-17179-H10K-WEBUI2_remediated/failed/SHA256SUMS.txt
+```
+
+H10K authoritative outcome:
+
+```text
+STATUS.json overall_result: ESCALATION
+STATUS.json result: ESCALATION
+orchestrator_outcome.json overall_result: ESCALATION
+orchestrator_outcome escalation_upgrade: true
+shared verdict inside orchestrator_outcome: FAIL
+critical_fails: verapdf_pdfua1, verapdf_wcag
+table_semantics: REVIEW_REQUIRED
+```
+
+H10K guarded form-widget runtime evidence:
+
+```text
+target_rule: PDF/UA-1/7.18.4
+repair_strategy_id: form_widget_structure_construction_v1
+target_rule_before_count: 204
+target_rule_after_count: 0
+target_rule_status: CLEARED
+qpdf_result: PASS
+profile_accounting_result: PASS
+preservation_result: PASS
+verapdf_iso_result: PASS
+verapdf_pdfua1_result: FAIL
+verapdf_wcag_result: FAIL
+iso_regression_result: FAIL
+post_form-widget inspection result: INSPECTED
+post form-widget inspection result: INSPECTED
+guarded_acceptance_result: GUARDED_CANDIDATE_REJECTED_STRUCTURE_DIAGNOSTIC
+status_result: FAIL
+package_policy: REPORT_ONLY
+pass_allowed: false
+promote_candidate_to_final: false
+guarded_candidate_promoted_to_final: false
+```
+
+H10K active actionable HERMES signals:
+
+```text
+PDF/UA-1/7.18.4 - all_strategies_exhausted
+PDF/UA-1/7.21.4.1 - unknown_rule
+PDF/UA-1/7.21.7 - all_strategies_exhausted
+```
+
+A zero-count `PDF/UA-1/7.18.1` signal was suppressed by reconciliation and is not recorded as an active blocker.
+
+The WebUI response matched the artifacts in substance: it reported `STATUS.json overall_result: ESCALATION`, `GUARDED_CANDIDATE_REJECTED_STRUCTURE_DIAGNOSTIC`, `pass_allowed: false`, no remediated PDF packaged, and no production-readiness claim. Its headline said `Job Complete - FAIL`; that is a minor response-label mismatch because the artifact-authoritative terminal state is `ESCALATION`, and the body correctly reported that terminal state.
+
+## Production path evidence status
+
+```text
+WebUI production-path evidence collected: true
+WebUI production-path terminal state: WEBUI_PDF_PRODUCTION_PATH_PROVEN
+Docker CLI guarded-runtime evidence collected: true
+orchestrator end-to-end guarded-runtime evidence collected in Docker: true
+STATUS/package behavior validated end-to-end in Docker CLI smoke: true
+STATUS/package behavior validated by H10I/H10J policy tests: true
+STATUS.json guarded truthfulness verified in Docker CLI smoke: true
+orchestrator_outcome.json guarded truthfulness verified in Docker CLI smoke: true
+deliverables package guarded report-only behavior verified in Docker CLI smoke: true
+Open WebUI PDF intake path evidence collected in H10K: true
+Open WebUI PDF intake path result: ESCALATION
+Open WebUI PDF intake path unsupported PASS claim observed: false
+Open WebUI PDF intake path production-readiness claim observed: false
+```
+
+H10K proves the intended Open WebUI `PDF:` path can truthfully reach terminal artifact generation and failed/escalation package routing. It does not prove the system can fully remediate this PDF to PASS.
+
+## Files changed by H10K
+
+```text
+docs/H10K_WEBUI_PDF_PRODUCTION_PATH_EVIDENCE.md
+docs/PRODUCTION_REMEDIATION_STATUS.md
+```
+
+## Files intentionally not changed by H10K
+
+```text
+app/tools/orchestrate/remediate.py
+app/tools/orchestrate/guarded_acceptance.py
+app/tools/packaging/status_json_writer.py
+app/tools/packaging/package_deliverables.py
+app/tools/audit/lookup_repair_plan.py
+app/tools/audit/rule_repair_map.json
+app/tools/repair/repair_form_widget_structure.py
+any runtime workspace artifact
+any source PDF
+any generated PDF
+any validator XML output
+```
+
+## Current production readiness assessment
+
+```text
+Production-ready system: false
+Open WebUI PDF path proven: true
+Truthful terminal artifacts proven through WebUI: true
+Truthful failed/escalation package routing proven through WebUI: true
+PASS remediation for MM-17179 ROI form: false
+Remaining work required before production readiness: true
+```
+
+The system has now crossed an important integration boundary: the intended WebUI production intake path is proven. The next work should address the active remediation blockers surfaced by the H10K WebUI run.
+
+## H11 terminal state
+
+H11 completed after H10K as an active blocker / unsupported-rule stress test.
+
+```text
+UNSUPPORTED_RULE_PIPELINE_ACTIONABLE
+```
+
+H11 proved that unresolved active blockers can produce actionable Hermes strategy-request artifacts and truthful escalation instead of an unsupported PASS claim. H11 did not prove that an agent wrote, executed, validated, or adopted a new repair script.
+
+## H12 changed files
+
+```text
+app/tools/audit/font_tounicode_diagnostics.py
+app/tools/tests/test_agent_candidate_repair_loop_policy.py
+app/tools/tests/test_font_tounicode_diagnostics_policy.py
+docs/H12_AGENT_GENERATED_CANDIDATE_REPAIR.md
+docs/PRODUCTION_REMEDIATION_STATUS.md
 ```
 
 ## Next patch
