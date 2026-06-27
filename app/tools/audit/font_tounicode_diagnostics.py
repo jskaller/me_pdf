@@ -18,8 +18,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 TARGET_RULE = "PDF/UA-1/7.21.7"
 TERMINAL_BLOCKED_BY_MISSING_EVIDENCE = "AGENT_CANDIDATE_REPAIR_BLOCKED_BY_MISSING_EVIDENCE"
-TERMINAL_CREATED_BUT_REJECTED = "AGENT_CANDIDATE_REPAIR_CREATED_BUT_REJECTED"
-TERMINAL_VALIDATED = "AGENT_CANDIDATE_REPAIR_VALIDATED"
+GATE_READY_FOR_CANDIDATE_CREATION = "READY_FOR_AGENT_CANDIDATE_CREATION"
 
 
 def _clean(value: Any) -> str:
@@ -36,7 +35,8 @@ def _is_font_object(obj: Any) -> bool:
         return False
     type_value = obj.get("/Type", obj.get("Type"))
     subtype = obj.get("/Subtype", obj.get("Subtype"))
-    return _pdf_name(type_value) == "Font" or bool(subtype and "Font" in _clean(type_value + " " + subtype))
+    combined = f"{_clean(type_value)} {_clean(subtype)}"
+    return _pdf_name(type_value) == "Font" or bool(subtype and "Font" in combined)
 
 
 def _object_items(qpdf_json: Dict[str, Any]) -> Iterable[tuple[str, Dict[str, Any]]]:
@@ -59,7 +59,7 @@ def _object_items(qpdf_json: Dict[str, Any]) -> Iterable[tuple[str, Dict[str, An
     trailer_pages = qpdf_json.get("pages")
     if isinstance(trailer_pages, list):
         for page_index, page in enumerate(trailer_pages):
-            resources = page.get("/Resources") or page.get("resources") if isinstance(page, dict) else None
+            resources = (page.get("/Resources") or page.get("resources")) if isinstance(page, dict) else None
             fonts = resources.get("/Font") if isinstance(resources, dict) else None
             if isinstance(fonts, dict):
                 for name, value in fonts.items():
@@ -168,8 +168,9 @@ def build_tounicode_repair_readiness_report(
         "missing_report_evidence": missing_report_evidence,
         "repair_allowed": repair_allowed,
         "candidate_creation_allowed": repair_allowed,
+        "candidate_gate_state": GATE_READY_FOR_CANDIDATE_CREATION if repair_allowed else TERMINAL_BLOCKED_BY_MISSING_EVIDENCE,
+        "terminal_state_if_stopped_here": None if repair_allowed else TERMINAL_BLOCKED_BY_MISSING_EVIDENCE,
         "forbidden_sources": ["ocr", "visual_inference", "guess", "hardcoded"],
-        "terminal_state_if_stopped_here": TERMINAL_VALIDATED if repair_allowed else TERMINAL_BLOCKED_BY_MISSING_EVIDENCE,
         "safe_to_claim_pass": False,
         "safe_to_claim_production_ready": False,
     }
