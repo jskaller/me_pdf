@@ -325,6 +325,10 @@ active strategies[] changed by H10J: false
 candidate promotion requires guarded acceptance promote_candidate_to_final: true
 ```
 
+## H10K - WebUI PDF: End-to-End Production Path Evidence
+
+This marker preserves the historical H10K title used by policy tests. H10K is the patch that proved the intended Open WebUI `PDF:` path could reach Hermes, invoke the orchestrator, and produce truthful terminal artifacts and failed/escalation package routing. It did not claim production-ready PASS remediation.
+
 ## Prior production path evidence status
 
 ```text
