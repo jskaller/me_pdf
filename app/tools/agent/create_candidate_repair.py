@@ -34,7 +34,10 @@ def rule_slug(rule_id: str) -> str:
 
 
 def synthetic_failure_count(pdf_path: Path, target_rule: str = TARGET_RULE) -> int:
-    return 1 if f"H12R_TARGET_FAIL: {target_rule}" in Path(pdf_path).read_text(errors="ignore") else 0
+    path = Path(pdf_path)
+    if not path.exists():
+        return 0
+    return 1 if f"H12R_TARGET_FAIL: {target_rule}" in path.read_text(errors="ignore") else 0
 
 
 def is_distinct_fixture(a_path: Path, b_path: Path) -> bool:
@@ -98,7 +101,7 @@ def main() -> int:
         out.write_text(data.replace(fail, fixed)); result = {{"result":"PASS","strategy":"synthetic_tounicode_marker_repair_v1","target_rule":TARGET_RULE,"target_rule_before_count":1,"target_rule_after_count":0}}
     else:
         out.write_text(data); result = {{"result":"ALREADY_CORRECT","target_rule":TARGET_RULE,"target_rule_before_count":0,"target_rule_after_count":0}}
-    if args.out: Path(args.out).write_text(json.dumps(result, indent=2, sort_keys=True)+"\n")
+    if args.out: Path(args.out).write_text(json.dumps(result, indent=2, sort_keys=True)+"\\n")
     print(json.dumps(result, sort_keys=True)); return 0
 if __name__ == "__main__": raise SystemExit(main())
 '''
@@ -127,13 +130,22 @@ class CandidateAttempt:
 
 
 def controlled_validation(input_pdf: Path, output_pdf: Path, target_rule: str = TARGET_RULE) -> Dict[str, Any]:
-    before, after = synthetic_failure_count(input_pdf, target_rule), synthetic_failure_count(output_pdf, target_rule)
-    ok = before == 1 and after == 0 and output_pdf.read_text(errors="ignore").startswith("%PDF-")
+    before = synthetic_failure_count(input_pdf, target_rule)
+    after = synthetic_failure_count(output_pdf, target_rule)
+    output_exists = Path(output_pdf).exists()
+    starts_pdf = output_exists and Path(output_pdf).read_text(errors="ignore").startswith("%PDF-")
+    ok = before == 1 and after == 0 and starts_pdf
     return {
-        "qpdf": "CONTROLLED_PASS", "verapdf_pdfua1": "CONTROLLED_PASS" if ok else "CONTROLLED_FAIL",
-        "verapdf_wcag": "CONTROLLED_PASS", "verapdf_iso": "CONTROLLED_PASS", "profile_accounting": "CONTROLLED_PASS",
-        "preservation": "CONTROLLED_PASS" if ok else "CONTROLLED_FAIL", "target_rule_before_count": before,
-        "target_rule_after_count": after, "new_authoritative_failures": [], "increased_authoritative_failures": [],
+        "qpdf": "CONTROLLED_PASS" if output_exists else "CONTROLLED_FAIL",
+        "verapdf_pdfua1": "CONTROLLED_PASS" if ok else "CONTROLLED_FAIL",
+        "verapdf_wcag": "CONTROLLED_PASS" if output_exists else "CONTROLLED_FAIL",
+        "verapdf_iso": "CONTROLLED_PASS" if output_exists else "CONTROLLED_FAIL",
+        "profile_accounting": "CONTROLLED_PASS" if output_exists else "CONTROLLED_FAIL",
+        "preservation": "CONTROLLED_PASS" if ok else "CONTROLLED_FAIL",
+        "target_rule_before_count": before,
+        "target_rule_after_count": after,
+        "new_authoritative_failures": [],
+        "increased_authoritative_failures": [],
     }
 
 
@@ -156,6 +168,9 @@ def run_candidate_workbench(strategy_request_path: Path, input_pdf: Path, worksp
         "target_rule_before_count": validation["target_rule_before_count"], "target_rule_after_count": validation["target_rule_after_count"],
         "new_authoritative_failures": [], "increased_authoritative_failures": [], "decision": decision, "promotion_allowed": False,
         "adoption_proposal_path": str(attempt.adoption_proposal_path) if decision == "CANDIDATE_VALIDATED" else "",
+        "candidate_stdout": proc.stdout,
+        "candidate_stderr": proc.stderr,
+        "candidate_returncode": proc.returncode,
     }
     _write_json(attempt.candidate_result_path, result); return result
 
@@ -174,7 +189,7 @@ def run_reuse_pipeline(input_pdf: Path, workspace: Path, ticket: str, adoption_p
     status = {"overall_result":"PASS" if passed else "FAIL", "terminal_state": TERMINAL_SUCCESS if passed else "SELF_EXTENDING_LOOP_VALIDATED_BUT_REUSE_FAILED", "used_reused_strategy": True, "new_candidate_generation_attempted": generated}
     outcome = {"overall_result": status["overall_result"], "target_rule": target_rule, "candidate_generation_attempted": generated, "target_rule_before_count": validation["target_rule_before_count"], "target_rule_after_count": validation["target_rule_after_count"]}
     _write_json(job_dir/"STATUS.json", status); _write_json(job_dir/"orchestrator_outcome.json", outcome)
-    result = {"schema": REUSE_SCHEMA, "ticket": ticket, "fixture":"B", "target_rule":target_rule, "reused_strategy_from_fixture_a": True, "new_candidate_generation_attempted": generated, "normal_pipeline_used": True, "status_json_result": status["overall_result"], "orchestrator_outcome_result": outcome["overall_result"], "target_rule_before_count": validation["target_rule_before_count"], "target_rule_after_count": validation["target_rule_after_count"], "validation": {k: validation[k] for k in ["qpdf","verapdf_pdfua1","verapdf_wcag","verapdf_iso","profile_accounting","preservation"]}, "new_authoritative_failures": [], "increased_authoritative_failures": [], "decision": "REUSE_VALIDATED" if passed else "REUSE_FAILED", "status_json_path": str(job_dir/"STATUS.json"), "orchestrator_outcome_path": str(job_dir/"orchestrator_outcome.json")}
+    result = {"schema": REUSE_SCHEMA, "ticket": ticket, "fixture":"B", "target_rule":target_rule, "reused_strategy_from_fixture_a": True, "new_candidate_generation_attempted": generated, "normal_pipeline_used": True, "status_json_result": status["overall_result"], "orchestrator_outcome_result": outcome["overall_result"], "target_rule_before_count": validation["target_rule_before_count"], "target_rule_after_count": validation["target_rule_after_count"], "validation": {k: validation[k] for k in ["qpdf","verapdf_pdfua1","verapdf_wcag","verapdf_iso","profile_accounting","preservation"]}, "new_authoritative_failures": [], "increased_authoritative_failures": [], "decision": "REUSE_VALIDATED" if passed else "REUSE_FAILED", "status_json_path": str(job_dir/"STATUS.json"), "orchestrator_outcome_path": str(job_dir/"orchestrator_outcome.json"), "candidate_stdout": proc.stdout, "candidate_stderr": proc.stderr, "candidate_returncode": proc.returncode}
     _write_json(job_dir/"reuse_result.json", result); return result
 
 
