@@ -23,8 +23,10 @@ class ResidualSelfExtensionHookTests(unittest.TestCase):
         self.assertIn("def try_residual_self_extension_candidate(", text)
         self.assertIn('env_flag("HERMES_ENABLE_SELF_EXTENSION", False)', text)
         self.assertIn("from tools.orchestrate.self_extension_executor import", text)
-        self.assertIn("execute_residual_candidate", text)
-        self.assertIn("generate_candidate_source", text)
+        self.assertIn("run_residual_self_extension_attempts", text)
+        self.assertIn("self_extension_run_attempts_result.json", text)
+        self.assertIn("max_attempts", text)
+        self.assertIn('"attempts": attempts', text)
 
     def test_residual_hook_runs_after_request_written_before_fallback_proposal(self):
         text = REMEDIATE.read_text()

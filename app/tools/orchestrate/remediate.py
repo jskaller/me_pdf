@@ -1559,13 +1559,12 @@ def try_residual_self_extension_candidate(
     remaining_failures,
     hermes_items,
 ):
-    """Run one guarded residual self-extension candidate attempt.
+    """Run bounded guarded residual self-extension attempts.
 
-    Patch 2 is intentionally conservative: default off, residual-only, one
-    attempt, no adoption, no rule-map mutation, and no change to the final PDF
-    used by packaging. A successful candidate is recorded as evidence for the
-    next adoption/re-entry patch; the existing HERMES_REQUIRED fallback remains
-    authoritative for outcome calculation.
+    This remains fail-closed and residual-only: no adoption, no rule-map
+    mutation, and no change to the final PDF used by packaging. The purpose is
+    to let the production orchestrator use the existing feedback/retry engine
+    instead of stopping after a single generated candidate.
     """
     if not env_flag("HERMES_ENABLE_SELF_EXTENSION", False):
         return None
@@ -1586,11 +1585,12 @@ def try_residual_self_extension_candidate(
         emit("PLAN", "residual_self_extension", "SKIPPED", data=record)
         return record
 
+    max_attempts = int(os.environ.get("HERMES_SELF_EXTENSION_MAX_ATTEMPTS_PER_RULE", "3") or "3")
     emit(
         "PLAN",
         "residual_self_extension",
         "RUNNING",
-        data={"target_rule_id": target_rule_id, "attempt": 1},
+        data={"target_rule_id": target_rule_id, "max_attempts": max_attempts},
     )
 
     artifacts = {
@@ -1598,66 +1598,81 @@ def try_residual_self_extension_candidate(
         "generation_response": AUDIT_DIR / "self_extension_generation_response.json",
         "candidate_result": AUDIT_DIR / "self_extension_candidate_result.json",
         "residual_result": AUDIT_DIR / "self_extension_residual_result.json",
+        "run_attempts_result": AUDIT_DIR / "self_extension_run_attempts_result.json",
     }
 
     try:
         from tools.orchestrate.self_extension_executor import (
-            build_residual_script_generation_request,
-            execute_residual_candidate,
-            generate_candidate_source,
-            prepare_candidate_paths,
+            run_residual_self_extension_attempts,
         )
 
-        attempt = 1
-        paths = prepare_candidate_paths(APP, JOB, target_rule_id, attempt)
-        generation_request = build_residual_script_generation_request(
-            strategy_request=request_packet,
-            target_rule_id=target_rule_id,
-            attempt=attempt,
-            candidate_relative_path=paths.candidate_relative_path,
-        )
-        artifacts["generation_request"].write_text(
-            json.dumps(generation_request, indent=2)
-        )
-
-        generation_response = generate_candidate_source(
-            generation_request=generation_request,
-            job_dir=JOB,
-        )
-        artifacts["generation_response"].write_text(
-            json.dumps(generation_response, indent=2)
-        )
-
-        candidate_result = execute_residual_candidate(
+        result = run_residual_self_extension_attempts(
             app_dir=APP,
             job_dir=JOB,
             strategy_request_path=request_path,
             target_rule_id=target_rule_id,
-            attempt=attempt,
             current_pdf=Path(current_pdf),
             source_pdf=SOURCE_PDF,
             reference_pdf=PASS0,
-            script_source=generation_response.get("script_source", ""),
+            max_attempts=max_attempts,
             remediation_python=REMEDIATION_PYTHON,
             verapdf_bin=VERAPDF_BIN,
             profiles=PROFILES,
         )
-        artifacts["candidate_result"].write_text(
-            json.dumps(candidate_result, indent=2)
-        )
+        artifacts["run_attempts_result"].write_text(json.dumps(result, indent=2))
+
+        attempts = result.get("attempts", []) if isinstance(result, dict) else []
+        last_attempt = attempts[-1] if attempts else {}
+        last_attempt_number = int(last_attempt.get("attempt") or result.get("attempt") or 1)
+
+        # Preserve legacy audit sidecar names for status/outcome links while the
+        # canonical retry artifacts live under JOB/self_extension/.../attempt_NN/.
+        if attempts:
+            for key, legacy_path in (
+                ("generation_request", artifacts["generation_request"]),
+                ("generation_response", artifacts["generation_response"]),
+                ("candidate_result", artifacts["candidate_result"]),
+            ):
+                source = last_attempt.get(key)
+                if source and Path(source).exists():
+                    legacy_path.write_text(Path(source).read_text())
+
+        candidate_result = result.get("candidate_result") if isinstance(result, dict) else None
+        if not isinstance(candidate_result, dict) and last_attempt.get("candidate_result"):
+            candidate_path = Path(last_attempt.get("candidate_result"))
+            if candidate_path.exists():
+                try:
+                    candidate_result = json.loads(candidate_path.read_text())
+                except Exception:
+                    candidate_result = {}
+        if not isinstance(candidate_result, dict):
+            candidate_result = {}
 
         record = {
-            "result": candidate_result.get("result", "UNKNOWN"),
-            "reason": "candidate_validated_no_adoption" if candidate_result.get("result") == "PASS" else "candidate_rejected_or_failed",
+            "result": result.get("result", "UNKNOWN") if isinstance(result, dict) else "UNKNOWN",
+            "reason": result.get("reason", "unknown") if isinstance(result, dict) else "unknown",
             "target_rule_id": target_rule_id,
-            "attempt": attempt,
+            "attempt": last_attempt_number,
+            "max_attempts": max_attempts,
+            "attempts": attempts,
+            "prior_feedback": result.get("prior_feedback", {}) if isinstance(result, dict) else {},
             "adoption_performed": False,
             "final_pdf_updated": False,
             "existing_residual_gap_fallback_preserved": True,
             "artifacts": {key: str(value) for key, value in artifacts.items()},
-            "candidate_relative_path": candidate_result.get("candidate_relative_path"),
-            "candidate_output_pdf": candidate_result.get("candidate_output_pdf"),
-            "success_predicate": candidate_result.get("success_predicate"),
+            "candidate_relative_path": (
+                candidate_result.get("candidate_relative_path")
+                or last_attempt.get("candidate_relative_path")
+            ),
+            "candidate_output_pdf": (
+                candidate_result.get("candidate_output_pdf")
+                or last_attempt.get("candidate_output_pdf")
+            ),
+            "success_predicate": (
+                candidate_result.get("success_predicate")
+                or last_attempt.get("success_predicate")
+            ),
+            "run_state_path": result.get("run_state_path") if isinstance(result, dict) else None,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as exc:
@@ -1666,6 +1681,7 @@ def try_residual_self_extension_candidate(
             "reason": f"{type(exc).__name__}: {exc}",
             "target_rule_id": target_rule_id,
             "attempt": 1,
+            "max_attempts": max_attempts,
             "adoption_performed": False,
             "final_pdf_updated": False,
             "existing_residual_gap_fallback_preserved": True,
@@ -1681,7 +1697,6 @@ def try_residual_self_extension_candidate(
         data=record,
     )
     return record
-
 
 def write_residual_strategy_gap_artifacts(current_pdf, remaining_failures, post_failures_path):
     """Invoke Hermes strategy design for residual final validator failures."""
