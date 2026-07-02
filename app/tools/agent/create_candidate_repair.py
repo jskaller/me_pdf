@@ -91,12 +91,14 @@ def main() -> int:
     p = argparse.ArgumentParser(); p.add_argument("input_pdf"); p.add_argument("output_pdf"); p.add_argument("--out")
     args = p.parse_args(); inp = Path(args.input_pdf); out = Path(args.output_pdf)
     data = inp.read_text(errors="ignore")
-    fail = f"H12R_TARGET_FAIL: {{TARGET_RULE}}"; fixed = f"H12R_TARGET_FIXED: {{TARGET_RULE}}"
+    fail = f"H12R_TARGET_FAIL: {{TARGET_RULE}}"; fixed = f"H12R_TARGET_DONE: {{TARGET_RULE}}"
+    if len(fail) != len(fixed):
+        raise SystemExit("synthetic marker replacement must preserve byte length")
     if fail in data:
         out.write_text(data.replace(fail, fixed)); result = {{"result":"PASS","strategy":"synthetic_tounicode_marker_repair_v1","target_rule":TARGET_RULE,"target_rule_before_count":1,"target_rule_after_count":0}}
     else:
         out.write_text(data); result = {{"result":"ALREADY_CORRECT","target_rule":TARGET_RULE,"target_rule_before_count":0,"target_rule_after_count":0}}
-    if args.out: Path(args.out).write_text(json.dumps(result, indent=2, sort_keys=True)+"\\n")
+    if args.out: Path(args.out).write_text(json.dumps(result, indent=2, sort_keys=True)+"\n")
     print(json.dumps(result, sort_keys=True)); return 0
 if __name__ == "__main__": raise SystemExit(main())
 '''
