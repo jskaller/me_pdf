@@ -7,7 +7,7 @@ Build a production-ready PDF remediation system that works through the intended 
 ```text
 Open WebUI prompt beginning with PDF:
 -> Hermes loads the pdf-remediation runbook
--> /app/tools/orchestrate/remediate.py creates and executes the job
+-> /app/tools/orchestrate/remediate.py or a production-approved wrapper creates and executes the job
 -> known deterministic repairs run only when safe
 -> validation determines remaining blockers
 -> unsupported/remediable blockers produce quarantined self-extension candidates
@@ -26,22 +26,22 @@ master
 ## Last completed patch
 
 ```text
-H13 - WebUI Self-Extension Retry Loop Evidence and Outcome Surfacing
+H13S - Harden WebUI Self-Extension Smoke Boundary
 ```
 
-H13 terminal state:
+H13S terminal state:
 
 ```text
-WEBUI_SELF_EXTENSION_BLOCKED_BY_COMMAND_ENVIRONMENT
+WEBUI_SELF_EXTENSION_SMOKE_BOUNDARY_HARDENED
 ```
 
-H13 proof level:
+H13S proof level:
 
 ```text
 CLI_ONLY
 ```
 
-The H13 implementation made self-extension retry-loop results first-class in the status/outcome path, but this execution environment could not run the live Open WebUI `PDF:` smoke. WebUI proof is therefore explicitly not claimed.
+H13S hardens the WebUI/Hermes evidence-only smoke boundary. It does not rerun the live Open WebUI smoke and does not claim `WEBUI_PATH` proof.
 
 ## Historical terminal states preserved
 
@@ -60,71 +60,114 @@ AGENT_CANDIDATE_REPAIR_BLOCKED_BY_MISSING_EVIDENCE
 SELF_EXTENDING_LOOP_VALIDATED_AND_REUSED_ON_SECOND_FIXTURE
 ORCHESTRATOR_SELF_EXTENSION_RETRY_LOOP_VALIDATED_FAIL_CLOSED
 WEBUI_SELF_EXTENSION_BLOCKED_BY_COMMAND_ENVIRONMENT
+WEBUI_SELF_EXTENSION_UNSAFE_REVERTED
+WEBUI_SELF_EXTENSION_SMOKE_BOUNDARY_HARDENED
 ```
 
 ## Production-readiness statement
 
 Production readiness is not claimed.
 
-H10K proved that the intended Open WebUI `PDF:` production intake path can reach Hermes, invoke the orchestrator, produce terminal artifacts, and route failed/escalation deliverables truthfully. H11 proved unsupported-rule actionability: unresolved blockers produced HERMES_REQUIRED / strategy-request artifacts and escalated truthfully instead of claiming remediation success. H12 added a guarded self-extension candidate loop and a target-specific safety gate for the preferred missing-ToUnicode blocker, but did not validate a new repair. H12R proved a controlled self-extension lifecycle on two synthetic fixtures, including second-fixture reuse, but did not enable generated strategies as production defaults. H12/H12R/H13 still do not prove production adoption or beta readiness.
+H10K proved that the intended Open WebUI `PDF:` production intake path can reach Hermes, invoke the orchestrator, produce terminal artifacts, and route failed/escalation deliverables truthfully. H11 proved unsupported-rule actionability: unresolved blockers produced HERMES_REQUIRED / strategy-request artifacts and escalated truthfully instead of claiming remediation success. H12 added a guarded self-extension candidate loop and a target-specific safety gate for the preferred missing-ToUnicode blocker, but did not validate a new repair. H12R proved a controlled self-extension lifecycle on two synthetic fixtures, including second-fixture reuse, but did not enable generated strategies as production defaults. H13 made failed or blocked bounded self-extension attempts first-class in status/outcome. H13R failed as a WebUI smoke because the path drifted into source/rule-map mutation and self-extension did not run. H13S hardens that smoke boundary. None of H12/H12R/H13/H13R/H13S proves production adoption or beta readiness.
 
-H13 moves outcome surfacing forward. Failed or blocked bounded self-extension attempts are now promoted into a first-class `self_extension` field during status generation and are written back into `audit/orchestrator_outcome.json`. A failed enabled self-extension can no longer remain hidden in `strategy_gap.json` while `STATUS.json` or `orchestrator_outcome.json` claim `PASS`.
+## H13R negative evidence
 
-## Current H13 behavior
-
-When `status_json_writer.py` runs, it now looks for self-extension evidence in:
+H13R reached the WebUI/orchestrator path and produced `STATUS.json` and `orchestrator_outcome.json`, but it did not validate the bounded self-extension retry-loop. The run reported self-extension as NOT_RUN and did not produce:
 
 ```text
+audit/self_extension_run_attempts_result.json
 audit/self_extension_residual_result.json
-audit/strategy_gap.json.self_extension
 ```
 
-It writes a first-class summary into both `STATUS.json` and `audit/orchestrator_outcome.json`:
+The run also drifted into prohibited source work in the local checkout:
+
+```text
+M app/tools/audit/rule_repair_map.json
+?? app/tools/repair/fix_embed_nonsymbolic_fonts.py
+?? workspace/extract_text.py
+```
+
+Those mutations were not valid evidence and must not be committed.
+
+## Current H13S behavior
+
+H13S adds an evidence-only smoke boundary wrapper:
+
+```text
+app/tools/orchestrate/self_extension_smoke_boundary.py
+```
+
+The wrapper is a production-approved smoke wrapper for H13/H13S/H13T evidence-only runs. It configures self-extension, runs the orchestrator, detects prohibited source-path mutation, and surfaces smoke-boundary evidence into:
+
+```text
+STATUS.json
+audit/orchestrator_outcome.json
+```
+
+The smoke boundary records:
 
 ```json
 {
-  "self_extension": {
-    "enabled": true,
-    "result": "FAIL",
-    "reason": "max_attempts_exhausted",
-    "target_rule_id": "PDF/UA-1/7.21.7",
-    "attempt_count": 2,
-    "adoption_performed": false,
-    "final_pdf_updated": false,
-    "rule_map_mutation_performed": false,
-    "run_attempts_result": ".../audit/self_extension_run_attempts_result.json"
+  "smoke_boundary": {
+    "evidence_only": true,
+    "source_repair_creation_allowed": false,
+    "rule_map_mutation_allowed": false,
+    "adoption_allowed": false,
+    "final_pdf_update_from_failed_candidate_allowed": false,
+    "blocked_actions": [],
+    "boundary_result": "PASS|BLOCKED",
+    "boundary_reason": "..."
   }
 }
 ```
 
-If self-extension is not enabled or no residual gap exists, the summary is still explicit:
+It forbids evidence-only smoke writes to:
 
-```json
-{
-  "enabled": false,
-  "result": "NOT_RUN",
-  "reason": "self_extension_not_enabled_or_no_residual_gap",
-  "target_rule_id": null,
-  "attempt_count": 0,
-  "adoption_performed": false,
-  "final_pdf_updated": false,
-  "rule_map_mutation_performed": false,
-  "run_attempts_result": null
-}
+```text
+app/tools/repair/*.py
+app/tools/audit/rule_repair_map.json
+workspace/extract_text.py
 ```
 
-If self-extension is enabled and produces a non-pass result while the outcome would otherwise be `PASS`, H13 forces a truthful non-PASS outcome:
+## Self-extension NOT_RUN specificity
+
+H13 status/outcome surfacing previously collapsed missing self-extension evidence into:
+
+```text
+self_extension_not_enabled_or_no_residual_gap
+```
+
+H13S smoke-boundary post-processing distinguishes evidence-only smoke blockers, including:
+
+```text
+self_extension_not_enabled
+self_extension_enabled_but_no_target_rule
+self_extension_enabled_but_no_residual_gap
+self_extension_enabled_but_policy_blocked
+self_extension_enabled_but_transport_unavailable
+self_extension_enabled_but_target_rule_mismatch
+self_extension_enabled_but_unexpectedly_not_run
+```
+
+If self-extension is configured for the smoke but does not run, the wrapper writes `self_extension_not_run_blocker` into `STATUS.json` and `audit/orchestrator_outcome.json`.
+
+## Target-rule verification
+
+Evidence-only smoke now supports an expected target rule. A mismatch is explicit:
 
 ```json
 {
-  "overall_result": "ESCALATION",
-  "self_extension_overrode_pass": {
-    "from": "PASS",
-    "to": "ESCALATION",
-    "reason": "self_extension_enabled_but_not_successful"
+  "target_rule_check": {
+    "expected_target_rule_id": "PDF/UA-1/7.21.7",
+    "actual_target_rule_id": "PDF/UA-1/7.21.5",
+    "actual_rule_ids": ["PDF/UA-1/7.21.5"],
+    "result": "MISMATCH",
+    "reason": "actual_residual_did_not_match_expected_self_extension_target"
   }
 }
 ```
+
+A mismatch must not be reported as successful H13 WebUI retry-loop proof.
 
 ## Current H12R target rule
 
@@ -144,26 +187,7 @@ Target-selection basis:
 app/tools/audit/rule_repair_map.json marks PDF/UA-1/7.21.7 as HERMES_REQUIRED and repairable_unbuilt with no active deterministic strategy.
 ```
 
-## H12R controlled fixture status
-
-H12R proved the self-extension lifecycle on two controlled synthetic fixtures with the same unsupported-but-remediable target class:
-
-```text
-unsupported synthetic PDF/UA-1/7.21.7 failure
--> strategy request emitted
--> candidate workbench consumes request
--> runtime candidate implementation generated under workspace/candidate_repairs
--> sandbox apply uses copied Fixture A PDF only
--> controlled validation clears target marker
--> candidate_result.json and adoption_proposal.json are produced
--> distinct Fixture B reuses Fixture A capability
--> Fixture B does not generate another candidate
--> STATUS.json and orchestrator_outcome.json report the controlled reuse result truthfully
-```
-
-H12R uses controlled equivalents for qpdf, veraPDF PDF/UA-1, pinned WCAG, ISO, profile accounting, and preservation because the synthetic fixtures are harness fixtures, not real production PDFs. H12R does not claim full validator authority and does not enable any generated strategy as a production default.
-
-## H13 artifact and safety policy
+## Artifact and safety policy
 
 Failed generated candidates must not:
 
@@ -176,13 +200,17 @@ escape quarantine
 overwrite source repair scripts
 ```
 
-H13 status/outcome surfacing records:
+Evidence-only smoke mode additionally forbids:
 
 ```text
-adoption_performed: false
-final_pdf_updated: false
-rule_map_mutation_performed: false
-run_attempts_result: path to self_extension_run_attempts_result.json when available
+source repair script creation
+repair script registration
+rule-map mutation
+generated candidate adoption
+promotion of generated code to source
+final-PDF update from failed candidates
+silent target-rule switching
+claiming self-extension ran without attempt evidence
 ```
 
 Runtime artifacts remain forbidden in source control:
@@ -201,9 +229,9 @@ package ZIPs
 
 ## Validation status
 
-H13 code and regression tests were committed through the GitHub connector. Tests were not executed in this environment because the connector provides repository write access but not a live checkout with Docker/Hermes/Open WebUI. A direct container `git clone` attempt failed DNS resolution for `github.com`, so local unit tests could not be run here.
+H13S code and regression tests were committed through the GitHub connector. Tests were not executed in this environment because the connector provides repository write access but not a live local checkout with Docker/Hermes/Open WebUI.
 
-Required local validation after pulling H13:
+Required local validation after pulling H13S:
 
 ```bash
 PYTHONPATH=app python3 -m unittest \
@@ -211,34 +239,18 @@ PYTHONPATH=app python3 -m unittest \
   app/tools/tests/test_self_extension_executor.py \
   app/tools/tests/test_self_extension_support.py \
   app/tools/tests/test_self_extension_run_state.py \
+  app/tools/tests/test_self_extension_smoke_boundary.py \
   app/tools/tests/test_guarded_acceptance_status_package_policy.py
 ```
 
 ## Current blocker
 
 ```text
-WEBUI_SELF_EXTENSION_BLOCKED_BY_COMMAND_ENVIRONMENT
-```
-
-The blocker is not a source-code safety failure. It is the lack of a runnable local Docker/Open WebUI/Hermes command environment in this GitHub-connector execution context.
-
-## What must not be claimed
-
-Do not claim:
-
-```text
-WEBUI_PATH proof for H13
-successful generated self-extension repair
-production adoption
-second-document reuse in H13
-beta readiness
-production readiness
+WEBUI_SELF_EXTENSION_RETRY_LOOP_NOT_YET_RETESTED_AFTER_H13S
 ```
 
 ## Exact next step
 
 ```text
-H13R — Run WebUI PDF: Smoke Against Surfaced Self-Extension Outcome
+H13T — Rerun WebUI Self-Extension Retry Loop Smoke with Hardened Boundary
 ```
-
-H13R must run from the local Docker/Open WebUI environment after pulling the H13 commit. It should submit a prompt beginning exactly with `PDF:`, verify that Hermes invokes the remediation runbook/orchestrator, and confirm that `orchestrator_outcome.json`, `STATUS.json`, package routing, and the final WebUI response all match the surfaced self-extension outcome.
