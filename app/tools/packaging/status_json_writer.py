@@ -283,6 +283,8 @@ def _run(args: argparse.Namespace) -> int:
         authoritative_overall = outcome.get("overall_result", "UNKNOWN")
         status["orchestrator_outcome"] = outcome
         status["self_extension"] = self_extension
+        if isinstance(outcome.get("self_extension_overrode_pass"), dict):
+            status["self_extension_overrode_pass"] = outcome["self_extension_overrode_pass"]
         verdict_result_source = "orchestrator_outcome.json"
         guarded_decision = _guarded_decision_from(outcome, audit_dir)
     else:
