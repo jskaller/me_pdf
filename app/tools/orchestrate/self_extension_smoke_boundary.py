@@ -21,7 +21,6 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -203,8 +202,30 @@ def source_mutation_actions(before: dict, app_dir: Path, workspace: Path | None 
     return actions
 
 
-def surface_smoke_boundary(job_dir: Path, *, expected_target_rule_id: str | None, self_extension_configured: bool = True, blocked_actions: Iterable[dict] | None = None) -> dict:
+def ensure_minimal_artifacts(job_dir: Path, *, child_result: dict | None = None) -> None:
+    """Persist fail-closed artifacts when remediate.py exits before creating them."""
     job_dir = Path(job_dir)
+    audit_dir = job_dir / "audit"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    child_result = dict(child_result or {})
+    base = {
+        "overall_result": "ESCALATION",
+        "result": "ESCALATION",
+        "reason": "self_extension_smoke_child_command_failed_before_outcome_artifacts",
+        "child_command": child_result,
+        "generated_at": _now(),
+    }
+    outcome_path = audit_dir / "orchestrator_outcome.json"
+    status_path = job_dir / "STATUS.json"
+    if not outcome_path.exists():
+        write_json(outcome_path, {k: v for k, v in base.items() if k != "result"})
+    if not status_path.exists():
+        write_json(status_path, base)
+
+
+def surface_smoke_boundary(job_dir: Path, *, expected_target_rule_id: str | None, self_extension_configured: bool = True, blocked_actions: Iterable[dict] | None = None, transport_unavailable: bool = False, child_result: dict | None = None) -> dict:
+    job_dir = Path(job_dir)
+    ensure_minimal_artifacts(job_dir, child_result=child_result)
     audit_dir = job_dir / "audit"
     outcome_path = audit_dir / "orchestrator_outcome.json"
     status_path = job_dir / "STATUS.json"
@@ -215,6 +236,8 @@ def surface_smoke_boundary(job_dir: Path, *, expected_target_rule_id: str | None
     actions = [dict(item) for item in (blocked_actions or [])]
     if target_check["result"] == "MISMATCH":
         actions.append(blocked_action("target_rule_mismatch", reason=target_check["reason"]))
+    if transport_unavailable:
+        actions.append(blocked_action("child_command_failed", reason="self_extension_smoke_child_command_failed"))
 
     boundary = smoke_boundary_summary(actions)
     existing_outcome = load_json(outcome_path)
@@ -225,15 +248,16 @@ def surface_smoke_boundary(job_dir: Path, *, expected_target_rule_id: str | None
         enabled=self_extension_configured,
         expected_target_rule_id=expected_target_rule_id,
         actual_rule_ids=actual_rules,
-        policy_blocked=bool(actions),
+        policy_blocked=bool(actions) and not transport_unavailable,
+        transport_unavailable=transport_unavailable,
     )
 
     for payload, path in ((existing_outcome, outcome_path), (existing_status, status_path)):
-        if not payload:
-            continue
         payload["smoke_boundary"] = boundary
         payload["target_rule_check"] = target_check
         payload["self_extension"] = self_extension
+        if child_result:
+            payload["self_extension_smoke_child_result"] = child_result
         if self_extension_configured and self_extension.get("result") == "NOT_RUN":
             payload["self_extension_not_run_blocker"] = {
                 "result": "BLOCKED",
@@ -259,6 +283,14 @@ def surface_smoke_boundary(job_dir: Path, *, expected_target_rule_id: str | None
     }
 
 
+def _prepend_pythonpath(env: dict, app_dir: Path) -> None:
+    current = env.get("PYTHONPATH", "")
+    parts = [str(app_dir)]
+    if current:
+        parts.append(current)
+    env["PYTHONPATH"] = os.pathsep.join(parts)
+
+
 def run_wrapper(args: argparse.Namespace) -> int:
     workspace = Path(args.workspace)
     app_dir = Path(__file__).resolve().parents[2]
@@ -267,6 +299,7 @@ def run_wrapper(args: argparse.Namespace) -> int:
     before = source_snapshot(app_dir, workspace)
 
     env = os.environ.copy()
+    _prepend_pythonpath(env, app_dir)
     env["HERMES_ENABLE_SELF_EXTENSION"] = "1"
     env["HERMES_SELF_EXTENSION_RULE_ID"] = args.expected_target_rule
     env["HERMES_SELF_EXTENSION_MAX_ATTEMPTS_PER_RULE"] = str(args.max_attempts)
@@ -282,16 +315,30 @@ def run_wrapper(args: argparse.Namespace) -> int:
         "--subject", args.subject,
         "--keywords", args.keywords,
     ]
-    proc = subprocess.run(cmd, env=env)
+    proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    if proc.stdout:
+        print(proc.stdout, end="")
+    if proc.stderr:
+        print(proc.stderr, end="", file=sys.stderr)
+
+    child_result = {
+        "returncode": proc.returncode,
+        "command": cmd,
+        "pythonpath_set": str(app_dir) in env.get("PYTHONPATH", "").split(os.pathsep),
+        "stdout_tail": proc.stdout[-4000:],
+        "stderr_tail": proc.stderr[-4000:],
+    }
     actions = source_mutation_actions(before, app_dir, workspace)
     summary = surface_smoke_boundary(
         job_dir,
         expected_target_rule_id=args.expected_target_rule,
         self_extension_configured=True,
         blocked_actions=actions,
+        transport_unavailable=proc.returncode != 0 and not (job_dir / "audit" / "strategy_gap.json").exists(),
+        child_result=child_result,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
-    if actions or summary["self_extension"].get("result") == "NOT_RUN":
+    if proc.returncode != 0 or actions or summary["self_extension"].get("result") == "NOT_RUN":
         return 1
     return proc.returncode
 
