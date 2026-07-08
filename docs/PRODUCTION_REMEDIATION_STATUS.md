@@ -243,11 +243,13 @@ PYTHONPATH=app python3 -m unittest \
   app/tools/tests/test_guarded_acceptance_status_package_policy.py
 ```
 
-## Current blocker
+## Current status
 
 ```text
-WEBUI_SELF_EXTENSION_RETRY_LOOP_NOT_YET_RETESTED_AFTER_H13S
+WEBUI_SELF_EXTENSION_SMOKE_BOUNDARY_HARDENED
 ```
+
+The next WebUI proof has not yet been rerun after H13S hardening.
 
 ## Exact next step
 
