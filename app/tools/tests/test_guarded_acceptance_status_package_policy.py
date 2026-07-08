@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""H10I tests for guarded acceptance/status/package contract."""
+"""H10I/H13 tests for guarded acceptance/status/package contract."""
 from __future__ import annotations
 
 import json
@@ -169,6 +169,100 @@ class GuardedAcceptanceStatusPackagePolicyTests(unittest.TestCase):
             self.assertIn("guarded_acceptance_overrode_pass", status)
             self.assertEqual(status["guarded_acceptance_terminal_state"], "GUARDED_CANDIDATE_ACCEPTED_REVIEW_REQUIRED")
 
+    def test_status_writer_surfaces_failed_self_extension_and_blocks_false_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "jobs" / "JOB1"
+            audit = job / "audit"
+            audit.mkdir(parents=True)
+            run_attempts = audit / "self_extension_run_attempts_result.json"
+            run_attempts.write_text(json.dumps({"result": "FAIL"}))
+            (audit / "orchestrator_outcome.json").write_text(json.dumps({"overall_result": "PASS"}))
+            (audit / "strategy_gap.json").write_text(json.dumps({
+                "result": "HERMES_REQUIRED",
+                "self_extension": {
+                    "result": "FAIL",
+                    "reason": "max_attempts_exhausted",
+                    "target_rule_id": "PDF/UA-1/7.21.7",
+                    "attempts": [
+                        {
+                            "attempt": 1,
+                            "result": "FAIL",
+                            "failure": {
+                                "elapsed_seconds": 1.25,
+                                "local_prompt_chars": 100,
+                                "request_packet_chars": 200,
+                                "reported_usage": {"total_tokens": 10},
+                                "gateway_model": "Hermes Agent",
+                                "gateway_base_url": "http://127.0.0.1:8642/v1",
+                            },
+                        },
+                        {
+                            "attempt": 2,
+                            "result": "FAIL",
+                            "success_predicate": {
+                                "target_rule_count_before": 2,
+                                "target_rule_count_after": 2,
+                                "target_rule_strictly_decreased": False,
+                            },
+                        },
+                    ],
+                    "prior_feedback": {
+                        "previous_attempts": [
+                            {
+                                "attempt": 1,
+                                "result": "FAIL",
+                                "strategy": "font_map_stub",
+                                "success_predicate": {
+                                    "target_rule_count_before": 2,
+                                    "target_rule_count_after": 2,
+                                    "target_rule_strictly_decreased": False,
+                                },
+                                "instruction": "Do not repeat the same strategy unless materially different.",
+                            },
+                            {
+                                "attempt": 2,
+                                "result": "FAIL",
+                                "strategy": "font_map_stub",
+                                "success_predicate": {
+                                    "target_rule_count_before": 2,
+                                    "target_rule_count_after": 2,
+                                    "target_rule_strictly_decreased": False,
+                                },
+                                "instruction": "Do not repeat the same strategy unless materially different.",
+                            },
+                        ]
+                    },
+                    "adoption_performed": False,
+                    "final_pdf_updated": False,
+                    "rule_map_mutation_performed": False,
+                    "artifacts": {"run_attempts_result": str(run_attempts)},
+                },
+            }))
+            proc = subprocess.run(
+                [sys.executable, str(STATUS_WRITER), str(job), "--pdf", "candidate.pdf"],
+                cwd=str(REPO_ROOT),
+                env={"PYTHONPATH": str(REPO_ROOT / "app")},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
+            status = json.loads((job / "STATUS.json").read_text())
+            outcome = json.loads((audit / "orchestrator_outcome.json").read_text())
+            for payload in (status, outcome):
+                self.assertEqual(payload["overall_result"], "ESCALATION")
+                self.assertEqual(payload["self_extension"]["result"], "FAIL")
+                self.assertEqual(payload["self_extension"]["reason"], "max_attempts_exhausted")
+                self.assertEqual(payload["self_extension"]["target_rule_id"], "PDF/UA-1/7.21.7")
+                self.assertEqual(payload["self_extension"]["attempt_count"], 2)
+                self.assertFalse(payload["self_extension"]["adoption_performed"])
+                self.assertFalse(payload["self_extension"]["final_pdf_updated"])
+                self.assertFalse(payload["self_extension"]["rule_map_mutation_performed"])
+                self.assertEqual(payload["self_extension"]["run_attempts_result"], str(run_attempts))
+                self.assertIn("generation_transport_diagnostics", payload["self_extension"])
+                self.assertIn("retry_diversity_feedback", payload["self_extension"])
+            self.assertIn("self_extension_overrode_pass", status)
+            self.assertIn("self_extension_overrode_pass", outcome)
+
     def test_packager_report_only_for_guarded_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -230,6 +324,7 @@ class GuardedAcceptanceStatusPackagePolicyTests(unittest.TestCase):
         self.assertIn('if authoritative_overall == "ESCALATION":', package_writer)
         self.assertIn('elif guarded_result == "FAIL":', status_writer)
         self.assertIn('elif guarded_overall == "FAIL":', package_writer)
+        self.assertIn('self_extension_overrode_pass', status_writer)
 
 
 if __name__ == "__main__":
