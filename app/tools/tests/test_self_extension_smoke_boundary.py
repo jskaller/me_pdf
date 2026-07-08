@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ if str(REPO_ROOT / "app") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "app"))
 
 from tools.orchestrate.self_extension_smoke_boundary import (  # noqa: E402
+    _prepend_pythonpath,
     blocked_action,
     is_prohibited_source_path,
     normalize_self_extension,
@@ -92,6 +94,33 @@ class SelfExtensionSmokeBoundaryTests(unittest.TestCase):
                 self.assertEqual(payload["smoke_boundary"]["blocked_actions"][0]["action"], "target_rule_mismatch")
                 self.assertIn("self_extension_not_run_blocker", payload)
             self.assertEqual(summary["target_rule_check"]["result"], "MISMATCH")
+
+    def test_surface_writes_minimal_artifacts_for_child_command_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "jobs" / "JOB1"
+            summary = surface_smoke_boundary(
+                job,
+                expected_target_rule_id="PDF/UA-1/7.21.7",
+                self_extension_configured=True,
+                transport_unavailable=True,
+                child_result={"returncode": 1, "stderr_tail": "ModuleNotFoundError: No module named 'tools'"},
+            )
+            status = json.loads((job / "STATUS.json").read_text())
+            outcome = json.loads((job / "audit" / "orchestrator_outcome.json").read_text())
+            for payload in (status, outcome):
+                self.assertEqual(payload["overall_result"], "ESCALATION")
+                self.assertEqual(payload["self_extension"]["reason"], "self_extension_enabled_but_transport_unavailable")
+                self.assertEqual(payload["smoke_boundary"]["boundary_result"], "BLOCKED")
+                self.assertIn("self_extension_not_run_blocker", payload)
+                self.assertIn("self_extension_smoke_child_result", payload)
+            self.assertEqual(summary["self_extension"]["reason"], "self_extension_enabled_but_transport_unavailable")
+
+    def test_wrapper_sets_pythonpath_for_child_orchestrator(self):
+        env = {"PYTHONPATH": "existing"}
+        _prepend_pythonpath(env, REPO_ROOT / "app")
+        parts = env["PYTHONPATH"].split(os.pathsep)
+        self.assertEqual(parts[0], str(REPO_ROOT / "app"))
+        self.assertIn("existing", parts)
 
     def test_source_snapshot_detects_prohibited_repair_creation(self):
         with tempfile.TemporaryDirectory() as tmp:
