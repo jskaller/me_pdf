@@ -4,16 +4,46 @@ description: PDF/UA remediation workflow. Use when asked to remediate,
   validate, preflight, fix, or package a PDF for accessibility. Runs
   veraPDF PDF/UA-1 and WCAG-2-2-Machine validation, metadata/XMP parity,
   contrast audit, table semantics, native text preservation, visual QA,
-  and produces a signed deliverable package.
+  and produces a signed deliverable package. For H13/H13S/H13T evidence-only
+  self-extension smoke, use the smoke-boundary wrapper and do not write or
+  register source repair scripts.
 user-invocable: true
 metadata: {"hermes":{"requires":{"bins":["qpdf","java"],"env":["NVIDIA_API_KEY"]},"emoji":"♿"}}
 ---
 
 # PDF/UA Remediation — V6
 
-## How to run a remediation job
+## Evidence-only self-extension smoke
 
-Every job uses a single orchestrator script. Do not run individual audit
+If the operator requests H13/H13S/H13T, `evidence-only self-extension smoke`,
+or `WebUI self-extension smoke boundary`, do not run the normal write/register
+repair loop. Use:
+
+```bash
+python3 /app/tools/orchestrate/self_extension_smoke_boundary.py \
+  /app/workspace \
+  {TICKET} \
+  "{source-pdf-basename}" \
+  --title "Document Title" \
+  --subject "One sentence subject" \
+  --keywords "keyword1, keyword2, ..." \
+  --expected-target-rule "PDF/UA-1/7.21.7" \
+  --max-attempts 2
+```
+
+During evidence-only smoke:
+
+- do not write source repair scripts
+- do not register repair scripts
+- do not edit `app/tools/audit/rule_repair_map.json`
+- do not adopt generated candidates
+- do not update the final PDF from failed generated candidates
+- do not claim self-extension ran without attempt evidence
+- report target-rule mismatches and NOT_RUN reasons as blockers
+
+## How to run a normal remediation job
+
+Every normal job uses a single orchestrator script. Do not run individual audit
 or repair scripts manually — the orchestrator handles everything.
 
 **Step 1: Derive metadata from the document**
@@ -75,4 +105,3 @@ Pre-handoff checklist: `/app/skills/montefiore-pdfua-unified-v6/checklists/PRE_H
 Do not attempt to replicate the orchestrator's gate sequence manually.
 If `remediate.py` is not found at `tools/orchestrate/remediate.py`, stop
 and report — do not fall back to manual execution.
-
