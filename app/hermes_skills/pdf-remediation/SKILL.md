@@ -6,8 +6,8 @@ description: >
   this skill whenever a job message begins with "PDF:" or the task is to
   remediate, validate, preflight, fix, or package a PDF for accessibility.
   Covers running the orchestrator, reacting to DEVIATION and HERMES_REQUIRED
-  signals, writing and registering new repair scripts when a strategy gap is
-  found, and reporting the final summary.
+  signals, writing and registering new repair scripts during normal remediation,
+  evidence-only self-extension smoke mode, and reporting the final summary.
 user-invocable: true
 metadata: {"hermes":{"requires":{"bins":["qpdf","java"],"env":["NVIDIA_API_KEY"]},"emoji":"♿"}}
 ---
@@ -16,15 +16,55 @@ metadata: {"hermes":{"requires":{"bins":["qpdf","java"],"env":["NVIDIA_API_KEY"]
 
 You are the remediation agent. The orchestrator runs the pipeline; your job
 is to launch it, act on the signals only it can't resolve on its own, and —
-when it hits a rule with no working repair — **write the missing repair
-script yourself**, register it, and rerun. That last part is the core of this
-system: the pipeline is designed to extend itself through you. An escalation
-you can act on is your work queue, not a handoff.
+when it hits a rule with no working repair during normal production remediation
+— write the missing repair script, register it, and rerun.
+
+**Critical exception: evidence-only self-extension smoke.** If the prompt or
+operator asks for H13/H13S/H13T, `evidence-only self-extension smoke`,
+`self-extension smoke boundary`, or `webui self-extension evidence-only`, do
+not follow the normal write/register repair loop. Use section 0 first. In that
+mode, source repair creation, rule-map mutation, adoption, and final-PDF update
+from failed generated candidates are prohibited.
 
 Engineering invariants about the pipeline's internals (gate namespace, verdict
 cascade, exit codes) live in `app/docs/PIPELINE_CONSISTENCY_CONTRACTS.md` —
 that is developer reference, not needed to run a job. This runbook is what you
 follow per job.
+
+---
+
+## 0. Evidence-only self-extension smoke mode
+
+Use this section instead of the normal remediation loop when the operator is
+validating the WebUI self-extension retry-loop boundary.
+
+Run the smoke wrapper, not direct source editing:
+
+```bash
+python3 /app/tools/orchestrate/self_extension_smoke_boundary.py \
+  /app/workspace {TICKET} "{basename}" \
+  --title "..." --subject "..." --keywords "..." \
+  --expected-target-rule "PDF/UA-1/7.21.7" \
+  --max-attempts 2
+```
+
+During evidence-only self-extension smoke:
+
+- do not write source repair scripts
+- do not register repair scripts
+- do not edit `/app/tools/audit/rule_repair_map.json`
+- do not create helper files under `/app/tools/` or `/app/workspace/input/`
+- do not adopt generated candidates
+- do not promote generated code to source
+- do not update the final output from failed candidates
+- do not claim self-extension ran unless `self_extension_run_attempts_result.json` or equivalent attempt evidence exists
+- if asked to write/register a repair, record it as prohibited by smoke mode
+- report the exact blocker instead of attempting source-level remediation
+
+The wrapper records `smoke_boundary`, `target_rule_check`, and a specific
+`self_extension` NOT_RUN reason into `STATUS.json` and
+`audit/orchestrator_outcome.json`. If self-extension is configured but does not
+run, that is a blocked smoke, not a generic success or normal escalation.
 
 ---
 
@@ -98,6 +138,8 @@ strategy-action pause, never a terminal failure. If an artifact says
 ---
 
 ## 3. Resolve an actionable HERMES_REQUIRED signal
+
+Do not use this section during evidence-only self-extension smoke mode.
 
 For each active actionable signal:
 
