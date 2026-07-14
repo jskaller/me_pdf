@@ -4,9 +4,10 @@ description: PDF/UA remediation workflow. Use when asked to remediate,
   validate, preflight, fix, or package a PDF for accessibility. Runs
   veraPDF PDF/UA-1 and WCAG-2-2-Machine validation, metadata/XMP parity,
   contrast audit, table semantics, native text preservation, visual QA,
-  and produces a signed deliverable package. For H13/H13S/H13T evidence-only
-  self-extension smoke, use the smoke-boundary wrapper and do not write or
-  register source repair scripts.
+  and produces a signed deliverable package. For H13/H13S/H13T/H13U
+  evidence-only self-extension smoke, use the smoke-boundary wrapper, require
+  fixture_preflight.self_extension_would_run=true before retry-loop proof, and
+  do not write or register source repair scripts.
 user-invocable: true
 metadata: {"hermes":{"requires":{"bins":["qpdf","java"],"env":["NVIDIA_API_KEY"]},"emoji":"♿"}}
 ---
@@ -15,9 +16,9 @@ metadata: {"hermes":{"requires":{"bins":["qpdf","java"],"env":["NVIDIA_API_KEY"]
 
 ## Evidence-only self-extension smoke
 
-If the operator requests H13/H13S/H13T, `evidence-only self-extension smoke`,
-or `WebUI self-extension smoke boundary`, do not run the normal write/register
-repair loop. Use:
+If the operator requests H13/H13S/H13T/H13U, `evidence-only self-extension smoke`,
+`fixture target preflight`, or `WebUI self-extension smoke boundary`, do not run
+the normal write/register repair loop. Use:
 
 ```bash
 python3 /app/tools/orchestrate/self_extension_smoke_boundary.py \
@@ -29,6 +30,15 @@ python3 /app/tools/orchestrate/self_extension_smoke_boundary.py \
   --keywords "keyword1, keyword2, ..." \
   --expected-target-rule "PDF/UA-1/7.21.7" \
   --max-attempts 2
+```
+
+The wrapper records `fixture_preflight`. Do not treat the fixture as eligible
+for retry-loop proof unless:
+
+```text
+fixture_preflight.result == MATCH
+fixture_preflight.self_extension_would_run == true
+target_rule_check.result == MATCH
 ```
 
 During evidence-only smoke:
