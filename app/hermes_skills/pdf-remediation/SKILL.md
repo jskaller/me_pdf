@@ -7,7 +7,8 @@ description: >
   remediate, validate, preflight, fix, or package a PDF for accessibility.
   Covers running the orchestrator, reacting to DEVIATION and HERMES_REQUIRED
   signals, writing and registering new repair scripts during normal remediation,
-  evidence-only self-extension smoke mode, and reporting the final summary.
+  evidence-only self-extension smoke mode, fixture target preflight, and
+  reporting the final summary.
 user-invocable: true
 metadata: {"hermes":{"requires":{"bins":["qpdf","java"],"env":["NVIDIA_API_KEY"]},"emoji":"♿"}}
 ---
@@ -20,11 +21,12 @@ when it hits a rule with no working repair during normal production remediation
 — write the missing repair script, register it, and rerun.
 
 **Critical exception: evidence-only self-extension smoke.** If the prompt or
-operator asks for H13/H13S/H13T, `evidence-only self-extension smoke`,
-`self-extension smoke boundary`, or `webui self-extension evidence-only`, do
-not follow the normal write/register repair loop. Use section 0 first. In that
-mode, source repair creation, rule-map mutation, adoption, and final-PDF update
-from failed generated candidates are prohibited.
+operator asks for H13/H13S/H13T/H13U, `evidence-only self-extension smoke`,
+`fixture target preflight`, `self-extension smoke boundary`, or
+`webui self-extension evidence-only`, do not follow the normal write/register
+repair loop. Use section 0 first. In that mode, source repair creation,
+rule-map mutation, adoption, and final-PDF update from failed generated
+candidates are prohibited.
 
 Engineering invariants about the pipeline's internals (gate namespace, verdict
 cascade, exit codes) live in `app/docs/PIPELINE_CONSISTENCY_CONTRACTS.md` —
@@ -48,6 +50,15 @@ python3 /app/tools/orchestrate/self_extension_smoke_boundary.py \
   --max-attempts 2
 ```
 
+The wrapper runs fixture target preflight after known repairs/validation and
+records `fixture_preflight` plus `smoke_boundary`, `target_rule_check`, and
+`self_extension` into `STATUS.json` and `audit/orchestrator_outcome.json`.
+Do not continue a retry-loop smoke if:
+
+- `fixture_preflight.self_extension_would_run` is false
+- `fixture_preflight.result` is `MISMATCH` or `NO_TARGET`
+- `target_rule_check.result` is not `MATCH`
+
 During evidence-only self-extension smoke:
 
 - do not write source repair scripts
@@ -61,10 +72,8 @@ During evidence-only self-extension smoke:
 - if asked to write/register a repair, record it as prohibited by smoke mode
 - report the exact blocker instead of attempting source-level remediation
 
-The wrapper records `smoke_boundary`, `target_rule_check`, and a specific
-`self_extension` NOT_RUN reason into `STATUS.json` and
-`audit/orchestrator_outcome.json`. If self-extension is configured but does not
-run, that is a blocked smoke, not a generic success or normal escalation.
+If self-extension is configured but does not run, that is a blocked smoke, not a
+generic success or normal escalation.
 
 ---
 
