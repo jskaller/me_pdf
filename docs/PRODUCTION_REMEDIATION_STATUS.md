@@ -26,22 +26,22 @@ master
 ## Last completed patch
 
 ```text
-H13S - Harden WebUI Self-Extension Smoke Boundary
+H13U - Add Self-Extension Fixture Target Preflight
 ```
 
-H13S terminal state:
+H13U terminal state:
 
 ```text
-WEBUI_SELF_EXTENSION_SMOKE_BOUNDARY_HARDENED
+WEBUI_SELF_EXTENSION_FIXTURE_BLOCKED_BY_VALIDATION_ENVIRONMENT
 ```
 
-H13S proof level:
+H13U proof level:
 
 ```text
 CLI_ONLY
 ```
 
-H13S hardens the WebUI/Hermes evidence-only smoke boundary. It does not rerun the live Open WebUI smoke and does not claim `WEBUI_PATH` proof.
+H13U adds fixture target preflight and wrapper/runbook enforcement. It does not select or build a live 7.21.7 fixture because Docker/Hermes/Open WebUI validation was not available in the implementation environment.
 
 ## Historical terminal states preserved
 
@@ -62,114 +62,82 @@ ORCHESTRATOR_SELF_EXTENSION_RETRY_LOOP_VALIDATED_FAIL_CLOSED
 WEBUI_SELF_EXTENSION_BLOCKED_BY_COMMAND_ENVIRONMENT
 WEBUI_SELF_EXTENSION_UNSAFE_REVERTED
 WEBUI_SELF_EXTENSION_SMOKE_BOUNDARY_HARDENED
+WEBUI_SELF_EXTENSION_BLOCKED_BY_WEBUI_EXECUTION_POLICY
+WEBUI_SELF_EXTENSION_FIXTURE_BLOCKED_BY_VALIDATION_ENVIRONMENT
 ```
 
 ## Production-readiness statement
 
 Production readiness is not claimed.
 
-H10K proved that the intended Open WebUI `PDF:` production intake path can reach Hermes, invoke the orchestrator, produce terminal artifacts, and route failed/escalation deliverables truthfully. H11 proved unsupported-rule actionability: unresolved blockers produced HERMES_REQUIRED / strategy-request artifacts and escalated truthfully instead of claiming remediation success. H12 added a guarded self-extension candidate loop and a target-specific safety gate for the preferred missing-ToUnicode blocker, but did not validate a new repair. H12R proved a controlled self-extension lifecycle on two synthetic fixtures, including second-fixture reuse, but did not enable generated strategies as production defaults. H13 made failed or blocked bounded self-extension attempts first-class in status/outcome. H13R failed as a WebUI smoke because the path drifted into source/rule-map mutation and self-extension did not run. H13S hardens that smoke boundary. None of H12/H12R/H13/H13R/H13S proves production adoption or beta readiness.
+H10K proved that the intended Open WebUI `PDF:` production intake path can reach Hermes, invoke the orchestrator, produce terminal artifacts, and route failed/escalation deliverables truthfully. H11 proved unsupported-rule actionability. H12 added a guarded self-extension candidate loop and a target-specific safety gate. H12R proved a controlled self-extension lifecycle on two synthetic fixtures, including second-fixture reuse, but did not enable generated strategies as production defaults. H13 made failed or blocked bounded self-extension attempts first-class in status/outcome. H13R failed as a WebUI smoke because the path drifted into source/rule-map mutation and self-extension did not run. H13S hardened that smoke boundary. H13T proved the hardened WebUI boundary can block target drift safely. H13U adds fixture preflight so future WebUI retry-loop smoke cannot run blindly against a mismatched target. None of H12/H12R/H13/H13R/H13S/H13T/H13U proves production adoption or beta readiness.
 
-## H13R negative evidence
+## H13T result
 
-H13R reached the WebUI/orchestrator path and produced `STATUS.json` and `orchestrator_outcome.json`, but it did not validate the bounded self-extension retry-loop. The run reported self-extension as NOT_RUN and did not produce:
-
-```text
-audit/self_extension_run_attempts_result.json
-audit/self_extension_residual_result.json
-```
-
-The run also drifted into prohibited source work in the local checkout:
+The H13T hardened WebUI smoke produced authoritative artifacts and blocked target drift:
 
 ```text
-M app/tools/audit/rule_repair_map.json
-?? app/tools/repair/fix_embed_nonsymbolic_fonts.py
-?? workspace/extract_text.py
+expected: PDF/UA-1/7.21.7
+actual: PDF/UA-1/7.21.4.1
+result: MISMATCH
+reason: actual_residual_did_not_match_expected_self_extension_target
 ```
 
-Those mutations were not valid evidence and must not be committed.
+H13T did not write source repair scripts, did not mutate `rule_repair_map.json`, did not adopt generated candidates, and did not update the final PDF from failed candidates.
 
-## Current H13S behavior
+## H13U fixture preflight
 
-H13S adds an evidence-only smoke boundary wrapper:
+H13U adds:
 
 ```text
-app/tools/orchestrate/self_extension_smoke_boundary.py
+app/tools/audit/self_extension_fixture_preflight.py
 ```
 
-The wrapper is a production-approved smoke wrapper for H13/H13S/H13T evidence-only runs. It configures self-extension, runs the orchestrator, detects prohibited source-path mutation, and surfaces smoke-boundary evidence into:
+It emits a machine-readable fixture target verdict:
+
+```json
+{
+  "result": "MATCH|MISMATCH|NO_TARGET",
+  "expected_target_rule_id": "PDF/UA-1/7.21.7",
+  "actual_target_rule_id": "...",
+  "self_extension_would_run": true,
+  "retry_loop_smoke_may_proceed": true,
+  "reason": "...",
+  "candidate_classification": "MATCHES_EXPECTED_TARGET|MISMATCHES_EXPECTED_TARGET|NO_SELF_EXTENSION_TARGET"
+}
+```
+
+The evidence-only wrapper now surfaces compact preflight evidence into:
 
 ```text
 STATUS.json
 audit/orchestrator_outcome.json
 ```
 
-The smoke boundary records:
+as:
 
 ```json
 {
-  "smoke_boundary": {
-    "evidence_only": true,
-    "source_repair_creation_allowed": false,
-    "rule_map_mutation_allowed": false,
-    "adoption_allowed": false,
-    "final_pdf_update_from_failed_candidate_allowed": false,
-    "blocked_actions": [],
-    "boundary_result": "PASS|BLOCKED",
-    "boundary_reason": "..."
-  }
-}
-```
-
-It forbids evidence-only smoke writes to:
-
-```text
-app/tools/repair/*.py
-app/tools/audit/rule_repair_map.json
-workspace/extract_text.py
-```
-
-## Self-extension NOT_RUN specificity
-
-H13 status/outcome surfacing previously collapsed missing self-extension evidence into:
-
-```text
-self_extension_not_enabled_or_no_residual_gap
-```
-
-H13S smoke-boundary post-processing distinguishes evidence-only smoke blockers, including:
-
-```text
-self_extension_not_enabled
-self_extension_enabled_but_no_target_rule
-self_extension_enabled_but_no_residual_gap
-self_extension_enabled_but_policy_blocked
-self_extension_enabled_but_transport_unavailable
-self_extension_enabled_but_target_rule_mismatch
-self_extension_enabled_but_unexpectedly_not_run
-```
-
-If self-extension is configured for the smoke but does not run, the wrapper writes `self_extension_not_run_blocker` into `STATUS.json` and `audit/orchestrator_outcome.json`.
-
-## Target-rule verification
-
-Evidence-only smoke now supports an expected target rule. A mismatch is explicit:
-
-```json
-{
-  "target_rule_check": {
+  "fixture_preflight": {
+    "result": "MATCH|MISMATCH|NO_TARGET",
     "expected_target_rule_id": "PDF/UA-1/7.21.7",
-    "actual_target_rule_id": "PDF/UA-1/7.21.5",
-    "actual_rule_ids": ["PDF/UA-1/7.21.5"],
-    "result": "MISMATCH",
-    "reason": "actual_residual_did_not_match_expected_self_extension_target"
+    "actual_target_rule_id": "...",
+    "self_extension_would_run": true,
+    "reason": "...",
+    "artifact_path": ".../audit/self_extension_fixture_preflight.json"
   }
 }
 ```
 
-A mismatch must not be reported as successful H13 WebUI retry-loop proof.
+A retry-loop smoke must not proceed when:
 
-## Current H12R target rule
+```text
+fixture_preflight.result is MISMATCH or NO_TARGET
+fixture_preflight.self_extension_would_run is false
+target_rule_check.result is not MATCH
+```
+
+## Current H12R/H13 target rule
 
 ```text
 PDF/UA-1/7.21.7
@@ -181,11 +149,7 @@ Description:
 Font dictionary missing ToUnicode map; character codes cannot be mapped to Unicode values.
 ```
 
-Target-selection basis:
-
-```text
-app/tools/audit/rule_repair_map.json marks PDF/UA-1/7.21.7 as HERMES_REQUIRED and repairable_unbuilt with no active deterministic strategy.
-```
+Current status: continue targeting 7.21.7 only if fixture preflight finds or builds a fixture whose actual residual is 7.21.7. Do not silently re-scope to 7.21.4.1 without proving that 7.21.4.1 is unsupported, intentionally self-extension-targetable, and not already handled by known repairs.
 
 ## Artifact and safety policy
 
@@ -229,9 +193,9 @@ package ZIPs
 
 ## Validation status
 
-H13S code and regression tests were committed through the GitHub connector. Tests were not executed in this environment because the connector provides repository write access but not a live local checkout with Docker/Hermes/Open WebUI.
+H13U code and regression tests were committed through the GitHub connector. Tests were not executed in this environment because the connector provides repository write access but not a live local checkout with Docker/Hermes/Open WebUI.
 
-Required local validation after pulling H13S:
+Required local validation after pulling H13U:
 
 ```bash
 PYTHONPATH=app python3 -m unittest \
@@ -240,19 +204,18 @@ PYTHONPATH=app python3 -m unittest \
   app/tools/tests/test_self_extension_support.py \
   app/tools/tests/test_self_extension_run_state.py \
   app/tools/tests/test_self_extension_smoke_boundary.py \
+  app/tools/tests/test_self_extension_fixture_preflight.py \
   app/tools/tests/test_guarded_acceptance_status_package_policy.py
 ```
 
 ## Current status
 
 ```text
-WEBUI_SELF_EXTENSION_SMOKE_BOUNDARY_HARDENED
+WEBUI_SELF_EXTENSION_FIXTURE_BLOCKED_BY_VALIDATION_ENVIRONMENT
 ```
-
-The next WebUI proof has not yet been rerun after H13S hardening.
 
 ## Exact next step
 
 ```text
-H13T — Rerun WebUI Self-Extension Retry Loop Smoke with Hardened Boundary
+H13V — Build Minimal Controlled Self-Extension Fixture
 ```
