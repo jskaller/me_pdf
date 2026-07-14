@@ -1,13 +1,13 @@
 # V6 Runbook
 
 1. Confirm active source PDFs.
-2. If the operator requests evidence-only self-extension smoke, run `/app/tools/orchestrate/self_extension_smoke_boundary.py` with `--expected-target-rule` and do not write/register repair scripts.
+2. If the operator requests evidence-only self-extension smoke, run `/app/tools/orchestrate/self_extension_smoke_boundary.py` with `--expected-target-rule`; verify `fixture_preflight.self_extension_would_run` is true before treating the fixture as eligible; do not write/register repair scripts.
 3. Run classification and source audit.
 4. Preserve native text wherever possible.
 5. Repair tags/structure, tables, annotations, figures, language, metadata, and contrast.
 6. Run qpdf.
 7. Run veraPDF PDF/UA.
-8. If PDF/UA fails during normal remediation, stop and remediate, do not hand off. During evidence-only self-extension smoke, do not source-patch; record the blocker in `smoke_boundary`, `target_rule_check`, and `self_extension`.
+8. If PDF/UA fails during normal remediation, stop and remediate, do not hand off. During evidence-only self-extension smoke, do not source-patch; record the blocker in `fixture_preflight`, `smoke_boundary`, `target_rule_check`, and `self_extension`.
 9. Run pinned WCAG profile.
 10. Run metadata Info + XMP parity audit after final save.
 11. Run contrast/table/native text/preservation/visual QA gates.
@@ -16,8 +16,11 @@
 
 ## Evidence-only self-extension smoke guardrails
 
-When the run is H13/H13S/H13T evidence-only smoke:
+When the run is H13/H13S/H13T/H13U evidence-only smoke:
 
+- run fixture preflight before claiming the fixture can exercise a retry-loop target
+- do not continue a retry-loop smoke if `fixture_preflight.result` is `MISMATCH` or `NO_TARGET`
+- do not continue a retry-loop smoke if `fixture_preflight.self_extension_would_run` is false
 - do not write source repair scripts
 - do not register repair scripts
 - do not edit `app/tools/audit/rule_repair_map.json`
